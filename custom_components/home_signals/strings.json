@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Home Signals",
+        "description": "Pick the entities the activity feed should watch. Motion sensors, door contacts, locks and button events all work.",
+        "data": {
+          "entities": "Entities to watch",
+          "max_events": "Events to keep"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Already configured. Only a single configuration is possible."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Home Signals",
+        "description": "Change which entities the activity feed watches.",
+        "data": {
+          "entities": "Entities to watch",
+          "max_events": "Events to keep"
+        }
+      }
+    }
+  }
+}
