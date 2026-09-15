@@ -43,6 +43,8 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ACCENT_ALERT,
+    ATTR_HOURS,
+    ATTR_ITEM_ID,
     ACCENT_INFO,
     ACCENT_WARN,
     CONF_BATTERY_THRESHOLD,
@@ -50,6 +52,9 @@ from .const import (
     CONF_IGNORE_UNAVAILABLE,
     CONF_TASKS_SENSOR,
     DEFAULT_BATTERY_THRESHOLD,
+    DOMAIN,
+    SERVICE_DISMISS,
+    SERVICE_SNOOZE,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -98,6 +103,23 @@ def _battery_label(state: State) -> str:
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
+
+
+def _dismiss(item_id: str) -> dict[str, Any]:
+    """The action that clears a row for good."""
+    return {"service": f"{DOMAIN}.{SERVICE_DISMISS}", "data": {ATTR_ITEM_ID: item_id}}
+
+
+def _snooze(item_id: str, hours: int = 8) -> dict[str, Any]:
+    """The action that hides a row for a while.
+
+    A row carries its own action rather than the card deriving one, because
+    the sensor is the thing that knows whether an item can be finished or
+    only postponed. Bins get Done; a flat battery gets Snooze, since tapping
+    it does not charge anything.
+    """
+    return {"service": f"{DOMAIN}.{SERVICE_SNOOZE}",
+            "data": {ATTR_ITEM_ID: item_id, ATTR_HOURS: hours}}
 
 
 class _Derived(SensorEntity):
@@ -349,6 +371,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "icon": "mdi:trash-can-outline",
             "accent": ACCENT_WARN,
             "action_label": "Done",
+            "action": _dismiss(f"bin_{collection.isoformat()}"),
         }]
 
     def _tasks(self) -> list[dict[str, Any]]:
@@ -366,6 +389,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "icon": "mdi:clipboard-alert-outline",
             "accent": ACCENT_WARN,
             "action_label": "Snooze",
+            "action": _snooze("tasks_overdue"),
         }]
 
     def _batteries(self) -> list[dict[str, Any]]:
@@ -384,6 +408,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             names = ", ".join(_battery_label(state) for state, _ in flat[:3])
             return [{
                 "id": "batteries",
+                "action": _snooze("batteries", 24),
                 "title": f"{len(flat)} low batteries",
                 "detail": f"{names} and {len(flat) - 3} more"
                           if len(flat) > 3 else names,
@@ -397,6 +422,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             area = _area_of(self.hass, state.entity_id)
             rows.append({
                 "id": f"battery_{state.entity_id}",
+                "action": _snooze(f"battery_{state.entity_id}", 24),
                 "title": f"{_battery_label(state)} battery",
                 "detail": f"{level:.0f}%" + (f" · {area}" if area else ""),
                 "icon": "mdi:battery-alert-variant-outline",
@@ -419,6 +445,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             names += f" and {len(gone) - 3} more"
         return [{
             "id": "offline",
+            "action": _snooze("offline", 12),
             "title": f"{len(gone)} entities offline",
             "detail": names,
             "icon": "mdi:lan-disconnect",
