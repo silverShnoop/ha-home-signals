@@ -14,6 +14,8 @@ from datetime import datetime
 import logging
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -24,18 +26,27 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    ServiceCall,
+    callback,
+)
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
     entity_registry as er,
 )
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    ATTR_HOURS,
+    ATTR_ITEM_ID,
     CONF_ENTITIES,
     CONF_MAX_EVENTS,
     DEFAULT_MAX_EVENTS,
@@ -44,7 +55,12 @@ from .const import (
     KIND_LOCK,
     KIND_MOTION,
     KIND_OTHER,
+    DOMAIN,
+    SERVICE_DISMISS,
+    SERVICE_RESET,
+    SERVICE_SNOOZE,
 )
+from .derived import NeedsYouSensor, SystemHealthSensor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -70,7 +86,44 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the derived signal sensors."""
-    async_add_entities([ActivityFeedSensor(entry)])
+    needs_you = NeedsYouSensor(entry)
+    async_add_entities([ActivityFeedSensor(entry), needs_you, SystemHealthSensor(entry)])
+    _async_register_services(hass, needs_you)
+
+
+@callback
+def _async_register_services(hass: HomeAssistant, needs_you: NeedsYouSensor) -> None:
+    """Dismiss and snooze, so a row can be cleared from anywhere.
+
+    These are actions rather than card-local state on purpose: the panel, a
+    phone and a wall button all have to clear the same row, and a browser
+    cannot be the place that memory lives.
+    """
+
+    @callback
+    def _dismiss(call: ServiceCall) -> None:
+        needs_you.suppress(call.data[ATTR_ITEM_ID])
+
+    @callback
+    def _snooze(call: ServiceCall) -> None:
+        needs_you.suppress(call.data[ATTR_ITEM_ID], float(call.data.get(ATTR_HOURS, 8)))
+
+    @callback
+    def _reset(_call: ServiceCall) -> None:
+        needs_you.reset()
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_DISMISS, _dismiss,
+        schema=vol.Schema({vol.Required(ATTR_ITEM_ID): cv.string}),
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_SNOOZE, _snooze,
+        schema=vol.Schema({
+            vol.Required(ATTR_ITEM_ID): cv.string,
+            vol.Optional(ATTR_HOURS, default=8): vol.Coerce(float),
+        }),
+    )
+    hass.services.async_register(DOMAIN, SERVICE_RESET, _reset, schema=vol.Schema({}))
 
 
 class ActivityFeedSensor(SensorEntity, RestoreEntity):

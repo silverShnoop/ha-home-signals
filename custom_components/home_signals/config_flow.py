@@ -15,7 +15,17 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
-from .const import CONF_ENTITIES, CONF_MAX_EVENTS, DEFAULT_MAX_EVENTS, DOMAIN
+from .const import (
+    CONF_BATTERY_THRESHOLD,
+    CONF_BIN_SENSOR,
+    CONF_ENTITIES,
+    CONF_IGNORE_UNAVAILABLE,
+    CONF_MAX_EVENTS,
+    CONF_TASKS_SENSOR,
+    DEFAULT_BATTERY_THRESHOLD,
+    DEFAULT_MAX_EVENTS,
+    DOMAIN,
+)
 
 TITLE = "Home Signals"
 
@@ -41,6 +51,33 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 selector.NumberSelectorConfig(
                     min=5, max=100, step=1, mode=selector.NumberSelectorMode.BOX
                 )
+            ),
+            # Needs you. Each is optional: leave one empty and that provider
+            # simply contributes nothing, rather than erroring.
+            vol.Optional(
+                CONF_BATTERY_THRESHOLD,
+                default=defaults.get(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100, step=1, mode=selector.NumberSelectorMode.SLIDER
+                )
+            ),
+            vol.Optional(
+                CONF_BIN_SENSOR, default=defaults.get(CONF_BIN_SENSOR, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Optional(
+                CONF_TASKS_SENSOR,
+                default=defaults.get(CONF_TASKS_SENSOR, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="binary_sensor")
+            ),
+            vol.Optional(
+                CONF_IGNORE_UNAVAILABLE,
+                default=defaults.get(CONF_IGNORE_UNAVAILABLE, []),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(multiple=True)
             ),
         }
     )

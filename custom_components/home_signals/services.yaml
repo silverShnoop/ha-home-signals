@@ -1,0 +1,41 @@
+dismiss:
+  name: Dismiss
+  description: >-
+    Clear one Needs you row for good. The dismissal is keyed to the specific
+    occurrence, so a recurring item such as the bins comes back next time
+    rather than never.
+  fields:
+    item_id:
+      name: Item
+      description: The row's id, from the sensor's items attribute.
+      required: true
+      example: bin_2026-09-16
+      selector:
+        text:
+
+snooze:
+  name: Snooze
+  description: Hide one Needs you row for a while, then let it come back.
+  fields:
+    item_id:
+      name: Item
+      description: The row's id, from the sensor's items attribute.
+      required: true
+      example: offline
+      selector:
+        text:
+    hours:
+      name: Hours
+      description: How long to hide it for.
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 168
+          unit_of_measurement: hours
+
+reset:
+  name: Reset dismissals
+  description: >-
+    Bring every dismissed and snoozed row back. The escape hatch for when a
+    rule misfires and something has been cleared that should not have been.

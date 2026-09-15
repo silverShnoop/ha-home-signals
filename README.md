@@ -48,11 +48,63 @@ the interesting one because it proves a person rather than a cat.
   state. That last one is Home Assistant waking up, not activity, and without
   the guard every restart would fabricate a burst of events.
 
+## `sensor.needs_you`
+
+What a human has to do, and nothing that is merely true.
+
+The governing rule: **status is ambient and permanent, actions are
+conditional and dismissable, and never both.** The Bins tile says "Tomorrow ·
+Garden waste" all week; this says "bins out tonight" for one evening, and
+clears when you do it. On a good day it is zero and the band disappears —
+a dashboard that is permanently red stops being read.
+
+- **State** — how many things need doing.
+- **`items`** — the rows, each with `id`, `title`, `detail`, `icon`, `accent`
+  and `action_label`. A Spectra `list` renders these directly, so the shape
+  is a contract and not free to drift.
+
+What it reports, each optional and off unless configured: bins out (only the
+evening before, when it is actionable), overdue chores, batteries under a
+threshold one row each, and everything offline as a **single** row — twenty-
+seven unavailable entities is one problem, an integration being down, and
+twenty-seven rows would bury everything else.
+
+### Dismissing
+
+Three actions: `home_signals.dismiss`, `home_signals.snooze` (with `hours`)
+and `home_signals.reset`. All take the row's `id`.
+
+They are actions rather than state inside a card because the panel, a phone
+and a wall button all have to clear the same row — a browser cannot be where
+that memory lives. Dismissals survive a restart, and they are keyed to the
+**occurrence**: dismissing `bin_2026-09-16` clears tonight's bins and lets
+next week's come back.
+
+## `sensor.system_health`
+
+What is wrong with the house's plumbing, as opposed to its jobs. Ambient
+status, so it stays true for as long as it is true and is never dismissable.
+
+- **State** — how many kinds of problem there are.
+- **`items`** — rows for a card.
+- **`low_batteries`, `offline`, `updates_pending`** — the raw lists, with
+  entity ids and areas, plus a count of each.
+
+The raw lists are the point. An agent asking "what is offline?" wants entity
+ids, not a sentence assembled for a card — and an agent never looks at a
+card. That is the whole reason both of these are entities rather than card
+logic: **a card is only true while somebody is watching it.**
+
+Entities in an entity category, and the `update`, `button`, `scene`, `script`
+and `automation` domains, are excluded from the offline count. They go
+unavailable constantly and nobody acts on it. Anything else noisy can be
+listed under "Never report these as offline".
+
 ## Setup
 
 Install through HACS, restart once so Home Assistant picks up the new
 component, then add **Home Signals** from Settings → Devices & Services and
-choose the entities to watch. The list is editable afterwards via Configure.
+choose the entities to watch and point Needs you at your bin and chore sensors. Everything is editable afterwards via Configure.
 
 ### A note on choosing motion sensors
 

@@ -3,10 +3,14 @@
     "step": {
       "user": {
         "title": "Home Signals",
-        "description": "Pick the entities the activity feed should watch. Motion sensors, door contacts, locks and button events all work.",
+        "description": "Pick the entities the activity feed should watch, then tell Needs you where to look. Every Needs you field is optional \u2014 leave one empty and that check simply contributes nothing.",
         "data": {
           "entities": "Entities to watch",
-          "max_events": "Events to keep"
+          "max_events": "Events to keep",
+          "battery_threshold": "Battery warning level (%)",
+          "bin_sensor": "Next bin collection sensor",
+          "tasks_sensor": "Overdue chores binary sensor",
+          "ignore_unavailable": "Never report these as offline"
         }
       }
     },
@@ -18,12 +22,46 @@
     "step": {
       "init": {
         "title": "Home Signals",
-        "description": "Change which entities the activity feed watches.",
+        "description": "Change what the activity feed watches and what Needs you reports.",
         "data": {
           "entities": "Entities to watch",
-          "max_events": "Events to keep"
+          "max_events": "Events to keep",
+          "battery_threshold": "Battery warning level (%)",
+          "bin_sensor": "Next bin collection sensor",
+          "tasks_sensor": "Overdue chores binary sensor",
+          "ignore_unavailable": "Never report these as offline"
         }
       }
+    }
+  },
+  "services": {
+    "dismiss": {
+      "name": "Dismiss",
+      "description": "Clear one Needs you row for good.",
+      "fields": {
+        "item_id": {
+          "name": "Item",
+          "description": "The row's id, from the sensor's items attribute."
+        }
+      }
+    },
+    "snooze": {
+      "name": "Snooze",
+      "description": "Hide one Needs you row for a while.",
+      "fields": {
+        "item_id": {
+          "name": "Item",
+          "description": "The row's id, from the sensor's items attribute."
+        },
+        "hours": {
+          "name": "Hours",
+          "description": "How long to hide it for."
+        }
+      }
+    },
+    "reset": {
+      "name": "Reset dismissals",
+      "description": "Bring every dismissed and snoozed row back."
     }
   }
 }
