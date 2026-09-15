@@ -21,13 +21,23 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import HomeAssistant, State, callback
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    State,
+    callback,
+)
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
     entity_registry as er,
 )
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
@@ -104,12 +114,49 @@ class _Derived(SensorEntity):
     def _option(self, key: str, default: Any) -> Any:
         return self._entry.options.get(key, self._entry.data.get(key, default))
 
+    def _watched(self) -> list[str]:
+        """Entities worth reacting to the instant they change.
+
+        A full scan on every state change would be wasteful in a house with
+        hundreds of entities, so batteries and offline entities ride the
+        timer. These two are specific, cheap, and the ones a person expects
+        to respond immediately.
+        """
+        return [
+            entity_id
+            for entity_id in (
+                self._option(CONF_BIN_SENSOR, None),
+                self._option(CONF_TASKS_SENSOR, None),
+            )
+            if entity_id
+        ]
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.async_on_remove(
             async_track_time_interval(self.hass, self._async_tick, SCAN_INTERVAL)
         )
+        if watched := self._watched():
+            self.async_on_remove(
+                async_track_state_change_event(self.hass, watched, self._async_changed)
+            )
+        # A first scan during startup sees a half-built state machine: Hue has
+        # not pushed battery levels and nothing has been marked unavailable
+        # yet, so everything reads clean. Scanning again once Home Assistant
+        # has finished starting is what stops the band being wrong — and
+        # reassuringly wrong — for the first few minutes after a restart.
+        self.async_on_remove(async_at_started(self.hass, self._async_started))
         self._recompute()
+
+    @callback
+    def _async_started(self, _hass: HomeAssistant) -> None:
+        self._recompute()
+        self.async_write_ha_state()
+
+    @callback
+    def _async_changed(self, _event: Event[EventStateChangedData]) -> None:
+        self._recompute()
+        self.async_write_ha_state()
 
     @callback
     def _async_tick(self, _now: datetime) -> None:
