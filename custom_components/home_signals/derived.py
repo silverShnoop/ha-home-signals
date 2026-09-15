@@ -45,7 +45,6 @@ from .const import (
     ACCENT_ALERT,
     ACCENT_INFO,
     ACCENT_WARN,
-    BIN_EVENING_HOUR,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
     CONF_IGNORE_UNAVAILABLE,
@@ -318,7 +317,15 @@ class NeedsYouSensor(_Derived, RestoreEntity):
     # --- the providers ------------------------------------------------
 
     def _bins(self) -> list[dict[str, Any]]:
-        """Only the evening before, which is when it is actionable."""
+        """The day before a collection, because that is when they go out.
+
+        The tile says "Garden · Out tonight" all week; this row is the job,
+        and it appears for the whole of the day before rather than only the
+        evening. You decide to do it when you think of it, not at five.
+
+        The bin sensor is expected to carry `daysTo` and to read as the
+        stream — `Garden`, `Refuse + Food`.
+        """
         entity_id = self._option(CONF_BIN_SENSOR, None)
         if not entity_id:
             return []
@@ -326,17 +333,19 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         if state is None or state.state in _NOT_A_READING:
             return []
         days = state.attributes.get("daysTo")
-        now = dt_util.now()
-        if days == 1 and now.hour >= BIN_EVENING_HOUR:
-            when = "tonight"
-        elif days == 0:
-            when = "this morning"
-        else:
+        if days not in (0, 1):
             return []
+
+        now = dt_util.now()
+        collection = now.date() + timedelta(days=int(days))
+        title = "Bins out tonight" if days == 1 else "Bins out now"
+        detail = f"{state.state} collected " + ("tomorrow" if days == 1 else "today")
         return [{
-            "id": f"bin_{(now.date() + timedelta(days=int(days))).isoformat()}",
-            "title": f"Bins out {when}",
-            "detail": state.state,
+            # Keyed to the collection date, so marking tonight's done does
+            # not silence next week's.
+            "id": f"bin_{collection.isoformat()}",
+            "title": title,
+            "detail": detail,
             "icon": "mdi:trash-can-outline",
             "accent": ACCENT_WARN,
             "action_label": "Done",
