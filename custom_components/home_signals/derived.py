@@ -51,6 +51,9 @@ _NOT_A_READING = {STATE_UNKNOWN, STATE_UNAVAILABLE, None}
 # true because the clock moved, and a snooze expires the same way.
 SCAN_INTERVAL = timedelta(minutes=5)
 
+# Past this many, a list of errands becomes one job.
+BATTERY_ROWS_MAX = 2
+
 # Diagnostic entities go unavailable constantly and nobody acts on them.
 _NOISY_DOMAINS = {"update", "button", "scene", "script", "automation"}
 
@@ -73,6 +76,19 @@ def _area_of(hass: HomeAssistant, entity_id: str) -> str | None:
 
 def _name_of(state: State) -> str:
     return state.attributes.get(ATTR_FRIENDLY_NAME, state.entity_id)
+
+
+def _battery_label(state: State) -> str:
+    """The device's name, without the word the row is about to add.
+
+    Most battery entities are already called "<device> Battery", and
+    "Kitchen Button Battery battery" reads like a typo.
+    """
+    name = _name_of(state)
+    for suffix in (" Battery Level", " Battery"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 class _Derived(SensorEntity):
@@ -107,6 +123,15 @@ class _Derived(SensorEntity):
     def native_value(self) -> int:
         return len(self._items)
 
+    def _ignored(self) -> set[str]:
+        """Entities the house has decided not to hear about.
+
+        Some battery sensors do not measure a battery. A Hue button that has
+        read exactly 1% for four months is not a battery at 1%, and a row
+        that can never be cleared is worse than no row.
+        """
+        return set(self._option(CONF_IGNORE_UNAVAILABLE, []) or [])
+
     def _batteries_below(self, threshold: int) -> list[tuple[State, float]]:
         """Battery sensors under the threshold, worst first."""
         found: list[tuple[State, float]] = []
@@ -119,6 +144,8 @@ class _Derived(SensorEntity):
                 level = float(state.state)
             except ValueError:
                 continue
+            if state.entity_id in self._ignored():
+                continue
             if level <= threshold:
                 found.append((state, level))
         found.sort(key=lambda pair: pair[1])
@@ -130,7 +157,7 @@ class _Derived(SensorEntity):
         A device that is merely offline reports `unavailable`; `unknown` means
         it is present and has not decided yet, which is not a fault.
         """
-        ignored = set(self._option(CONF_IGNORE_UNAVAILABLE, []) or [])
+        ignored = self._ignored()
         out: list[State] = []
         for state in self.hass.states.async_all():
             if state.state != STATE_UNAVAILABLE:
@@ -286,14 +313,35 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         }]
 
     def _batteries(self) -> list[dict[str, Any]]:
-        """One row per flat battery — each is a separate trip to a drawer."""
+        """A row each while that is still a list, one row once it is a job.
+
+        One flat battery is an errand. Seven is an afternoon, and seven rows
+        would bury everything else on the band — the same reasoning that
+        keeps offline to a single row.
+        """
         threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
+        flat = self._batteries_below(threshold)
+        if not flat:
+            return []
+
+        if len(flat) > BATTERY_ROWS_MAX:
+            names = ", ".join(_battery_label(state) for state, _ in flat[:3])
+            return [{
+                "id": "batteries",
+                "title": f"{len(flat)} low batteries",
+                "detail": f"{names} and {len(flat) - 3} more"
+                          if len(flat) > 3 else names,
+                "icon": "mdi:battery-alert-variant-outline",
+                "accent": ACCENT_WARN,
+                "action_label": "Snooze",
+            }]
+
         rows: list[dict[str, Any]] = []
-        for state, level in self._batteries_below(threshold):
+        for state, level in flat:
             area = _area_of(self.hass, state.entity_id)
             rows.append({
                 "id": f"battery_{state.entity_id}",
-                "title": f"{_name_of(state)} battery",
+                "title": f"{_battery_label(state)} battery",
                 "detail": f"{level:.0f}%" + (f" · {area}" if area else ""),
                 "icon": "mdi:battery-alert-variant-outline",
                 "accent": ACCENT_WARN,

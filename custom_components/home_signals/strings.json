@@ -10,7 +10,7 @@
           "battery_threshold": "Battery warning level (%)",
           "bin_sensor": "Next bin collection sensor",
           "tasks_sensor": "Overdue chores binary sensor",
-          "ignore_unavailable": "Never report these as offline"
+          "ignore_unavailable": "Never report these (offline or low battery)"
         }
       }
     },
@@ -29,7 +29,7 @@
           "battery_threshold": "Battery warning level (%)",
           "bin_sensor": "Next bin collection sensor",
           "tasks_sensor": "Overdue chores binary sensor",
-          "ignore_unavailable": "Never report these as offline"
+          "ignore_unavailable": "Never report these (offline or low battery)"
         }
       }
     }
