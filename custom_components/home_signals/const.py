@@ -40,5 +40,3 @@ SERVICE_RESET = "reset"
 ATTR_ITEM_ID = "item_id"
 ATTR_HOURS = "hours"
 
-# A bin goes out the evening before, not the moment it enters the window.
-BIN_EVENING_HOUR = 17
