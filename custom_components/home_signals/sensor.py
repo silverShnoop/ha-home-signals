@@ -60,7 +60,7 @@ from .const import (
     SERVICE_RESET,
     SERVICE_SNOOZE,
 )
-from .derived import NeedsYouSensor, SystemHealthSensor
+from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -87,7 +87,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up the derived signal sensors."""
     needs_you = NeedsYouSensor(entry)
-    async_add_entities([ActivityFeedSensor(entry), needs_you, SystemHealthSensor(entry)])
+    async_add_entities([
+        ActivityFeedSensor(entry),
+        needs_you,
+        SystemHealthSensor(entry),
+        SecurityStatusSensor(entry),
+    ])
     _async_register_services(hass, needs_you)
 
 
