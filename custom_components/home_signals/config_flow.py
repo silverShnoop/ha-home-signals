@@ -18,11 +18,16 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
+    CONF_SALT_BOTH_THRESHOLD,
+    CONF_SALT_ONE_THRESHOLD,
+    CONF_SALT_SENSORS,
     CONF_ENTITIES,
     CONF_IGNORE_UNAVAILABLE,
     CONF_MAX_EVENTS,
     CONF_TASKS_SENSOR,
     DEFAULT_BATTERY_THRESHOLD,
+    DEFAULT_SALT_BOTH_THRESHOLD,
+    DEFAULT_SALT_ONE_THRESHOLD,
     DEFAULT_MAX_EVENTS,
     DOMAIN,
 )
@@ -72,6 +77,31 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 default=defaults.get(CONF_TASKS_SENSOR, vol.UNDEFINED),
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="binary_sensor")
+            ),
+            vol.Optional(
+                CONF_SALT_SENSORS, default=defaults.get(CONF_SALT_SENSORS, [])
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", multiple=True)
+            ),
+            vol.Optional(
+                CONF_SALT_BOTH_THRESHOLD,
+                default=defaults.get(
+                    CONF_SALT_BOTH_THRESHOLD, DEFAULT_SALT_BOTH_THRESHOLD
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100, step=1, mode=selector.NumberSelectorMode.SLIDER
+                )
+            ),
+            vol.Optional(
+                CONF_SALT_ONE_THRESHOLD,
+                default=defaults.get(
+                    CONF_SALT_ONE_THRESHOLD, DEFAULT_SALT_ONE_THRESHOLD
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100, step=1, mode=selector.NumberSelectorMode.SLIDER
+                )
             ),
             vol.Optional(
                 CONF_IGNORE_UNAVAILABLE,

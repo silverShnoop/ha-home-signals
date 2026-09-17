@@ -65,9 +65,27 @@ a dashboard that is permanently red stops being read.
 
 What it reports, each optional and off unless configured: bins out (only the
 evening before, when it is actionable), overdue chores, batteries under a
-threshold one row each, and everything offline as a **single** row — twenty-
-seven unavailable entities is one problem, an integration being down, and
-twenty-seven rows would bury everything else.
+threshold one row each, water softener salt, and everything offline as a
+**single** row — twenty-seven unavailable entities is one problem, an
+integration being down, and twenty-seven rows would bury everything else.
+
+### Water softener salt
+
+A twin-cylinder softener alternates: one side works while the other
+regenerates. So a single side running down is normal, and both running down
+together is not — one number cannot express both, which is why there are two
+thresholds.
+
+- **Alert when every side is at or below** (default 40%) — the trip to buy a
+  bag. Raised as an alert.
+- **Alert when any one side is at or below** (default 25%) — the earlier,
+  sharper warning, answerable with the bag already in the garage.
+
+Either rule produces **one** row, never one per side: filling the machine is
+a single errand whichever cylinder prompted it. Both are set in the
+integration's own options, alongside the battery threshold. With no sensors
+configured, or none of them readable, the check contributes nothing — a
+softener that cannot be read is not reported as full.
 
 ### Dismissing
 

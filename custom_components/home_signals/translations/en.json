@@ -3,14 +3,17 @@
     "step": {
       "user": {
         "title": "Home Signals",
-        "description": "Pick the entities the activity feed should watch, then tell Needs you where to look. Every Needs you field is optional \u2014 leave one empty and that check simply contributes nothing.",
+        "description": "Pick the entities the activity feed should watch, then tell Needs you where to look. Every Needs you field is optional — leave one empty and that check simply contributes nothing.",
         "data": {
           "entities": "Entities to watch",
           "max_events": "Events to keep",
           "battery_threshold": "Battery warning level (%)",
           "bin_sensor": "Next bin collection sensor",
           "tasks_sensor": "Overdue chores binary sensor",
-          "ignore_unavailable": "Never report these (offline or low battery)"
+          "ignore_unavailable": "Never report these (offline or low battery)",
+          "salt_sensors": "Water softener salt level sensors",
+          "salt_both_threshold": "Alert when every side is at or below (%)",
+          "salt_one_threshold": "Alert when any one side is at or below (%)"
         }
       }
     },
@@ -29,7 +32,10 @@
           "battery_threshold": "Battery warning level (%)",
           "bin_sensor": "Next bin collection sensor",
           "tasks_sensor": "Overdue chores binary sensor",
-          "ignore_unavailable": "Never report these (offline or low battery)"
+          "ignore_unavailable": "Never report these (offline or low battery)",
+          "salt_sensors": "Water softener salt level sensors",
+          "salt_both_threshold": "Alert when every side is at or below (%)",
+          "salt_one_threshold": "Alert when any one side is at or below (%)"
         }
       }
     }
