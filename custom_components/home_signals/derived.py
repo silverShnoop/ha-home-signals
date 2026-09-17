@@ -50,8 +50,13 @@ from .const import (
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
     CONF_IGNORE_UNAVAILABLE,
+    CONF_SALT_BOTH_THRESHOLD,
+    CONF_SALT_ONE_THRESHOLD,
+    CONF_SALT_SENSORS,
     CONF_TASKS_SENSOR,
     DEFAULT_BATTERY_THRESHOLD,
+    DEFAULT_SALT_BOTH_THRESHOLD,
+    DEFAULT_SALT_ONE_THRESHOLD,
     DOMAIN,
     SERVICE_DISMISS,
     SERVICE_SNOOZE,
@@ -103,6 +108,23 @@ def _battery_label(state: State) -> str:
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
+
+
+def _salt_side(state: State) -> str:
+    """Which cylinder a salt sensor is reading, for the row's detail line.
+
+    A heuristic on purpose. "My Water Softener Salt left side percentage" is
+    accurate and unreadable in a one-line row, and the only part worth
+    keeping is the side. When a name says neither left nor right — a
+    single-cylinder machine, or another language — the full name is used, so
+    this degrades to verbose rather than to wrong.
+    """
+    name = _name_of(state).lower()
+    if "left" in name:
+        return "Left"
+    if "right" in name:
+        return "Right"
+    return _name_of(state)
 
 
 def _dismiss(item_id: str) -> dict[str, Any]:
@@ -323,6 +345,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         candidates.extend(self._bins())
         candidates.extend(self._tasks())
         candidates.extend(self._batteries())
+        candidates.extend(self._salt())
         candidates.extend(self._offline())
 
         # A dismissal only clears the occurrence it was made against, so
@@ -390,6 +413,61 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "accent": ACCENT_WARN,
             "action_label": "Snooze",
             "action": _snooze("tasks_overdue"),
+        }]
+
+    def _salt(self) -> list[dict[str, Any]]:
+        """One row when the softener needs filling, under either of two rules.
+
+        A twin-cylinder softener alternates: one side works while the other
+        regenerates, so a single side running out is normal and survivable,
+        and both running down together is not. That is why there are two
+        thresholds rather than one. Every side at or below the first is the
+        real warning; any single side at or below the second is the earlier,
+        sharper one.
+
+        Always one row, never one per side. Filling the machine is a single
+        errand whichever cylinder prompted it, and two rows for one bag of
+        salt is the noise this sensor exists to avoid.
+        """
+        entity_ids = self._option(CONF_SALT_SENSORS, []) or []
+        if not entity_ids:
+            return []
+
+        readings: list[tuple[str, float]] = []
+        for entity_id in entity_ids:
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state in _NOT_A_READING:
+                continue
+            try:
+                readings.append((_salt_side(state), float(state.state)))
+            except (TypeError, ValueError):
+                continue
+
+        # No usable reading is not the same as a full tank. Say nothing
+        # rather than claim the softener is fine.
+        if not readings:
+            return []
+
+        both = float(self._option(CONF_SALT_BOTH_THRESHOLD, DEFAULT_SALT_BOTH_THRESHOLD))
+        one = float(self._option(CONF_SALT_ONE_THRESHOLD, DEFAULT_SALT_ONE_THRESHOLD))
+
+        levels = [level for _, level in readings]
+        all_low = all(level <= both for level in levels)
+        any_low = any(level <= one for level in levels)
+        if not (all_low or any_low):
+            return []
+
+        detail = ", ".join(f"{side} {level:.0f}%" for side, level in readings)
+        return [{
+            "id": "softener_salt",
+            "title": "Water softener needs salt",
+            "detail": detail,
+            "icon": "mdi:shaker-outline",
+            # Every side low is the trip to buy a bag; one side low can wait
+            # for the bag already in the garage.
+            "accent": ACCENT_ALERT if all_low else ACCENT_WARN,
+            "action_label": "Snooze",
+            "action": _snooze("softener_salt", hours=24),
         }]
 
     def _batteries(self) -> list[dict[str, Any]]:

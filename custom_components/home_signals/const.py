@@ -26,6 +26,17 @@ CONF_IGNORE_UNAVAILABLE = "ignore_unavailable"
 
 DEFAULT_BATTERY_THRESHOLD = 20
 
+# A twin-cylinder water softener runs one side while the other regenerates,
+# so the two readings mean different things together than apart. Both sides
+# low is a shopping trip; one side low is a refill you can do from the bag
+# already in the garage. Two thresholds, because one number cannot say both.
+CONF_SALT_SENSORS = "salt_sensors"
+CONF_SALT_BOTH_THRESHOLD = "salt_both_threshold"
+CONF_SALT_ONE_THRESHOLD = "salt_one_threshold"
+
+DEFAULT_SALT_BOTH_THRESHOLD = 40
+DEFAULT_SALT_ONE_THRESHOLD = 25
+
 # Accent roles, by meaning rather than colour. 1 alerts, 2 warnings,
 # 3 positive, 5 secondary series.
 ACCENT_ALERT = 1
