@@ -1,0 +1,6 @@
+ATTR_DEVICE_CLASS = "device_class"
+ATTR_FRIENDLY_NAME = "friendly_name"
+STATE_ON = "on"
+STATE_UNAVAILABLE = "unavailable"
+STATE_UNKNOWN = "unknown"
+class Platform: SENSOR = "sensor"
