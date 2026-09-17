@@ -13,7 +13,10 @@
           "ignore_unavailable": "Never report these (offline or low battery)",
           "salt_sensors": "Water softener salt level sensors",
           "salt_both_threshold": "Alert when every side is at or below (%)",
-          "salt_one_threshold": "Alert when any one side is at or below (%)"
+          "salt_one_threshold": "Alert when any one side is at or below (%)",
+          "security_locks": "Locks that must be locked (empty means all)",
+          "security_openings": "Door and window contacts that must be closed",
+          "security_grace_minutes": "Grace before amber turns red (minutes)"
         }
       }
     },
@@ -35,7 +38,10 @@
           "ignore_unavailable": "Never report these (offline or low battery)",
           "salt_sensors": "Water softener salt level sensors",
           "salt_both_threshold": "Alert when every side is at or below (%)",
-          "salt_one_threshold": "Alert when any one side is at or below (%)"
+          "salt_one_threshold": "Alert when any one side is at or below (%)",
+          "security_locks": "Locks that must be locked (empty means all)",
+          "security_openings": "Door and window contacts that must be closed",
+          "security_grace_minutes": "Grace before amber turns red (minutes)"
         }
       }
     }
