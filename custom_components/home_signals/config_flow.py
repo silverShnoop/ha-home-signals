@@ -21,6 +21,9 @@ from .const import (
     CONF_SALT_BOTH_THRESHOLD,
     CONF_SALT_ONE_THRESHOLD,
     CONF_SALT_SENSORS,
+    CONF_SECURITY_GRACE_MINUTES,
+    CONF_SECURITY_LOCKS,
+    CONF_SECURITY_OPENINGS,
     CONF_ENTITIES,
     CONF_IGNORE_UNAVAILABLE,
     CONF_MAX_EVENTS,
@@ -28,6 +31,7 @@ from .const import (
     DEFAULT_BATTERY_THRESHOLD,
     DEFAULT_SALT_BOTH_THRESHOLD,
     DEFAULT_SALT_ONE_THRESHOLD,
+    DEFAULT_SECURITY_GRACE_MINUTES,
     DEFAULT_MAX_EVENTS,
     DOMAIN,
 )
@@ -101,6 +105,34 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=100, step=1, mode=selector.NumberSelectorMode.SLIDER
+                )
+            ),
+            # Security. Leaving the locks empty means every lock in the
+            # house; leaving the openings empty means none, because a
+            # binary sensor is as likely to be a fridge as a front door.
+            vol.Optional(
+                CONF_SECURITY_LOCKS, default=defaults.get(CONF_SECURITY_LOCKS, [])
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="lock", multiple=True)
+            ),
+            vol.Optional(
+                CONF_SECURITY_OPENINGS,
+                default=defaults.get(CONF_SECURITY_OPENINGS, []),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="binary_sensor",
+                    device_class=["door", "garage_door", "opening", "window"],
+                    multiple=True,
+                )
+            ),
+            vol.Optional(
+                CONF_SECURITY_GRACE_MINUTES,
+                default=defaults.get(
+                    CONF_SECURITY_GRACE_MINUTES, DEFAULT_SECURITY_GRACE_MINUTES
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1, max=60, step=1, mode=selector.NumberSelectorMode.SLIDER
                 )
             ),
             vol.Optional(

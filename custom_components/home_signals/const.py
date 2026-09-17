@@ -37,6 +37,22 @@ CONF_SALT_ONE_THRESHOLD = "salt_one_threshold"
 DEFAULT_SALT_BOTH_THRESHOLD = 40
 DEFAULT_SALT_ONE_THRESHOLD = 25
 
+# --- Security --------------------------------------------------------
+#
+# A traffic light rather than a list, because the panel is read from across
+# the room and "is the house shut?" is one question. Amber is the grace a
+# real house needs — somebody is carrying the shopping in — and red is the
+# same fact once that excuse has expired.
+CONF_SECURITY_LOCKS = "security_locks"
+CONF_SECURITY_OPENINGS = "security_openings"
+CONF_SECURITY_GRACE_MINUTES = "security_grace_minutes"
+
+DEFAULT_SECURITY_GRACE_MINUTES = 5
+
+SECURITY_GREEN = "green"
+SECURITY_AMBER = "amber"
+SECURITY_RED = "red"
+
 # Accent roles, by meaning rather than colour. 1 alerts, 2 warnings,
 # 3 positive, 5 secondary series.
 ACCENT_ALERT = 1

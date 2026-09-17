@@ -118,11 +118,51 @@ and `automation` domains, are excluded from the offline count. They go
 unavailable constantly and nobody acts on it. Anything else noisy can be
 listed under "Never report these as offline".
 
+## `sensor.security_status`
+
+Is the house shut, as one of three colours: `green`, `amber` or `red`. It
+exists so a tab can be a colour rather than a sentence — the panel is read
+from across the room, and "is the house shut?" is one question.
+
+- **State** — `green` (every watched lock locked and every watched contact
+  closed), `amber` (something is open or unlocked, and has been for less
+  than the grace period), `red` (the same, for longer).
+- **`detail`** — one line for a tab summary: "All secure", "Front door",
+  "2 unlocked, 1 open".
+- **`since`** — when the house last stopped being shut, or `null`.
+- **`items`** — rows for a card, each carrying its own `since` so the card
+  can render a live "unlocked for 12m" without this sensor updating.
+- **`unlocked`, `open`, `not_reporting`** — the raw lists, plus counts.
+
+Amber is deliberate rather than a rounding error. A door is open because
+somebody is walking through it; going straight to red would make red mean
+"somebody came home", and a colour that cries wolf is a colour nobody looks
+at. Red is that same door still open once nobody could plausibly still be
+carrying anything in.
+
+The flip from amber to red is scheduled for the exact moment it is earned,
+not left to the five-minute scan. A five-minute grace enforced by a
+five-minute tick could mean waiting ten.
+
+A lock that cannot be read is neither proof of a problem nor proof of
+safety, so it holds the light at amber and never drives it red. It appears
+under `not_reporting`.
+
+**Locks** default to every lock in the house, so a new one is covered
+without anyone remembering to come back to the options. **Door and window
+contacts** are opt-in only: a house's binary sensors include the fridge, the
+boiler and the washing machine door, and a light that goes red because
+somebody is making a sandwich teaches people to ignore it.
+
+This does not replace the "Front door unlocked" alert card, which is the
+thing that asks somebody to do something about it. Status is ambient;
+actions are actions.
+
 ## Setup
 
 Install through HACS, restart once so Home Assistant picks up the new
 component, then add **Home Signals** from Settings → Devices & Services and
-choose the entities to watch and point Needs you at your bin and chore sensors. Everything is editable afterwards via Configure.
+choose the entities to watch, point Needs you at your bin and chore sensors, and pick the locks and door contacts the security light should hold to account. Everything is editable afterwards via Configure.
 
 ### A note on choosing motion sensors
 
