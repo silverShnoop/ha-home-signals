@@ -45,8 +45,30 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    ATTR_APPLIANCE,
     ATTR_HOURS,
     ATTR_ITEM_ID,
+    ATTR_LOAD_ID,
+    CONF_DRYER_DOOR,
+    CONF_DRYER_ENERGY,
+    CONF_DRYER_PLUG,
+    CONF_DRYER_POWER,
+    CONF_IDLE_MINUTES,
+    CONF_IDLE_WATTS,
+    CONF_MIN_KWH,
+    CONF_MIN_MINUTES,
+    CONF_START_WATTS,
+    CONF_WASHER_DOOR,
+    CONF_WASHER_ENERGY,
+    CONF_WASHER_LEAK,
+    CONF_WASHER_PLUG,
+    CONF_WASHER_POWER,
+    DEFAULT_IDLE_MINUTES,
+    DEFAULT_IDLE_WATTS,
+    DEFAULT_MIN_KWH,
+    DEFAULT_MIN_MINUTES,
+    DEFAULT_START_WATTS,
+    SERVICE_LAUNDRY_HUNG,
     CONF_ENTITIES,
     CONF_MAX_EVENTS,
     DEFAULT_MAX_EVENTS,
@@ -59,6 +81,11 @@ from .const import (
     SERVICE_DISMISS,
     SERVICE_RESET,
     SERVICE_SNOOZE,
+)
+from .appliance import (
+    AppliancePressSensor,
+    ApplianceCycleSensor,
+    CleaningStatusSensor,
 )
 from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
 
@@ -80,6 +107,51 @@ _DOOR_CLASSES = {
 }
 
 
+def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
+    """The appliances that have been given a power sensor, and only those.
+
+    Two slots rather than an open-ended list because the config flow has no
+    way to draw a repeating record, and because two is the real number. The
+    code below never counts them, so a third is a schema entry rather than a
+    rewrite.
+    """
+
+    def option(key: str, default: Any = None) -> Any:
+        return entry.options.get(key, entry.data.get(key, default))
+
+    shared = {
+        "start_watts": option(CONF_START_WATTS, DEFAULT_START_WATTS),
+        "idle_watts": option(CONF_IDLE_WATTS, DEFAULT_IDLE_WATTS),
+        "idle_minutes": option(CONF_IDLE_MINUTES, DEFAULT_IDLE_MINUTES),
+        "min_minutes": option(CONF_MIN_MINUTES, DEFAULT_MIN_MINUTES),
+        "min_kwh": option(CONF_MIN_KWH, DEFAULT_MIN_KWH),
+    }
+
+    candidates = [
+        {
+            "slug": "washing_machine",
+            "name": "Washing machine",
+            "power_sensor": option(CONF_WASHER_POWER),
+            "plug": option(CONF_WASHER_PLUG),
+            "door": option(CONF_WASHER_DOOR),
+            "leak": option(CONF_WASHER_LEAK),
+            "energy_sensor": option(CONF_WASHER_ENERGY),
+            **shared,
+        },
+        {
+            "slug": "tumble_dryer",
+            "name": "Tumble dryer",
+            "power_sensor": option(CONF_DRYER_POWER),
+            "plug": option(CONF_DRYER_PLUG),
+            "door": option(CONF_DRYER_DOOR),
+            "leak": None,
+            "energy_sensor": option(CONF_DRYER_ENERGY),
+            **shared,
+        },
+    ]
+    return [c for c in candidates if c["power_sensor"]]
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -87,17 +159,34 @@ async def async_setup_entry(
 ) -> None:
     """Set up the derived signal sensors."""
     needs_you = NeedsYouSensor(entry)
-    async_add_entities([
+    entities: list[SensorEntity] = [
         ActivityFeedSensor(entry),
         needs_you,
         SystemHealthSensor(entry),
         SecurityStatusSensor(entry),
-    ])
-    _async_register_services(hass, needs_you)
+    ]
+
+    specs = _appliance_specs(entry)
+    cycles = [ApplianceCycleSensor(entry, spec) for spec in specs]
+    presses = [AppliancePressSensor(entry, spec) for spec in specs]
+    if cycles:
+        for cycle in cycles:
+            cycle.add_listener(needs_you)
+        entities.extend(cycles)
+        entities.extend(presses)
+        entities.append(CleaningStatusSensor(entry, cycles))
+
+    async_add_entities(entities)
+    _async_register_services(hass, needs_you, cycles, presses)
 
 
 @callback
-def _async_register_services(hass: HomeAssistant, needs_you: NeedsYouSensor) -> None:
+def _async_register_services(
+    hass: HomeAssistant,
+    needs_you: NeedsYouSensor,
+    cycles: list[ApplianceCycleSensor] | None = None,
+    presses: list[AppliancePressSensor] | None = None,
+) -> None:
     """Dismiss and snooze, so a row can be cleared from anywhere.
 
     These are actions rather than card-local state on purpose: the panel, a
@@ -129,6 +218,44 @@ def _async_register_services(hass: HomeAssistant, needs_you: NeedsYouSensor) -> 
         }),
     )
     hass.services.async_register(DOMAIN, SERVICE_RESET, _reset, schema=vol.Schema({}))
+
+    if not cycles:
+        return
+
+    @callback
+    def _laundry_hung(call: ServiceCall) -> None:
+        """One load is up. Called by the wall button and by the Needs you row.
+
+        The press is recorded whether or not it cleared anything. A button
+        that does nothing when there is nothing to do is correct, but it
+        should still be visible in the feed as somebody having pressed it —
+        otherwise a flat battery looks exactly like an empty list.
+        """
+        wanted = call.data.get(ATTR_APPLIANCE)
+        load_id = call.data.get(ATTR_LOAD_ID)
+        targets = [c for c in cycles if wanted in (None, c.slug)]
+        if load_id is not None:
+            # An id names exactly one load on exactly one machine, so the
+            # appliance argument is redundant and the id wins.
+            targets = cycles
+
+        for cycle in targets:
+            if cycle.hung(load_id):
+                break
+
+        for press in presses or []:
+            if wanted in (None, press.slug):
+                press.record()
+
+        needs_you.refresh()
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_LAUNDRY_HUNG, _laundry_hung,
+        schema=vol.Schema({
+            vol.Optional(ATTR_LOAD_ID): cv.string,
+            vol.Optional(ATTR_APPLIANCE): cv.string,
+        }),
+    )
 
 
 class ActivityFeedSensor(SensorEntity, RestoreEntity):

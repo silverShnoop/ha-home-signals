@@ -118,6 +118,94 @@ and `automation` domains, are excluded from the offline count. They go
 unavailable constantly and nobody acts on it. Anything else noisy can be
 listed under "Never report these as offline".
 
+## `sensor.washing_machine_cycle` (and the tumble dryer)
+
+Whether an appliance is running, worked out from nothing but the watts its
+plug reports.
+
+- **State** — `off` (no power at the plug), `idle`, or `running`.
+- **`pending`** — the loads that have finished and not been hung up, one
+  entry each, keyed to the cycle that produced them.
+- **`drum_full`** — whether there is still washing inside.
+- **`finished` / `finished_today`** — completed cycles with their duration
+  and energy, for a card to list.
+- **`longest_lull_seconds`, `peak_watts`** — what the last cycle actually
+  looked like, for tuning the thresholds against a real wash.
+
+### Three facts, not one
+
+They are tracked separately because three different things answer them:
+
+| Fact | Answered by | Cleared by |
+| --- | --- | --- |
+| Is it running | the plug's power sensor | the draw dropping and staying down |
+| Is there washing inside | the door contact | opening the door |
+| Is there washing to hang | a person | the wall button, or the Needs you row |
+
+Emptying the drum never clears the hanging list, and hanging never empties
+the drum. Conflating them is the obvious simplification and it is wrong: you
+carry the washing to the airer in one trip and hang it in another.
+
+### Enter fast, leave slow
+
+A cycle is not a continuous draw. A machine heats at 2kW, agitates at 200W,
+rests at nothing, agitates, rests, soaks for minutes, then spins. Read
+instantaneously, one wash looks like a dozen short cycles.
+
+So the two thresholds are deliberately asymmetric:
+
+- **Running** the instant the draw passes `start_watts` (8W). Nothing else
+  on that plug draws 8W, and entering is cheap to get wrong.
+- **Idle** only once the draw has stayed under `idle_watts` (4W) for
+  `idle_minutes` **unbroken**. Leaving is what creates a load of laundry, so
+  it is the one that has to be sure.
+
+The gap between the two thresholds is the hysteresis: in that band, whatever
+state it is already in wins, so a machine hovering around one number cannot
+chatter.
+
+A completed cycle only counts as laundry if it ran for `min_minutes` and used
+`min_kwh` — a drain-only run, or somebody nudging the dial, is not a wash. And
+a cycle interrupted by the plug going off is **abandoned, not finished**:
+otherwise the leak automation cutting power would leave you a reminder to hang
+up a load sitting in six inches of water.
+
+### The idle floor is a guess, once
+
+Five minutes is a starting value, not a measurement. Every cycle records its
+own `longest_lull_seconds`, so after one real wash the number the floor has
+to clear is something you read off the sensor rather than something somebody
+picked. It is an option, so tuning it is a settings change.
+
+### A wet leak sensor does not mean the power is off
+
+Two independent facts, reported independently. A leak pad stays damp long
+after the floor has been dealt with, and the cycle still has to be finished —
+so `leak` and `powered` are never inferred from each other, and nothing here
+stops power being restored while the sensor is still wet.
+
+## `sensor.cleaning_status`
+
+The same three colours as `security_status`, for the same reason: a tab on a
+wall panel can be a colour before anybody reads a word of it.
+
+- **red** — water on the floor.
+- **amber** — a job: washing to hang, or a machine left without power.
+- **green** — nothing waiting.
+
+## Laundry in `Needs you`
+
+Every action an appliance can ask of you is a Needs you row, and only a Needs
+you row. The card states facts and offers one optional control; it never
+carries a to-do. Two loads are two rows, so hanging one leaves the other.
+
+`home_signals.laundry_hung` clears one load — with a `load_id` for a specific
+one, or without for the oldest, which is what the wall button sends. It is
+deliberately **not** a dismissal: a dismissal is card-side memory that hides
+a row while the thing behind it carries on being true, and the card would go
+on saying "2 to hang" next to a list that had forgotten them. This clears the
+load in the one place that counts them.
+
 ## `sensor.security_status`
 
 Is the house shut, as one of three colours: `green`, `amber` or `red`. It
