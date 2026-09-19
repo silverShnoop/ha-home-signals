@@ -101,6 +101,14 @@ SERVICE_LAUNDRY_HUNG = "laundry_hung"
 ATTR_LOAD_ID = "load_id"
 ATTR_APPLIANCE = "appliance"
 
+# What a machine is doing right now, read off the draw. The bands come
+# from a real wash measured end to end on 19 Sep 2026 -- see PHASE_BANDS
+# in appliance.py for the trace they were taken from.
+PHASE_FILL = "fill"
+PHASE_HEAT = "heat"
+PHASE_SPIN = "spin"
+PHASE_TUMBLE = "tumble"
+
 # Who said the washing was hung. The activity feed answers "where are
 # people", and only one of these is evidence of a body in the room: the
 # button is screwed to the wall beside the machine, while a screen could
