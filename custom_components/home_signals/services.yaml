@@ -39,3 +39,40 @@ reset:
   description: >-
     Bring every dismissed and snoozed row back. The escape hatch for when a
     rule misfires and something has been cleared that should not have been.
+
+laundry_hung:
+  name: Laundry hung
+  description: >-
+    One load of washing is up. Clears the load at source rather than hiding
+    a row, so the wall button, the Needs you list and the appliance card
+    cannot disagree about how many are waiting.
+  fields:
+    load_id:
+      name: Load
+      description: >-
+        The specific load, from the appliance's pending attribute. Omit it
+        to clear the oldest, which is what the wall button sends.
+      example: washing_machine_2026-09-19T20-26
+      selector:
+        text:
+    appliance:
+      name: Appliance
+      description: Which machine, by slug. Omit for all of them.
+      example: washing_machine
+      selector:
+        text:
+    source:
+      name: Source
+      description: >-
+        Where the press came from. Only the wall button is recorded in the
+        activity feed, because the feed answers "where are people in the
+        house" and the button is the only caller whose location is known -
+        a screen may be the panel in the kitchen or a phone anywhere.
+      default: ui
+      selector:
+        select:
+          options:
+            - label: Wall button
+              value: button
+            - label: A screen
+              value: ui

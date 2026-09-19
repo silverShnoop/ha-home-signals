@@ -101,6 +101,14 @@ SERVICE_LAUNDRY_HUNG = "laundry_hung"
 ATTR_LOAD_ID = "load_id"
 ATTR_APPLIANCE = "appliance"
 
+# Who said the washing was hung. The activity feed answers "where are
+# people", and only one of these is evidence of a body in the room: the
+# button is screwed to the wall beside the machine, while a screen could
+# be the panel in the kitchen or a phone on a train.
+ATTR_SOURCE = "source"
+SOURCE_BUTTON = "button"
+SOURCE_UI = "ui"
+
 # Accent roles, by meaning rather than colour. 1 alerts, 2 warnings,
 # 3 positive, 5 secondary series.
 ACCENT_ALERT = 1
