@@ -49,6 +49,7 @@ from .const import (
     ATTR_HOURS,
     ATTR_ITEM_ID,
     ATTR_LOAD_ID,
+    ATTR_SOURCE,
     ACCENT_INFO,
     ACCENT_WARN,
     CONF_BATTERY_THRESHOLD,
@@ -71,6 +72,7 @@ from .const import (
     SECURITY_RED,
     SERVICE_DISMISS,
     SERVICE_LAUNDRY_HUNG,
+    SOURCE_UI,
     SERVICE_SNOOZE,
 )
 
@@ -153,9 +155,14 @@ def _hung(load_id: str) -> dict[str, Any]:
     you list that had forgotten about them. This clears the load at source,
     in the one place that counts them, so the wall button, this row and the
     card cannot disagree.
+
+    `source` is stated rather than left to the default. This row is pressed
+    on a screen, and a screen is not a place: the panel is in the kitchen
+    but a phone is wherever its owner is. Saying so here keeps the activity
+    feed's answer to "where are people" honest.
     """
     return {"service": f"{DOMAIN}.{SERVICE_LAUNDRY_HUNG}",
-            "data": {ATTR_LOAD_ID: load_id}}
+            "data": {ATTR_LOAD_ID: load_id, ATTR_SOURCE: SOURCE_UI}}
 
 
 def _snooze(item_id: str, hours: int = 8) -> dict[str, Any]:
