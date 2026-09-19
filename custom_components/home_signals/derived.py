@@ -919,12 +919,24 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
         self._unlocked, self._open, self._unreadable = unlocked, opened, unreadable
 
         insecure = unlocked + opened
-        if not insecure:
+        if not insecure and not unreadable:
+            # Everything positively reported shut. This is the only branch
+            # allowed to forget when the house stopped being secure.
             self._since = None
-            # A lock that cannot be read might be either. That is not proof of
-            # a problem, so it never goes red — but it is not proof of safety
-            # either, so it never shows green.
-            self._status = SECURITY_AMBER if unreadable else SECURITY_GREEN
+            self._status = SECURITY_GREEN
+        elif not insecure:
+            # Unreadable only. A lock that cannot be read might be either:
+            # not proof of a problem, so it never goes red — and not proof of
+            # safety, so it never shows green.
+            #
+            # `_since` is deliberately NOT cleared here. The Nuki drops to
+            # `unavailable` several times a day, and on the way back its
+            # `last_changed` is the blip rather than the moment the door was
+            # opened. Clearing the clock restarted the grace period every
+            # time, so a door left open never went red as long as the lock
+            # blipped more often than every five minutes. Holding it treats
+            # "cannot tell" as unknown rather than as secure.
+            self._status = SECURITY_AMBER
         else:
             earliest = min(
                 dt_util.parse_datetime(row["since"]) or now for row in insecure

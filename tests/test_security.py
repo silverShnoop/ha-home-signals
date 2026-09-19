@@ -334,3 +334,43 @@ async def test_an_unlisted_contact_sensor_is_ignored(
     sensor._recompute()
 
     assert sensor.native_value == SECURITY_GREEN
+
+
+# --- the blip ---------------------------------------------------------
+
+
+async def test_a_blip_while_unlocked_does_not_restart_the_grace(
+    hass: HomeAssistant, clock
+) -> None:
+    """The Nuki drops to `unavailable` several times a day.
+
+    While it is unreadable there is nothing in `insecure`, so `_since` is
+    cleared -- and when the lock comes back its `last_changed` is the blip,
+    not the moment the door was opened. The grace period restarts.
+
+    A door left open could therefore never go red, as long as the lock
+    blips more often than every five minutes.
+    """
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_AMBER
+
+    clock.tick(timedelta(minutes=3))
+    set_lock(hass, "unavailable")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    clock.tick(timedelta(seconds=10))
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    clock.tick(timedelta(minutes=3))
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_RED, (
+        "the door has been unlocked for over six minutes and is still amber "
+        "-- a blip reset the grace"
+    )
