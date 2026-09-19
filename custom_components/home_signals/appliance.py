@@ -63,6 +63,10 @@ from .const import (
     CLEANING_GREEN,
     CLEANING_RED,
     DOMAIN,
+    PHASE_FILL,
+    PHASE_HEAT,
+    PHASE_SPIN,
+    PHASE_TUMBLE,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -142,6 +146,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._longest_lull = 0.0
         self._peak_watts = 0.0
         self._cancel_quiet: CALLBACK_TYPE | None = None
+        # What the machine has been doing this cycle, oldest first. One
+        # entry per run of a phase, so a wash that heats twice has two
+        # heat entries rather than one merged one -- they were two
+        # different things the machine did.
+        self._phases: list[dict[str, Any]] = []
+        self._phase_pending: str | None = None
+        self._phase_pending_since: datetime | None = None
 
         self._drum_full = False
         self._pending: list[dict[str, Any]] = []
@@ -218,6 +229,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         if isinstance(history, list):
             self._history = [h for h in history if isinstance(h, dict)][:MAX_HISTORY]
         self._drum_full = bool(attrs.get("drum_full"))
+        phases = attrs.get("phases")
+        if isinstance(phases, list):
+            self._phases = [p for p in phases if isinstance(p, dict) and p.get("kind")]
         # A cycle in flight across a restart is NOT resumed. We cannot know
         # what the machine did while we were not looking, and inventing a
         # start time would put a fictional duration on a real load.
@@ -281,10 +295,21 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
 
         self._peak_watts = max(self._peak_watts, watts)
 
+        if watts < start_watts:
+            # Whatever was waiting to become a phase has to earn it again.
+            # A soak can sit under the floor for ten minutes; without this
+            # the reading either side of it would look like one unbroken
+            # run and commit a phase dated to before the silence.
+            self._phase_pending = None
+            self._phase_pending_since = None
+
         if watts >= start_watts:
             self._note_lull_ended(now)
             if self._state != APPLIANCE_RUNNING:
                 self._begin(now)
+            # After _begin, so the opening reading lands in a fresh
+            # timeline rather than the end of the last cycle's.
+            self._note_phase(now, watts)
             return
 
         if watts >= idle_watts:
@@ -301,6 +326,113 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._quiet_since = now
             self._arm_quiet_timer(now)
 
+    # --- what it is doing, from the draw ------------------------------
+
+    # PHASE_BANDS, and the reasoning behind them.
+    #
+    # Measured off one complete wash, 20:37 to 21:26 on 19 Sep 2026, at
+    # the plug's own 5-second reporting interval:
+    #
+    #     fill    20:37:04-20:38:46    6-36 W
+    #     heat    20:38:51-20:42:41    2214-2263 W
+    #     tumble  20:42:46-20:47:34    12-57 W
+    #     heat    20:47:40-20:48:20    2221-2245 W
+    #     tumble  20:48:25-21:00:18    12-84 W
+    #     spin    21:00:23-21:02:03    ramp to 302 W
+    #     tumble  21:02-21:09          12-90 W
+    #     spin    21:09:15-21:11:02    ramp to 319 W
+    #     tumble  21:11-21:15          12-74 W
+    #     spin    21:15:46-21:20:17    ramp to 390 W, held ~1 min
+    #     quiet   21:21:27 onward      5 W, then 0
+    #
+    # What the trace settles, and what it does not.
+    #
+    # It settles the SHAPE. Heat is unmistakable at 2.2 kW, an order of
+    # magnitude clear of everything else. Spin is a sustained ramp into
+    # the hundreds, while the tumble band throws single readings of
+    # 107-120 W -- which is why a run also has to last
+    # MIN_PHASE_SECONDS, and why the duration guard, not the threshold,
+    # is what actually catches those readings.
+    #
+    # It does NOT settle the two numbers. Any spin floor between 120 and
+    # 203, and any heat floor between 390 and 2.2 kW, replays this cycle
+    # identically. 150 and 1500 are margins chosen above the highest
+    # thing measured below them, and the tests that pin them say so
+    # rather than pretending the trace picked them.
+    #
+    # Fill is the one the power cannot tell at all. It sits at 6-36 W,
+    # inside tumble's own 12-90 W band, and the only thing separating
+    # them in that trace is position: the fill came first. So fill is
+    # defined positionally -- the opening run of a cycle -- and that is a
+    # weaker claim than the other three. A cold wash that never heats
+    # would run fill and tumble together and be labelled fill
+    # throughout. Worth revisiting with a second machine or a flow
+    # sensor; not worth guessing at from one cycle.
+    PHASE_BANDS = ((1500.0, PHASE_HEAT), (150.0, PHASE_SPIN))
+    MIN_PHASE_SECONDS = 20.0
+
+    def _classify(self, watts: float) -> str:
+        """Which band this reading falls in. Tumble is the fallthrough.
+
+        There is deliberately no floor under tumble. This is only ever
+        asked about a reading the plug has already put at or above
+        `start_watts` -- the machine is doing SOMETHING, and the quietest
+        something it does is tumble. A second floor here would be a copy
+        of that one, free to drift away from it.
+        """
+        for floor, kind in self.PHASE_BANDS:
+            if watts >= floor:
+                return kind
+        return PHASE_TUMBLE
+
+    def _note_phase(self, now: datetime, watts: float) -> None:
+        """Fold this reading into the phase timeline.
+
+        A kind has to be seen twice AND hold for MIN_PHASE_SECONDS
+        before it is committed, so the single 107-120 W readings
+        scattered through a tumble never become a spin. Until then it is
+        pending: real enough to track, not yet real enough to show, and
+        dropped outright if the machine goes quiet underneath it.
+        """
+        kind = self._classify(watts)
+
+        # The opening run of a cycle is the fill, and it lasts until the
+        # machine does something ELSE -- not until the draw wobbles inside
+        # its own band. Anchoring it to "no phases yet" ended the fill at
+        # the first commit, 30 seconds in, and filed the rest of the same
+        # unbroken low-power run as tumble. See PHASE_BANDS.
+        opening = not self._phases or (
+            len(self._phases) == 1 and self._phases[0]["kind"] == PHASE_FILL
+        )
+        if kind == PHASE_TUMBLE and opening:
+            kind = PHASE_FILL
+
+        current = self._phases[-1]["kind"] if self._phases else None
+        if kind == current:
+            self._phases[-1]["seconds"] = round(
+                (now - dt_util.parse_datetime(self._phases[-1]["started_at"])
+                 ).total_seconds()
+            )
+            self._phase_pending = None
+            self._phase_pending_since = None
+            return
+
+        if kind != self._phase_pending:
+            self._phase_pending = kind
+            self._phase_pending_since = now
+            return
+
+        held = (now - self._phase_pending_since).total_seconds()
+        if held < self.MIN_PHASE_SECONDS:
+            return
+        self._phases.append({
+            "kind": kind,
+            "started_at": self._phase_pending_since.isoformat(),
+            "seconds": round(held),
+        })
+        self._phase_pending = None
+        self._phase_pending_since = None
+
     def _begin(self, now: datetime) -> None:
         self._state = APPLIANCE_RUNNING
         self._started_at = now
@@ -308,6 +440,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._longest_lull = 0.0
         self._peak_watts = 0.0
         self._quiet_since = None
+        self._phases = []
+        self._phase_pending = None
+        self._phase_pending_since = None
         self._stop_quiet_timer()
 
     def _note_lull_ended(self, now: datetime) -> None:
@@ -464,6 +599,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "finished": list(self._history),
             "finished_today": finished_today,
             "last_finished_at": self._history[0]["finished_at"] if self._history else None,
+            # What it has done this cycle, and what it is doing now. Kept
+            # after the cycle ends so the card can still show it while the
+            # washing is sitting in the drum.
+            "phases": list(self._phases),
+            "phase": self._phases[-1]["kind"] if self._phases else None,
             # Diagnostics for tuning the idle floor against a real wash
             # rather than against a guess.
             "peak_watts": round(self._peak_watts) if self._state == APPLIANCE_RUNNING else None,
