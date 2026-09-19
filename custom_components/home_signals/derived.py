@@ -822,6 +822,9 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
         self._detail = "All secure"
         # When the house last stopped being shut. None while it is shut.
         self._since: datetime | None = None
+        # Per entity, when IT stopped being shut. Held across a blip for
+        # the same reason `_since` is; see `_since_for`.
+        self._row_since: dict[str, datetime] = {}
         self._unlocked: list[dict[str, Any]] = []
         self._open: list[dict[str, Any]] = []
         self._unreadable: list[dict[str, Any]] = []
@@ -840,10 +843,24 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
 
         if (last := await self.async_get_last_state()) is None:
             return
+        # The rows as well as the card. Restoring only the card's clock
+        # left every row saying "just now" after a restart while the card
+        # said red, and a row that contradicts its own card is worse than
+        # a row that is merely stale. Only the rows that were actually
+        # insecure: an unreadable row's stamp is when it went unreadable,
+        # which is not the same claim.
+        for key in ("unlocked", "open"):
+            for row in last.attributes.get(key) or []:
+                if (at := dt_util.parse_datetime(row.get("since") or "")) and row.get(
+                    "entity_id"
+                ):
+                    self._row_since[row["entity_id"]] = at
+
         if (stamp := last.attributes.get("since")) and (
             parsed := dt_util.parse_datetime(stamp)
         ):
             self._since = parsed
+        if self._since is not None or self._row_since:
             self._recompute()
 
     def _grace(self) -> timedelta:
@@ -880,13 +897,39 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
     def _watched(self) -> list[str]:
         return self._locks() + self._openings()
 
-    def _row(self, state: State, value: str, icon: str) -> dict[str, Any]:
+    def _since_for(self, state: State, insecure: bool) -> datetime:
+        """When this entity stopped being shut, held across a blip.
+
+        Its own `last_changed` is the honest answer exactly once. A Nuki
+        that drops to `unavailable` and comes back carries the blip as its
+        `last_changed`, so a door open since two o'clock reports itself
+        open for ten seconds. The card already refuses to believe that;
+        the row used to believe it, and said "10s ago" in red.
+
+        An entity that cannot be read keeps whatever it was remembered as,
+        because being unreadable is the blip. Only a positive report of
+        shut forgets.
+        """
+        if insecure:
+            return self._row_since.setdefault(state.entity_id, state.last_changed)
+        # Unreadable. Its stamp is when it went unreadable, which is a
+        # different claim from when it stopped being shut -- and the
+        # memory of the latter stays put.
+        return state.last_changed
+
+    def _shut(self, entity_id: str) -> None:
+        """A positive report of shut. The only thing that forgets."""
+        self._row_since.pop(entity_id, None)
+
+    def _row(
+        self, state: State, value: str, icon: str, *, insecure: bool = True
+    ) -> dict[str, Any]:
         return {
             "entity_id": state.entity_id,
             "name": _name_of(state),
             "area": _area_of(self.hass, state.entity_id),
             "value": value,
-            "since": state.last_changed.isoformat(),
+            "since": self._since_for(state, insecure).isoformat(),
             "icon": icon,
         }
 
@@ -900,21 +943,31 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
             state = self.hass.states.get(entity_id)
             if state is None or state.state in _NOT_A_READING:
                 if state is not None:
-                    unreadable.append(self._row(state, "Unknown", "mdi:lock-question"))
+                    unreadable.append(
+                        self._row(
+                            state, "Unknown", "mdi:lock-question", insecure=False
+                        )
+                    )
                 continue
             if state.state != "locked":
                 unlocked.append(
                     self._row(state, "Unlocked", "mdi:lock-open-variant")
                 )
+            else:
+                self._shut(entity_id)
 
         for entity_id in self._openings():
             state = self.hass.states.get(entity_id)
             if state is None or state.state in _NOT_A_READING:
                 if state is not None:
-                    unreadable.append(self._row(state, "Unknown", "mdi:door-closed"))
+                    unreadable.append(
+                        self._row(state, "Unknown", "mdi:door-closed", insecure=False)
+                    )
                 continue
             if state.state == STATE_ON:
                 opened.append(self._row(state, "Open", "mdi:door-open"))
+            else:
+                self._shut(entity_id)
 
         self._unlocked, self._open, self._unreadable = unlocked, opened, unreadable
 
@@ -924,23 +977,19 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
             # allowed to forget when the house stopped being secure.
             self._since = None
             self._status = SECURITY_GREEN
-        elif not insecure:
-            # Unreadable only. A lock that cannot be read might be either:
-            # not proof of a problem, so it never goes red — and not proof of
-            # safety, so it never shows green.
-            #
-            # `_since` is deliberately NOT cleared here. The Nuki drops to
-            # `unavailable` several times a day, and on the way back its
-            # `last_changed` is the blip rather than the moment the door was
-            # opened. Clearing the clock restarted the grace period every
-            # time, so a door left open never went red as long as the lock
-            # blipped more often than every five minutes. Holding it treats
-            # "cannot tell" as unknown rather than as secure.
+        elif not insecure and not self._row_since:
+            # Unreadable, and nothing was insecure the last time we could
+            # read it. Not proof of a problem, so it never goes red — and
+            # not proof of safety, so it never shows green.
             self._status = SECURITY_AMBER
         else:
-            earliest = min(
-                dt_util.parse_datetime(row["since"]) or now for row in insecure
-            )
+            # Off `_row_since`, not off `last_changed`. The Nuki drops to
+            # `unavailable` several times a day, and on the way back its
+            # `last_changed` is the blip rather than the moment the door
+            # was opened, so reading it here restarted the grace period
+            # every time: a door left open never went red as long as the
+            # lock blipped more often than every five minutes.
+            earliest = min(self._row_since.values())
             self._since = earliest if self._since is None else min(self._since, earliest)
             self._status = (
                 SECURITY_RED if now - self._since >= self._grace() else SECURITY_AMBER
