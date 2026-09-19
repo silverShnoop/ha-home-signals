@@ -133,8 +133,11 @@ plug reports.
 
 - **State** — `off` (no power at the plug), `idle`, or `running`.
 - **`pending`** — the loads that have finished and not been hung up, one
-  entry each, keyed to the cycle that produced them.
+  entry each, keyed to the cycle that produced them. Always empty on a
+  dryer, which has no such state.
 - **`drum_full`** — whether there is still washing inside.
+- **`queues_loads`** — whether a finished load leaves a job behind after
+  the drum is emptied. True for the washer, false for the dryer.
 - **`finished` / `finished_today`** — completed cycles with their duration
   and energy, for a card to list.
 - **`longest_lull_seconds`, `peak_watts`** — what the last cycle actually
@@ -153,6 +156,21 @@ They are tracked separately because three different things answer them:
 Emptying the drum never clears the hanging list, and hanging never empties
 the drum. Conflating them is the obvious simplification and it is wrong: you
 carry the washing to the airer in one trip and hang it in another.
+
+### The dryer is the same machine, one state shorter
+
+Both machines run a cycle, both end it with a full drum, and on both the
+door empties it. The washer has a **second** state after that one: washing
+out of the drum still has to be hung, on a rack in another room, where the
+machine cannot see it happen. So its loads queue and wait to be told.
+
+A dry load is finished the moment it leaves the drum, and leaving the drum
+*is* opening the door. There is nothing left to tell it, so a dryer queues
+nothing and is given no button — `queues_loads: false` is that one
+difference, and it is the only place the two are configured apart.
+
+Queueing a dry load would put a row in `Needs you` that nothing in the
+house could clear.
 
 ### Enter fast, leave slow
 
@@ -198,7 +216,8 @@ The same three colours as `security_status`, for the same reason: a tab on a
 wall panel can be a colour before anybody reads a word of it.
 
 - **red** — water on the floor.
-- **amber** — a job: washing to hang, or a machine left without power.
+- **amber** — a job: a drum to empty, washing to hang, or a machine left
+  without power.
 - **green** — nothing waiting.
 
 ## Laundry in `Needs you`
