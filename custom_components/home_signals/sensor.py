@@ -141,6 +141,10 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             "door": option(CONF_WASHER_DOOR),
             "leak": option(CONF_WASHER_LEAK),
             "energy_sensor": option(CONF_WASHER_ENERGY),
+            # Washing comes out of here wet and has to be hung somewhere
+            # else, which the machine cannot watch happen -- so a finished
+            # load becomes a standing job and waits to be told it is done.
+            "queues_loads": True,
             **shared,
         },
         {
@@ -151,6 +155,10 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             "door": option(CONF_DRYER_DOOR),
             "leak": None,
             "energy_sensor": option(CONF_DRYER_ENERGY),
+            # A dry load is finished the moment it leaves the drum, and
+            # leaving the drum is opening the door -- which this can see.
+            # So there is nothing to queue and nothing to press.
+            "queues_loads": False,
             **shared,
         },
     ]
@@ -173,7 +181,15 @@ async def async_setup_entry(
 
     specs = _appliance_specs(entry)
     cycles = [ApplianceCycleSensor(entry, spec) for spec in specs]
-    presses = [AppliancePressSensor(entry, spec) for spec in specs]
+    # A press sensor exists to carry a wall button into the activity feed,
+    # and the button exists to clear the hang queue. An appliance with no
+    # queue has no button, and inventing the entity anyway would leave a
+    # timestamp that never moves looking like a flat battery.
+    presses = [
+        AppliancePressSensor(entry, spec)
+        for spec in specs
+        if spec.get("queues_loads", True)
+    ]
     if cycles:
         for cycle in cycles:
             cycle.add_listener(needs_you)
