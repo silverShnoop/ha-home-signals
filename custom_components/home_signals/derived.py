@@ -574,11 +574,17 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         return found
 
     def _appliances(self) -> list[dict[str, Any]]:
-        """Water on the floor, a machine left dead, and washing to hang.
+        """Water on the floor, a machine left dead, a full drum, washing to hang.
 
-        Three different urgencies from one sensor. The leak is the only one
-        that cannot be finished by pressing something, so it is the only one
-        offered a snooze; the other two are cleared by doing the thing.
+        Four urgencies from one sensor, and the last two are sequential
+        rather than alternatives: a finished load is in the drum until the
+        door is opened, and a WASHED load is then still to be hung. A dryer
+        stops after the first of those, which is the whole difference
+        between the two machines.
+
+        Only the leak and the dead machine are offered a snooze. The other
+        two are cleared by doing the thing -- the door for the drum, the
+        button for the hanging.
         """
         rows: list[dict[str, Any]] = []
         for entity_id in self._appliance_entities():
@@ -614,6 +620,21 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     "action": _snooze(f"unpowered_{slug}", hours=4),
                 })
 
+            # There is washing sitting in the drum. True of both machines
+            # and cleared the same way on both -- by the door, which they
+            # can see for themselves, so this row is offered no button. A
+            # job you finish by doing the obvious physical thing should not
+            # also have a way to be marked done from a screen; two ways to
+            # clear one row is how the row and the world drift apart.
+            if attrs.get("drum_full"):
+                rows.append({
+                    "id": f"drum_{slug}",
+                    "title": f"{name} needs emptying",
+                    "detail": self._drum_detail(attrs),
+                    "icon": "mdi:door-open",
+                    "accent": ACCENT_WARN,
+                })
+
             # One row per load, keyed to the cycle that produced it, so
             # clearing one leaves the other alone and next week's wash is
             # never silenced by last week's dismissal.
@@ -633,6 +654,13 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     "action": _hung(load["id"]),
                 })
         return rows
+
+    @staticmethod
+    def _drum_detail(attrs: dict[str, Any]) -> str:
+        finished = attrs.get("last_finished_at")
+        parsed = dt_util.parse_datetime(finished) if finished else None
+        when = "Finished " + dt_util.as_local(parsed).strftime("%H:%M") if parsed else "Finished"
+        return f"{when} \u00b7 clears when the door is opened"
 
     @staticmethod
     def _load_detail(load: dict[str, Any]) -> str:

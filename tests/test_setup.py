@@ -31,7 +31,19 @@ OPTIONS = {
 }
 
 
+DRYER = {
+    "dryer_power": "sensor.dryer_power",
+    "dryer_plug": "switch.dryer_plug",
+    "dryer_door": "binary_sensor.dryer_door",
+    "dryer_energy": "sensor.dryer_energy",
+}
+
+
 async def _start(hass: HomeAssistant, options: dict) -> MockConfigEntry:
+    hass.states.async_set("switch.dryer_plug", "on")
+    hass.states.async_set("binary_sensor.dryer_door", "off")
+    hass.states.async_set("sensor.dryer_power", "0")
+    hass.states.async_set("sensor.dryer_energy", "0")
     hass.states.async_set("switch.washer_plug", "on")
     hass.states.async_set("binary_sensor.washer_door", "off")
     hass.states.async_set("binary_sensor.washer_leak", "off")
@@ -186,3 +198,115 @@ async def test_the_press_is_recorded_even_with_nothing_to_clear(
 
     after = hass.states.get("sensor.washing_machine_button").state
     assert after != before, "a press with nothing waiting was not recorded"
+
+
+# --- the tumble dryer -------------------------------------------------
+
+
+def _cycle(hass: HomeAssistant, slug: str):
+    return next(
+        (e for e in hass.data["entity_components"]["sensor"].entities
+         if getattr(e, "slug", None) == slug and hasattr(e, "hung")),
+        None,
+    )
+
+
+async def test_a_dryer_gets_no_button_it_does_not_have(hass: HomeAssistant) -> None:
+    """The press sensor carries a wall button into the activity feed.
+
+    The dryer has no button, because it has no hang queue for one to
+    clear. Creating the entity anyway would leave a timestamp that never
+    moves — which on the feed is indistinguishable from a flat battery.
+    """
+    await _start(hass, {**OPTIONS, **DRYER})
+
+    assert hass.states.get("sensor.tumble_dryer") is not None, "no dryer appeared"
+    assert hass.states.get("sensor.washing_machine_button") is not None
+    assert hass.states.get("sensor.tumble_dryer_button") is None, (
+        "the dryer was given a button sensor with no button behind it"
+    )
+
+
+async def test_a_full_drum_reaches_needs_you_on_either_machine(
+    hass: HomeAssistant,
+) -> None:
+    """The state both machines share, and the row neither had before.
+
+    Planted rather than run: how a drum gets full is the unit tests'
+    business, and driving two full cycles here would test the clock twice
+    over instead of the wiring.
+    """
+    await _start(hass, {**OPTIONS, **DRYER})
+
+    for slug in ("washing_machine", "tumble_dryer"):
+        cycle = _cycle(hass, slug)
+        assert cycle is not None, f"no cycle entity for {slug}"
+        cycle._drum_full = True  # noqa: SLF001 - planting a fixture
+        cycle._publish()  # noqa: SLF001
+    await hass.async_block_till_done()
+
+    items = hass.states.get("sensor.needs_you").attributes.get("items", [])
+    titles = [i["title"] for i in items]
+    assert "Washing machine needs emptying" in titles, titles
+    assert "Tumble dryer needs emptying" in titles, titles
+
+
+async def test_the_drum_row_offers_no_button(hass: HomeAssistant) -> None:
+    """It is cleared by opening the door, which the machine can see.
+
+    A second way to mark it done — from a screen, without touching the
+    machine — is how the row and the world drift apart.
+    """
+    await _start(hass, {**OPTIONS, **DRYER})
+
+    cycle = _cycle(hass, "tumble_dryer")
+    cycle._drum_full = True  # noqa: SLF001
+    cycle._publish()  # noqa: SLF001
+    await hass.async_block_till_done()
+
+    items = hass.states.get("sensor.needs_you").attributes.get("items", [])
+    row = next(i for i in items if i["title"] == "Tumble dryer needs emptying")
+    assert not row.get("action"), row
+    assert not row.get("action_label"), row
+    assert "door" in row["detail"], row["detail"]
+
+
+async def test_opening_the_door_clears_the_row(hass: HomeAssistant) -> None:
+    await _start(hass, {**OPTIONS, **DRYER})
+
+    cycle = _cycle(hass, "tumble_dryer")
+    cycle._drum_full = True  # noqa: SLF001
+    cycle._publish()  # noqa: SLF001
+    await hass.async_block_till_done()
+    titles = [i["title"] for i
+              in hass.states.get("sensor.needs_you").attributes["items"]]
+    assert "Tumble dryer needs emptying" in titles
+
+    hass.states.async_set("binary_sensor.dryer_door", "on")
+    await hass.async_block_till_done()
+
+    titles = [i["title"] for i
+              in hass.states.get("sensor.needs_you").attributes["items"]]
+    assert "Tumble dryer needs emptying" not in titles, (
+        "the row survived the door being opened"
+    )
+
+
+async def test_the_washer_still_queues_its_hanging(hass: HomeAssistant) -> None:
+    """The half the dryer does not have must survive the dryer existing."""
+    await _start(hass, {**OPTIONS, **DRYER})
+
+    cycle = _cycle(hass, "washing_machine")
+    cycle._pending.append({  # noqa: SLF001
+        "id": "washing_machine_2026-09-19T20:55:00",
+        "finished_at": "2026-09-19T20:55:00+00:00",
+        "duration_minutes": 118,
+        "energy_kwh": 1.12,
+    })
+    cycle._publish()  # noqa: SLF001
+    await hass.async_block_till_done()
+
+    items = hass.states.get("sensor.needs_you").attributes.get("items", [])
+    row = next((i for i in items if i["title"] == "Laundry needs hanging"), None)
+    assert row is not None, [i["title"] for i in items]
+    assert row["action_label"] == "Hung"

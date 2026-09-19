@@ -385,7 +385,15 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "peak_watts": round(self._peak_watts),
             "longest_lull_seconds": round(self._longest_lull),
         }
-        self._pending.append(record)
+        # Both machines end a cycle with a full drum, and on both the door
+        # empties it. The washer has a SECOND state after that one: washing
+        # out of the drum still has to be hung, on a rack in another room,
+        # where the machine cannot see it happen -- so that job is queued
+        # and waits to be told. A dryer's load is finished the moment it
+        # comes out, so queueing one would invent a reminder nothing can
+        # satisfy.
+        if self._spec.get("queues_loads", True):
+            self._pending.append(record)
         self._history.insert(0, record)
         del self._history[MAX_HISTORY:]
         self._drum_full = True
@@ -435,6 +443,10 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
 
         return {
             "slug": self._slug,
+            # Whether a finished load leaves a second job behind it after
+            # the drum is emptied. Needs you reads state attributes rather
+            # than these objects, so the flag has to travel with them.
+            "queues_loads": bool(self._spec.get("queues_loads", True)),
             "power_w": watts,
             "powered": powered,
             "leak": leak,
@@ -554,6 +566,7 @@ class CleaningStatusSensor(SensorEntity):
     def _read(self) -> tuple[str, str]:
         leaking: list[str] = []
         unpowered: list[str] = []
+        full: list[str] = []
         waiting = 0
         for sensor in self._sensors:
             attrs = sensor.extra_state_attributes
@@ -565,6 +578,9 @@ class CleaningStatusSensor(SensorEntity):
                 # second problem.
                 unpowered.append(sensor.name or sensor.slug)
             waiting += int(attrs.get("pending_count") or 0)
+            # Every appliance has this one, and the door clears it on both.
+            if attrs.get("drum_full"):
+                full.append(sensor.name or sensor.slug)
 
         if leaking:
             return CLEANING_RED, f"{leaking[0]} leaking"
@@ -573,6 +589,8 @@ class CleaningStatusSensor(SensorEntity):
         if waiting:
             plural = "s" if waiting > 1 else ""
             return CLEANING_AMBER, f"{waiting} load{plural} to hang"
+        if full:
+            return CLEANING_AMBER, f"{full[0]} to empty"
         return CLEANING_GREEN, "Nothing waiting"
 
     @property
