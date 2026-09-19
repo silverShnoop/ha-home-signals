@@ -334,3 +334,283 @@ async def test_an_unlisted_contact_sensor_is_ignored(
     sensor._recompute()
 
     assert sensor.native_value == SECURITY_GREEN
+
+
+# --- the blip ---------------------------------------------------------
+
+
+async def test_a_blip_while_unlocked_does_not_restart_the_grace(
+    hass: HomeAssistant, clock
+) -> None:
+    """The Nuki drops to `unavailable` about once a day.
+
+    While it is unreadable there is nothing in `insecure`, so `_since` is
+    cleared -- and when the lock comes back its `last_changed` is the blip,
+    not the moment the door was opened. The grace period restarts.
+
+    A door left open could therefore never go red, as long as the lock
+    blips more often than every five minutes.
+    """
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_AMBER
+
+    clock.tick(timedelta(minutes=3))
+    set_lock(hass, "unavailable")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    clock.tick(timedelta(seconds=10))
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    clock.tick(timedelta(minutes=3))
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_RED, (
+        "the door has been unlocked for over six minutes and is still amber "
+        "-- a blip reset the grace"
+    )
+
+
+async def test_the_row_says_the_same_thing_the_card_does_after_a_blip(
+    hass: HomeAssistant, clock
+) -> None:
+    """The card going red is only half of it.
+
+    The Needs-you row carries its own `since`, read off the entity's
+    `last_changed` -- the very value the blip destroys. So the card would
+    correctly say red while its own row said the door had been open for
+    ten seconds, which is the kind of contradiction that teaches people
+    the panel is broken.
+    """
+    opened_at = dt_util.utcnow()
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+    assert sensor._items[0]["since"] == opened_at.isoformat()
+
+    clock.tick(timedelta(minutes=3))
+    set_lock(hass, "unavailable")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    clock.tick(timedelta(seconds=10))
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    assert sensor._items[0]["since"] == opened_at.isoformat(), (
+        "the row is dating the door from the blip, so it reads 10s while "
+        "the card reads three minutes"
+    )
+
+
+async def test_locking_the_door_forgets_the_clock_for_good(
+    hass: HomeAssistant, clock
+) -> None:
+    """The held stamp must not outlive the thing it is about.
+
+    Holding a stamp across a blip is only safe if a positive report of
+    shut clears it. Otherwise the first unlock of the day is remembered
+    for ever and every later one is dated to it.
+    """
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+
+    clock.tick(timedelta(minutes=10))
+    set_lock(hass, "locked")
+    await hass.async_block_till_done()
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_GREEN
+    assert sensor._since is None
+
+    clock.tick(timedelta(minutes=10))
+    unlocked_again = dt_util.utcnow()
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_AMBER, (
+        "a fresh unlock came back red -- the morning's stamp was never let go"
+    )
+    assert sensor._items[0]["since"] == unlocked_again.isoformat()
+
+
+async def test_an_unreadable_lock_that_was_never_open_does_not_start_a_clock(
+    hass: HomeAssistant, clock
+) -> None:
+    """Amber, and it stays amber. Unreadable on its own is not a countdown."""
+    set_lock(hass, "unavailable")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_AMBER
+
+    clock.tick(timedelta(minutes=30))
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_AMBER, (
+        "a lock that has only ever been unreadable went red -- being "
+        "unreadable is not evidence the door is open"
+    )
+    assert sensor._since is None
+
+
+async def test_a_restart_restores_the_rows_not_just_the_card(
+    hass: HomeAssistant, clock
+) -> None:
+    """After a reboot every lock's `last_changed` is boot time.
+
+    The card already survived that by restoring its own `since`. The rows
+    did not, so the panel came back saying red beside "just now".
+    """
+    opened_at = dt_util.utcnow() - timedelta(hours=3)
+    mock_restore_cache(
+        hass,
+        [
+            State(
+                "sensor.security_status",
+                SECURITY_RED,
+                {
+                    "since": opened_at.isoformat(),
+                    "unlocked": [
+                        {"entity_id": FRONT, "since": opened_at.isoformat()}
+                    ],
+                    "open": [],
+                },
+            )
+        ],
+    )
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+
+    sensor = make(hass)
+    sensor.entity_id = "sensor.security_status"
+    await sensor.async_added_to_hass()
+
+    assert sensor.native_value == SECURITY_RED
+    assert sensor._since == opened_at
+    assert sensor._items[0]["since"] == opened_at.isoformat(), (
+        "the row was re-dated to boot time"
+    )
+
+
+async def test_a_door_known_open_goes_red_even_if_the_lock_never_comes_back(
+    hass: HomeAssistant, clock
+) -> None:
+    """Losing sight of an open door does not make it a shut one.
+
+    A blip is short and the escalation catches up on the far side of it.
+    A lock that drops out and stays out is the case that needs the clock
+    to keep running while nothing can be read at all -- otherwise the
+    house sits amber indefinitely on a door it last saw standing open.
+    """
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_AMBER
+
+    clock.tick(timedelta(minutes=1))
+    set_lock(hass, "unavailable")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    clock.tick(timedelta(minutes=30))
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_RED, (
+        "the lock dropped out an hour ago showing unlocked and the house "
+        "is still amber -- losing the reading was treated as reassurance"
+    )
+
+
+# --- a jam is not a slow unlock ---------------------------------------
+
+
+async def test_a_jammed_lock_is_red_immediately(hass: HomeAssistant, clock) -> None:
+    """The grace covers a door somebody is using. A jam is the opposite.
+
+    Five minutes exist for carrying shopping in or seeing someone out --
+    a door that will shortly be shut by the person who opened it. Nobody
+    is coming back to finish a jam: the mechanism already tried and
+    failed. Waiting it out is five minutes of a green-looking house with
+    a door that will not lock.
+    """
+    set_lock(hass, "jammed")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_RED, (
+        "a jammed lock is sitting in the grace period waiting to become a "
+        "problem it already is"
+    )
+
+
+async def test_a_jam_says_unlocked_and_carries_the_reason_separately(
+    hass: HomeAssistant, clock
+) -> None:
+    """The word is what the door IS; the jam is why.
+
+    A jammed lock is not a third state of the door. Putting "Jammed" in
+    the row's value would make it one, and the card's hero reads from the
+    same vocabulary -- so the fault has to travel beside the state, not
+    inside it.
+    """
+    set_lock(hass, "jammed")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+
+    assert len(sensor._items) == 1
+    row = sensor._items[0]
+    assert row["value"] == "Unlocked", row["value"]
+    assert row["jammed"] is True
+    assert row["accent"] == ACCENT_ALERT
+    assert "jam" not in row["value"].lower()
+
+
+async def test_an_ordinary_unlock_is_not_flagged_as_a_jam(
+    hass: HomeAssistant, clock
+) -> None:
+    """The flag has to be false, not absent, or the card cannot test it."""
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_AMBER
+    assert sensor._items[0]["jammed"] is False
+
+
+async def test_a_jam_clearing_lets_the_house_go_green(
+    hass: HomeAssistant, clock
+) -> None:
+    """Red on sight must not be red for ever.
+
+    Skipping the grace is a shortcut into red, not a latch. A lock that
+    jams and is then worked until it throws is a shut door, and the panel
+    has to say so.
+    """
+    set_lock(hass, "jammed")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_RED
+
+    clock.tick(timedelta(seconds=40))
+    set_lock(hass, "locked")
+    await hass.async_block_till_done()
+    sensor._recompute()
+
+    assert sensor.native_value == SECURITY_GREEN, "the jam latched red"
+    assert sensor._since is None
+    assert sensor._items == []
