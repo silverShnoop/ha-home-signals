@@ -49,6 +49,7 @@ SPEC = {
     "idle_minutes": 5,
     "min_minutes": 10,
     "min_kwh": 0.05,
+    "tracks_phases": True,
 }
 
 
@@ -72,20 +73,50 @@ class Machine:
         self._kwh = 0.0
 
     def set(self, entity_id: str, value) -> None:
-        self.hass.states.async_set(entity_id, str(value))
+        """Report a value, as the plug does -- again even if unchanged.
+
+        `force_update` is not decoration. Home Assistant drops a write
+        whose state and attributes both match what is already there, so
+        a plug holding steady at 30 W would land as ONE reading however
+        long it held, and a phase that needs two readings twenty
+        seconds apart could never form. The real sensor reports every
+        five seconds whether or not the number moved.
+        """
+        self.hass.states.async_set(entity_id, str(value), force_update=True)
+
+    #: What the plug actually does. Every reading in the measured trace
+    #: is five seconds after the last one.
+    REPORTS_EVERY = 5.0
 
     async def draw(self, watts: float, *, for_minutes: float = 0) -> None:
-        """Draw this many watts, then let that many minutes of it pass.
+        """Draw this many watts, and keep REPORTING it for that long.
+
+        The plug reports every five seconds, so a two-minute run of one
+        power level is twenty-four readings, not one. That matters more
+        than it looks: a phase is only committed once the same kind has
+        been seen TWICE and has held for twenty seconds, and a helper
+        that emitted one reading per call could not produce a phase the
+        way the machine does. Two fixtures were quietly relying on that
+        -- they opened with a six-minute "fill" made of two readings,
+        which is neither a fill nor a shape a plug can report.
 
         Energy accrues while the power flows, as a real meter's would, so
         the minimum-energy guard is exercised rather than sidestepped.
         """
         self.set(POWER, watts)
         await self.hass.async_block_till_done()
-        if for_minutes:
-            self._kwh += watts * (for_minutes / 60.0) / 1000.0
-            self.set(ENERGY, round(self._kwh, 6))
-            await self.advance(for_minutes)
+        if not for_minutes:
+            return
+        self._kwh += watts * (for_minutes / 60.0) / 1000.0
+        self.set(ENERGY, round(self._kwh, 6))
+        left = for_minutes * 60.0
+        while left > 0:
+            step = min(self.REPORTS_EVERY, left)
+            left -= step
+            self.freezer.tick(timedelta(seconds=step))
+            self.set(POWER, watts)
+            async_fire_time_changed(self.hass)
+            await self.hass.async_block_till_done()
 
     async def advance(self, minutes: float) -> None:
         """Move the clock forward and let anything scheduled fire.
@@ -520,8 +551,7 @@ async def test_a_soak_does_not_let_a_pending_phase_span_it(machine) -> None:
     so the soak counts towards the tumble it interrupted.
     """
     m = machine
-    await m.draw(30, for_minutes=2)
-    await m.draw(50, for_minutes=4)
+    await m.draw(30, for_minutes=1.7)        # fill, the length it measured
     await m.draw(2200, for_minutes=3)        # heat
     await m.draw(60, for_minutes=3)          # tumble
     await m.draw(212, for_minutes=0)         # one reading in the spin band
@@ -607,6 +637,151 @@ async def test_a_restart_does_not_blank_the_strip(machine) -> None:
 
     assert after_restart.extra_state_attributes["phases"] == before
     assert after_restart.extra_state_attributes["phase"] == "tumble"
+
+
+async def test_a_cold_wash_does_not_become_a_forty_minute_fill(machine) -> None:
+    """The fill label is withdrawn when the evidence stops supporting it.
+
+    Fill is positional: the opening run of a cycle, at watts that are
+    indistinguishable from tumbling. That reading is only worth
+    anything because a real fill is over in a minute or two. A cold
+    wash never heats, so its opening low-power run just continues --
+    and the old rule would have called forty minutes of tumbling a
+    fill, confidently, with an icon.
+
+    So the label has a shelf life. Past MAX_FILL_SECONDS the run is
+    relabelled rather than extended, and the strip says the true thing
+    it can support instead of the useful thing it cannot.
+    """
+    m = machine
+    await m.draw(28, for_minutes=4)
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert kinds == ["fill"], kinds
+
+    await m.draw(34, for_minutes=4)
+    phases = m.sensor.extra_state_attributes["phases"]
+    assert [p["kind"] for p in phases] == ["tumble"], phases
+    # One run, not a fill followed by a tumble: it was always one run,
+    # and what changed is what we are willing to call it.
+    assert phases[0]["seconds"] >= 470, phases[0]
+
+
+async def test_a_fill_that_behaves_like_one_is_still_a_fill(machine) -> None:
+    """The other side of the cap: the measured fill ran 102 seconds."""
+    m = machine
+    await m.draw(28, for_minutes=1.7)
+    await m.draw(2240, for_minutes=3)
+
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert kinds == ["fill", "heat"], kinds
+
+
+async def test_the_heat_floor_sits_where_the_derivation_puts_it(machine) -> None:
+    """Both thresholds are derived, not chosen, and this pins the seam.
+
+    One wash cannot pick a number inside the gap between the highest
+    spin (390 W) and the lowest heat (2214 W), so the floor goes at the
+    geometric mean of the two -- 929 W, equally clear of both by a
+    factor of 2.4. It had been 1500 W, which was 3.9x clear above and
+    only 1.5x below: all the margin on the side that did not need it.
+
+    A test that only checked one side would not notice the floor
+    drifting back, so this checks both.
+    """
+    m = machine
+    kinds = lambda: [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+
+    await m.draw(30, for_minutes=1.5)
+    await m.draw(880, for_minutes=2)
+    assert kinds()[-1] == "spin", kinds()
+
+    # A second wash, so the timeline starts clean rather than reading
+    # the tail of the first one.
+    await m.draw(0, for_minutes=0)
+    await m.advance(6)
+    await m.draw(30, for_minutes=1.5)
+    await m.draw(980, for_minutes=2)
+    assert kinds()[-1] == "heat", kinds()
+
+
+async def test_every_run_records_the_watts_it_was_seen_at(machine) -> None:
+    """The strip is also the evidence for its own thresholds.
+
+    The bands were fitted to one wash. Recording the range each run
+    actually drew means the second wash, and the tenth, are counted
+    without anybody sitting and watching a plug -- the floors can be
+    re-derived from the sensor by the same rule that first set them.
+    """
+    m = machine
+    await m.draw(28, for_minutes=1.5)
+    await m.draw(2214, for_minutes=1)
+    await m.draw(2263, for_minutes=2)
+
+    heat = m.sensor.extra_state_attributes["phases"][-1]
+    assert heat["kind"] == "heat", heat
+    assert heat["low"] == 2214 and heat["high"] == 2263, heat
+
+
+async def test_the_evidence_outlives_the_cycle_and_the_restart(machine) -> None:
+    """One wash is one data point. This is how they add up.
+
+    `phases` is cleared by every new cycle, because it describes THIS
+    wash. `phase_evidence` must not be, or it would only ever say as
+    much as a single load does -- which is the whole problem it exists
+    to fix.
+    """
+    m = machine
+    await m.draw(28, for_minutes=1.5)
+    await m.draw(2240, for_minutes=3)
+    await m.draw(50, for_minutes=8)
+    await m.draw(0, for_minutes=0)
+    await m.advance(6)
+
+    # A second wash, heating harder than the first.
+    await m.draw(30, for_minutes=1.5)
+    await m.draw(2310, for_minutes=3)
+
+    seen = m.sensor.extra_state_attributes["phase_evidence"]
+    assert seen["heat"]["runs"] == 2, seen
+    assert seen["heat"]["low"] == 2240 and seen["heat"]["high"] == 2310, seen
+    assert [p["kind"] for p in m.sensor.extra_state_attributes["phases"]] == [
+        "fill", "heat"
+    ], "the timeline is this cycle's, and starts fresh"
+
+    after_restart = ApplianceCycleSensor(FakeEntry(), dict(SPEC))
+    after_restart.hass = m.hass
+    after_restart.entity_id = "sensor.washing_machine_cycle"
+    after_restart._restore(m.sensor.extra_state_attributes)
+    assert after_restart.extra_state_attributes["phase_evidence"] == seen
+
+
+async def test_a_machine_without_a_measured_trace_gets_no_strip(machine) -> None:
+    """The bands belong to the machine they were measured on.
+
+    The dryer runs the same code and the same plug logic, and none of
+    the same numbers: it does not fill, does not spin, and heats at a
+    different power. Labelling its cycle with the washer's bands would
+    be confident and wrong on every cell, so the feature is off until
+    there is a trace for it.
+    """
+    dryer = dict(SPEC)
+    dryer["tracks_phases"] = False
+    sensor = ApplianceCycleSensor(FakeEntry(), dryer)
+    sensor.hass = machine.hass
+    sensor.entity_id = "sensor.tumble_dryer_cycle"
+    # Subscribed for real. Left unsubscribed it would report an empty
+    # timeline whatever the flag said, and pass while doing nothing --
+    # which is exactly how the first version of this test passed.
+    await sensor.async_added_to_hass()
+    await machine.hass.async_block_till_done()
+    machine.sensor = sensor
+
+    await machine.draw(30, for_minutes=1.5)
+    await machine.draw(2240, for_minutes=3)
+
+    assert sensor.state == APPLIANCE_RUNNING, "it is still a working sensor"
+    assert sensor.extra_state_attributes["phases"] == []
+    assert sensor.extra_state_attributes["phase"] is None
 
 
 async def test_a_new_wash_starts_a_new_timeline(machine) -> None:
