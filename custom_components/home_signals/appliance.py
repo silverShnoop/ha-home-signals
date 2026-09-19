@@ -153,6 +153,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._phases: list[dict[str, Any]] = []
         self._phase_pending: str | None = None
         self._phase_pending_since: datetime | None = None
+        self._phase_pending_low: float = 0.0
+        self._phase_pending_high: float = 0.0
+        # What each kind has actually been seen drawing, across every
+        # cycle rather than this one, and kept over a restart. One wash
+        # is not much to fit two thresholds to; this is how the second
+        # and the tenth get counted without anybody watching a plug.
+        self._phase_evidence: dict[str, dict[str, float]] = {}
 
         self._drum_full = False
         self._pending: list[dict[str, Any]] = []
@@ -232,6 +239,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         phases = attrs.get("phases")
         if isinstance(phases, list):
             self._phases = [p for p in phases if isinstance(p, dict) and p.get("kind")]
+        evidence = attrs.get("phase_evidence")
+        if isinstance(evidence, dict):
+            self._phase_evidence = {
+                str(kind): dict(seen)
+                for kind, seen in evidence.items()
+                if isinstance(seen, dict) and "low" in seen and "high" in seen
+            }
         # A cycle in flight across a restart is NOT resumed. We cannot know
         # what the machine did while we were not looking, and inventing a
         # start time would put a fictional duration on a real load.
@@ -300,8 +314,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             # A soak can sit under the floor for ten minutes; without this
             # the reading either side of it would look like one unbroken
             # run and commit a phase dated to before the silence.
-            self._phase_pending = None
-            self._phase_pending_since = None
+            self._forget_pending()
 
         if watts >= start_watts:
             self._note_lull_ended(now)
@@ -309,7 +322,8 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
                 self._begin(now)
             # After _begin, so the opening reading lands in a fresh
             # timeline rather than the end of the last cycle's.
-            self._note_phase(now, watts)
+            if self._cfg("tracks_phases", False):
+                self._note_phase(now, watts)
             return
 
         if watts >= idle_watts:
@@ -354,22 +368,48 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
     # MIN_PHASE_SECONDS, and why the duration guard, not the threshold,
     # is what actually catches those readings.
     #
-    # It does NOT settle the two numbers. Any spin floor between 120 and
-    # 203, and any heat floor between 390 and 2.2 kW, replays this cycle
-    # identically. 150 and 1500 are margins chosen above the highest
-    # thing measured below them, and the tests that pin them say so
-    # rather than pretending the trace picked them.
+    # It does NOT settle the two NUMBERS, and one wash is not much
+    # evidence, so the numbers are not picked by eye. Any spin floor
+    # between 120 and 203 W, and any heat floor between 390 W and
+    # 2.2 kW, replays this cycle identically -- the trace cannot choose
+    # inside those gaps. So each boundary is put at the GEOMETRIC MEAN
+    # of the two bands it separates, which is the maximum-margin
+    # estimate from one sample, and multiplicative because that is how
+    # a draw varies: a half load, a different programme and a stiffer
+    # motor all scale it rather than shift it.
+    #
+    #     spin floor  sqrt(120 x 203)   =  156 W   1.3x clear each side
+    #     heat floor  sqrt(390 x 2214)  =  929 W   2.4x clear each side
+    #
+    # The heat floor had been 1500 W, which sat 3.9x above the highest
+    # spin and only 1.5x below the lowest heat -- all the margin on the
+    # side that did not need it. 929 W is the same evidence, read
+    # without a thumb on it.
+    #
+    # The spin floor's 1.3x is thin, and it is thin because the gap
+    # really is: a lurching drum reaches 120 W and a slow spin starts
+    # at 203 W. That is what MIN_PHASE_SECONDS is for, and between them
+    # the two guards cover each other.
     #
     # Fill is the one the power cannot tell at all. It sits at 6-36 W,
     # inside tumble's own 12-90 W band, and the only thing separating
     # them in that trace is position: the fill came first. So fill is
-    # defined positionally -- the opening run of a cycle -- and that is a
-    # weaker claim than the other three. A cold wash that never heats
-    # would run fill and tumble together and be labelled fill
-    # throughout. Worth revisiting with a second machine or a flow
-    # sensor; not worth guessing at from one cycle.
-    PHASE_BANDS = ((1500.0, PHASE_HEAT), (150.0, PHASE_SPIN))
+    # defined positionally -- the opening run of a cycle -- and it is
+    # the weakest claim here by a distance. MAX_FILL_SECONDS is the
+    # limit of it: a machine fills in a minute or two, so an opening
+    # run still going after five is not a fill we failed to see the end
+    # of, it is a cold wash tumbling, and the label is TAKEN BACK
+    # rather than stretched. Better a correct tumble than a confident
+    # fill.
+    #
+    # Every run also records the watt range it was actually seen at,
+    # and `phase_evidence` accumulates those ranges across cycles and
+    # survives a restart. After ten washes the floors above can be
+    # re-derived from the sensor by the same sqrt rule, from real
+    # readings rather than from one evening.
+    PHASE_BANDS = ((929.0, PHASE_HEAT), (156.0, PHASE_SPIN))
     MIN_PHASE_SECONDS = 20.0
+    MAX_FILL_SECONDS = 300.0
 
     def _classify(self, watts: float) -> str:
         """Which band this reading falls in. Tumble is the fallthrough.
@@ -396,6 +436,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         """
         kind = self._classify(watts)
 
+        # A fill that has run too long was never a fill. Taking the label
+        # back is the point: positional evidence is weak, and five
+        # minutes of it is weaker than admitting we cannot tell. Once it
+        # is a tumble the readings below simply carry on into it.
+        self._reconsider_fill(now)
+
         # The opening run of a cycle is the fill, and it lasts until the
         # machine does something ELSE -- not until the draw wobbles inside
         # its own band. Anchoring it to "no phases yet" ended the fill at
@@ -409,19 +455,25 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
 
         current = self._phases[-1]["kind"] if self._phases else None
         if kind == current:
-            self._phases[-1]["seconds"] = round(
-                (now - dt_util.parse_datetime(self._phases[-1]["started_at"])
-                 ).total_seconds()
+            run = self._phases[-1]
+            run["seconds"] = round(
+                (now - dt_util.parse_datetime(run["started_at"])).total_seconds()
             )
-            self._phase_pending = None
-            self._phase_pending_since = None
+            run["low"] = min(run.get("low", watts), watts)
+            run["high"] = max(run.get("high", watts), watts)
+            self._note_evidence(kind, watts)
+            self._forget_pending()
             return
 
         if kind != self._phase_pending:
             self._phase_pending = kind
             self._phase_pending_since = now
+            self._phase_pending_low = watts
+            self._phase_pending_high = watts
             return
 
+        self._phase_pending_low = min(self._phase_pending_low, watts)
+        self._phase_pending_high = max(self._phase_pending_high, watts)
         held = (now - self._phase_pending_since).total_seconds()
         if held < self.MIN_PHASE_SECONDS:
             return
@@ -429,9 +481,48 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "kind": kind,
             "started_at": self._phase_pending_since.isoformat(),
             "seconds": round(held),
+            "low": round(self._phase_pending_low),
+            "high": round(self._phase_pending_high),
         })
+        self._note_evidence(kind, self._phase_pending_low, opened=True)
+        self._note_evidence(kind, self._phase_pending_high)
+        self._forget_pending()
+
+    def _forget_pending(self) -> None:
         self._phase_pending = None
         self._phase_pending_since = None
+        self._phase_pending_low = 0.0
+        self._phase_pending_high = 0.0
+
+    def _reconsider_fill(self, now: datetime) -> None:
+        """Withdraw a fill label the evidence no longer supports.
+
+        Only the opening run is ever called a fill, and only because it
+        came first -- the watts are indistinguishable from tumbling. A
+        real fill is over in a minute or two. One still going after
+        MAX_FILL_SECONDS is a cold wash, so the entry is relabelled
+        rather than left to grow into a forty-minute "fill".
+        """
+        if len(self._phases) != 1 or self._phases[0]["kind"] != PHASE_FILL:
+            return
+        started = dt_util.parse_datetime(self._phases[0]["started_at"])
+        if started is None:
+            return
+        if (now - started).total_seconds() < self.MAX_FILL_SECONDS:
+            return
+        self._phases[0]["kind"] = PHASE_TUMBLE
+        if self._phase_pending == PHASE_TUMBLE:
+            self._forget_pending()
+
+    def _note_evidence(self, kind: str, watts: float, *, opened: bool = False) -> None:
+        """Widen what this kind has been seen drawing, across all cycles."""
+        seen = self._phase_evidence.setdefault(
+            kind, {"runs": 0, "low": watts, "high": watts}
+        )
+        seen["low"] = min(seen["low"], watts)
+        seen["high"] = max(seen["high"], watts)
+        if opened:
+            seen["runs"] = seen.get("runs", 0) + 1
 
     def _begin(self, now: datetime) -> None:
         self._state = APPLIANCE_RUNNING
@@ -441,8 +532,10 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._peak_watts = 0.0
         self._quiet_since = None
         self._phases = []
-        self._phase_pending = None
-        self._phase_pending_since = None
+        # `_phase_evidence` is NOT cleared. It is what the machine has
+        # been seen doing across every wash, and clearing it per cycle
+        # would leave it saying exactly as much as one load does.
+        self._forget_pending()
         self._stop_quiet_timer()
 
     def _note_lull_ended(self, now: datetime) -> None:
@@ -604,6 +697,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             # washing is sitting in the drum.
             "phases": list(self._phases),
             "phase": self._phases[-1]["kind"] if self._phases else None,
+            # What every kind has been seen drawing, across all cycles.
+            # The thresholds were fitted to one wash; this is the
+            # evidence to re-fit them from once there are ten.
+            "phase_evidence": {
+                kind: dict(seen) for kind, seen in self._phase_evidence.items()
+            },
             # Diagnostics for tuning the idle floor against a real wash
             # rather than against a guess.
             "peak_watts": round(self._peak_watts) if self._state == APPLIANCE_RUNNING else None,

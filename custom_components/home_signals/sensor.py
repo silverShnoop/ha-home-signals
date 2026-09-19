@@ -149,6 +149,11 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             # else, which the machine cannot watch happen -- so a finished
             # load becomes a standing job and waits to be told it is done.
             "queues_loads": True,
+            # The phase bands were measured on THIS machine, off one
+            # wash. They are not a general fact about appliances, so
+            # they are switched on where they were measured and nowhere
+            # else. See PHASE_BANDS in appliance.py.
+            "tracks_phases": True,
             **shared,
         },
         {
@@ -164,6 +169,11 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             # leaving the drum is opening the door -- which this can see.
             # So there is nothing to queue and nothing to press.
             "queues_loads": False,
+            # No phase strip. A dryer does not fill and does not spin,
+            # and its heat runs at a different power to the washer's,
+            # so the washer's bands would label every dryer cycle
+            # confidently and wrongly. It needs its own trace first.
+            "tracks_phases": False,
             **shared,
         },
     ]
