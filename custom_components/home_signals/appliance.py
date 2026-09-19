@@ -120,13 +120,16 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
     _attr_has_entity_name = False
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [APPLIANCE_OFF, APPLIANCE_IDLE, APPLIANCE_RUNNING]
-    _attr_icon = "mdi:washing-machine"
 
     def __init__(self, entry: ConfigEntry, spec: dict[str, Any]) -> None:
         self._entry = entry
         self._spec = spec
         self._slug = spec["slug"]
         self._attr_name = spec["name"]
+        # Per appliance, not per class. A dryer wearing a washing machine is
+        # the kind of wrong that is invisible on the card -- which sets its
+        # own icon -- and obvious everywhere the entity speaks for itself.
+        self._attr_icon = spec.get("icon", "mdi:washing-machine")
         self._attr_unique_id = f"{entry.entry_id}_{self._slug}_cycle"
 
         self._state = APPLIANCE_IDLE
