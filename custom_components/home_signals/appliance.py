@@ -55,6 +55,7 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    KIND_BUTTON,
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
     APPLIANCE_RUNNING,
@@ -497,6 +498,18 @@ class AppliancePressSensor(SensorEntity, RestoreEntity):
     @property
     def native_value(self) -> datetime | None:
         return self._pressed_at
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Say what kind of event this is rather than leaving it guessable.
+
+        The activity feed classifies by domain and device class, and by
+        those it is a timestamp sensor -- which says when something
+        happened and nothing about what. Declaring the kind here keeps the
+        guess out of the feed: it does not have to know that a sensor
+        whose id ends in `_button` is a button.
+        """
+        return {"kind": KIND_BUTTON}
 
 
 class CleaningStatusSensor(SensorEntity):
