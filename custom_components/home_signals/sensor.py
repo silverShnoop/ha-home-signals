@@ -49,6 +49,7 @@ from .const import (
     ATTR_HOURS,
     ATTR_ITEM_ID,
     ATTR_LOAD_ID,
+    ATTR_SOURCE,
     CONF_DRYER_DOOR,
     CONF_DRYER_ENERGY,
     CONF_DRYER_PLUG,
@@ -69,6 +70,8 @@ from .const import (
     DEFAULT_MIN_MINUTES,
     DEFAULT_START_WATTS,
     SERVICE_LAUNDRY_HUNG,
+    SOURCE_BUTTON,
+    SOURCE_UI,
     CONF_ENTITIES,
     CONF_MAX_EVENTS,
     DEFAULT_MAX_EVENTS,
@@ -249,10 +252,18 @@ def _async_register_services(
     def _laundry_hung(call: ServiceCall) -> None:
         """One load is up. Called by the wall button and by the Needs you row.
 
-        The press is recorded whether or not it cleared anything. A button
-        that does nothing when there is nothing to do is correct, but it
-        should still be visible in the feed as somebody having pressed it —
-        otherwise a flat battery looks exactly like an empty list.
+        A press of the WALL button is recorded whether or not it cleared
+        anything. A button that does nothing when there is nothing to do is
+        correct, but it should still be visible in the feed as somebody
+        having pressed it — otherwise a flat battery looks exactly like an
+        empty list.
+
+        A tap on a screen is not recorded at all. The activity feed answers
+        "where are people in the house", and the press sensor is how a
+        kitchen button reaches it; stamping it from the UI put "Kitchen ·
+        button" in the feed when somebody cleared the row on the panel — and
+        would have done the same for a phone on a train. The wall button is
+        the only caller whose location is known.
         """
         wanted = call.data.get(ATTR_APPLIANCE)
         load_id = call.data.get(ATTR_LOAD_ID)
@@ -266,9 +277,10 @@ def _async_register_services(
             if cycle.hung(load_id):
                 break
 
-        for press in presses or []:
-            if wanted in (None, press.slug):
-                press.record()
+        if call.data.get(ATTR_SOURCE) == SOURCE_BUTTON:
+            for press in presses or []:
+                if wanted in (None, press.slug):
+                    press.record()
 
         needs_you.refresh()
 
@@ -277,6 +289,11 @@ def _async_register_services(
         schema=vol.Schema({
             vol.Optional(ATTR_LOAD_ID): cv.string,
             vol.Optional(ATTR_APPLIANCE): cv.string,
+            # Defaults to `ui`, which is the safe direction: a caller that
+            # forgets to say where it is loses a row from the feed, where
+            # the opposite default invents a person standing in the kitchen.
+            vol.Optional(ATTR_SOURCE, default=SOURCE_UI):
+                vol.In([SOURCE_BUTTON, SOURCE_UI]),
         }),
     )
 
