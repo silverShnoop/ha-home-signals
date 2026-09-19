@@ -141,6 +141,7 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             "door": option(CONF_WASHER_DOOR),
             "leak": option(CONF_WASHER_LEAK),
             "energy_sensor": option(CONF_WASHER_ENERGY),
+            "icon": "mdi:washing-machine",
             # Washing comes out of here wet and has to be hung somewhere
             # else, which the machine cannot watch happen -- so a finished
             # load becomes a standing job and waits to be told it is done.
@@ -155,6 +156,7 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             "door": option(CONF_DRYER_DOOR),
             "leak": None,
             "energy_sensor": option(CONF_DRYER_ENERGY),
+            "icon": "mdi:tumble-dryer",
             # A dry load is finished the moment it leaves the drum, and
             # leaving the drum is opening the door -- which this can see.
             # So there is nothing to queue and nothing to press.
