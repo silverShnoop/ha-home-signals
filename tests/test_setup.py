@@ -310,3 +310,26 @@ async def test_the_washer_still_queues_its_hanging(hass: HomeAssistant) -> None:
     row = next((i for i in items if i["title"] == "Laundry needs hanging"), None)
     assert row is not None, [i["title"] for i in items]
     assert row["action_label"] == "Hung"
+
+
+async def test_each_appliance_wears_its_own_icon(hass: HomeAssistant) -> None:
+    """A dryer drawn as a washing machine, which is what shipped first.
+
+    The card sets its own icon, so the panel looked right and the entity was
+    wrong everywhere the entity speaks for itself -- more-info, the entity
+    list, a tile somebody adds later. Asserted through a real config entry
+    rather than against a hand-built spec, because the icon is chosen in
+    `_appliance_specs` and a spec written here would only prove that
+    `dict.get` works.
+    """
+    await _start(hass, {**OPTIONS, **DRYER})
+
+    washer = hass.states.get("sensor.washing_machine")
+    dryer = hass.states.get("sensor.tumble_dryer")
+    assert washer is not None and dryer is not None
+
+    assert dryer.attributes["icon"] == "mdi:tumble-dryer"
+    assert washer.attributes["icon"] == "mdi:washing-machine"
+    assert dryer.attributes["icon"] != washer.attributes["icon"], (
+        "the two machines are indistinguishable outside the card"
+    )
