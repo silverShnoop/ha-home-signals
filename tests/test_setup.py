@@ -148,7 +148,9 @@ async def test_a_press_reaches_the_activity_feed_as_a_button(
     """
     await _start(hass, {**OPTIONS, "entities": ["sensor.washing_machine_button"]})
 
-    await hass.services.async_call(DOMAIN, SERVICE_LAUNDRY_HUNG, {}, blocking=True)
+    await hass.services.async_call(
+        DOMAIN, SERVICE_LAUNDRY_HUNG, {"source": "button"}, blocking=True
+    )
     await hass.async_block_till_done()
 
     feed = hass.states.get("sensor.activity_feed")
@@ -192,12 +194,83 @@ async def test_the_press_is_recorded_even_with_nothing_to_clear(
 
     before = hass.states.get("sensor.washing_machine_button").state
     await hass.services.async_call(
-        DOMAIN, SERVICE_LAUNDRY_HUNG, {}, blocking=True
+        DOMAIN, SERVICE_LAUNDRY_HUNG, {"source": "button"}, blocking=True
     )
     await hass.async_block_till_done()
 
     after = hass.states.get("sensor.washing_machine_button").state
     assert after != before, "a press with nothing waiting was not recorded"
+
+
+# --- and a screen is not a place --------------------------------------
+
+
+async def test_clearing_from_a_screen_is_not_a_person_in_the_kitchen(
+    hass: HomeAssistant,
+) -> None:
+    """The feed answers "where are people", so only the wall button counts.
+
+    Reported from the panel: dismissing the Laundry-needs-hanging row put
+    "Kitchen · button" in the activity feed, one second old, while nobody
+    had been in the kitchen. The press sensor is how a ZHA button reaches
+    the feed, and the row was stamping it too.
+
+    The wall button is screwed to the machine, so a press is a body in the
+    room. A screen is not a place: the panel is in the kitchen, a phone is
+    wherever its owner is, and the service cannot tell them apart.
+    """
+    await _start(hass, OPTIONS)
+
+    before = hass.states.get("sensor.washing_machine_button").state
+    await hass.services.async_call(
+        DOMAIN, SERVICE_LAUNDRY_HUNG, {"source": "ui"}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    after = hass.states.get("sensor.washing_machine_button").state
+    assert after == before, (
+        "clearing the row on a screen stamped the wall button's press "
+        "sensor -- the feed now claims somebody was in the kitchen"
+    )
+
+
+async def test_a_caller_that_says_nothing_is_treated_as_a_screen(
+    hass: HomeAssistant,
+) -> None:
+    """The default is the direction that cannot invent a person.
+
+    A caller that forgets to say where it is loses a row from the feed.
+    The opposite default puts somebody in the kitchen who was never there,
+    and a feed that does that is worse than one with a gap in it.
+    """
+    await _start(hass, OPTIONS)
+
+    before = hass.states.get("sensor.washing_machine_button").state
+    await hass.services.async_call(DOMAIN, SERVICE_LAUNDRY_HUNG, {}, blocking=True)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.washing_machine_button").state == before
+
+
+async def test_a_screen_still_clears_the_load(hass: HomeAssistant) -> None:
+    """Not recording the press must not stop the row doing its job.
+
+    The press sensor is a side effect for the feed's benefit. The point of
+    the call is that the washing is up, and that has to happen whoever
+    said so and from wherever.
+    """
+    await _start(hass, OPTIONS)
+    cycle = _cycle(hass, "washing_machine")
+    assert cycle is not None
+    cycle._pending = [{"id": "load_1", "finished_at": "2026-09-19T20:00:00+00:00"}]
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_LAUNDRY_HUNG, {"load_id": "load_1", "source": "ui"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert not cycle._pending, "the screen cleared nothing"
 
 
 # --- the tumble dryer -------------------------------------------------
