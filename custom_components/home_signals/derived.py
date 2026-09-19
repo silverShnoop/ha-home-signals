@@ -191,7 +191,7 @@ class _Derived(SensorEntity):
         timer. These two are specific, cheap, and the ones a person expects
         to respond immediately.
         """
-        watched = [
+        return [
             entity_id
             for entity_id in (
                 self._option(CONF_BIN_SENSOR, None),
@@ -199,11 +199,6 @@ class _Derived(SensorEntity):
             )
             if entity_id
         ]
-        # A finished wash and a leak both want to appear the moment they are
-        # true rather than up to five minutes later, and both are already
-        # summarised onto one entity each.
-        watched.extend(self._appliance_entities())
-        return watched
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -553,6 +548,17 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 "action_label": "Snooze",
             })
         return rows
+
+    def _watched(self) -> list[str]:
+        """Also the appliance sensors, so a finished wash appears at once.
+
+        Overridden here rather than added to the base: `System health` and
+        `Security status` share that base and have no business knowing what
+        an appliance is. Reaching into the subclass from the base crashed
+        both of them on setup, which is a whole entity missing from the
+        house for a line that belongs one level down.
+        """
+        return super()._watched() + self._appliance_entities()
 
     def _appliance_entities(self) -> list[str]:
         """The cycle sensors this integration publishes, found by their id.
