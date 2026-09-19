@@ -396,3 +396,231 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
     await hass.async_block_till_done()
     assert light.native_value == CLEANING_RED, "the leak stopped being the headline"
     assert "leaking" in light.extra_state_attributes["detail"]
+
+
+# --- what the machine is doing, from the draw -------------------------
+
+
+async def test_the_real_cycle_reads_as_the_phases_it_actually_was(machine) -> None:
+    """Replayed from the wash measured end to end on 19 Sep 2026.
+
+    Not invented numbers. The bands were derived from this trace, so the
+    trace is what has to come back out of them -- otherwise the thresholds
+    are fitted to nothing and the first real cycle disagrees with the card.
+
+    The shape that matters: heat and spin each happen MORE THAN ONCE, with
+    tumble between them. This is not a four-step sequence with a finish
+    line; it is a list of things the machine has done, and a card that
+    drew it as a progress bar would be inventing a promise.
+    """
+    m = machine
+    await m.draw(10, for_minutes=0.5)
+    await m.draw(28, for_minutes=1.2)        # fill
+    await m.draw(2234, for_minutes=1)
+    await m.draw(2256, for_minutes=2.8)      # heat
+    await m.draw(43, for_minutes=1)
+    await m.draw(45, for_minutes=3.8)        # tumble
+    await m.draw(2233, for_minutes=0.7)      # heat again
+    await m.draw(48, for_minutes=2)
+    await m.draw(62, for_minutes=4)
+    await m.draw(118, for_minutes=0.1)       # the drum lurching, still tumble
+    await m.draw(57, for_minutes=5.7)        # tumble
+    await m.draw(203, for_minutes=0.5)
+    await m.draw(302, for_minutes=1.2)       # spin
+    await m.draw(54, for_minutes=7)          # tumble
+    await m.draw(253, for_minutes=1.8)       # spin again
+
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert kinds == [
+        "fill", "heat", "tumble", "heat", "tumble", "spin", "tumble", "spin"
+    ], kinds
+    assert m.sensor.extra_state_attributes["phase"] == "spin"
+
+
+async def test_a_brief_lurch_into_the_spin_band_is_not_a_spin(machine) -> None:
+    """A run has to LAST before it is a phase, and this pins that.
+
+    Two guards stand between a twitch and a phantom phase. The first is
+    that a lone reading commits nothing: a kind needs a second reading to
+    confirm it. That one is not enough on its own, because at the plug's
+    five-second interval a brief excursion easily spans two readings. So
+    a run must also last MIN_PHASE_SECONDS.
+
+    The watts here are chosen to sit just over the spin floor rather than
+    copied from the trace -- the trace's own lurches peak at 107-120 W and
+    are caught by the threshold long before they reach this guard. A
+    heavy wet load slapping the drum is the case this stands against: a
+    strip that grew a phase every time that happened would be unreadable.
+    """
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(50, for_minutes=4)
+    await m.draw(188, for_minutes=0.1)       # over the floor, reading one
+    await m.draw(204, for_minutes=0.1)       # still over it, 6s later
+    await m.draw(46, for_minutes=3)
+
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert "spin" not in kinds, kinds
+
+
+async def test_the_tumble_ceiling_held_is_still_a_tumble(machine) -> None:
+    """The spin floor sits above the highest tumble ever measured, on purpose.
+
+    This is the one guard the trace does NOT settle by itself. Tumble ran
+    12-90 W and lurched to 120; spin ramped to 203-390. Any floor between
+    120 and 203 replays that cycle identically, so 150 is a chosen margin,
+    not a fitted one -- drop it to 100 and the measured wash still comes
+    out right.
+
+    What the margin buys is the case the trace never showed: a heavy load
+    that tumbles at the top of its band and STAYS there, long past the
+    duration guard. That must read as a tumble, and only the threshold
+    can make it so.
+    """
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(50, for_minutes=4)
+    await m.draw(118, for_minutes=1)
+    await m.draw(112, for_minutes=1.5)
+
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert "spin" not in kinds, kinds
+
+
+async def test_a_hard_spin_is_not_mistaken_for_heat(machine) -> None:
+    """The heat floor is the other chosen margin, and the same care applies.
+
+    Measured spins topped out at 390 W, so anything from there to 2.2 kW
+    replays this cycle identically -- the trace cannot pick the number.
+    The module's own description of a wash puts a spin at 600 W, and a
+    600 W spin read as a heat would put a kettle icon on the strip while
+    the drum was flinging water out.
+    """
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(50, for_minutes=4)
+    await m.draw(580, for_minutes=1)
+    await m.draw(640, for_minutes=1)
+
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert kinds[-1] == "spin", kinds
+
+
+async def test_a_soak_does_not_let_a_pending_phase_span_it(machine) -> None:
+    """A run that stops being drawn stops accruing, and this is the seam.
+
+    A wash soaks: minutes at a few watts, under the plug's own start
+    threshold. A phase WAITING to be confirmed must not treat the reading
+    before the soak and the reading after it as one unbroken run -- that
+    commits a spin off two readings ten minutes apart and back-dates it
+    to before the silence.
+
+    A phase already committed is the opposite case and stays that way:
+    the measured trace records tumble as 21:02-21:09 including its lulls,
+    so the soak counts towards the tumble it interrupted.
+    """
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(50, for_minutes=4)
+    await m.draw(2200, for_minutes=3)        # heat
+    await m.draw(60, for_minutes=3)          # tumble
+    await m.draw(212, for_minutes=0)         # one reading in the spin band
+    await m.draw(5, for_minutes=10)          # soaking, under start_watts
+    await m.draw(206, for_minutes=0)         # one reading, ten minutes on
+    await m.draw(58, for_minutes=3)
+
+    phases = m.sensor.extra_state_attributes["phases"]
+    kinds = [p["kind"] for p in phases]
+    assert kinds == ["fill", "heat", "tumble"], kinds
+    assert phases[-1]["seconds"] >= 900, phases[-1]
+
+
+async def test_a_sustained_ramp_is_a_spin(machine) -> None:
+    """The other side of it: the guard must not swallow a real spin.
+
+    The measured spins ran 100 seconds to four minutes and climbed to
+    300-390 W. A threshold that filtered those out would be worse than
+    no strip at all.
+    """
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(50, for_minutes=4)
+    await m.draw(203, for_minutes=0.6)
+    await m.draw(302, for_minutes=1.2)
+
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert kinds[-1] == "spin", kinds
+
+
+async def test_heat_is_never_mistaken_for_spin(machine) -> None:
+    """2.2 kW against a few hundred. The one classification with room."""
+    m = machine
+    await m.draw(20, for_minutes=2)
+    await m.draw(2250, for_minutes=4)
+
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert kinds[-1] == "heat", kinds
+
+
+async def test_the_timeline_survives_the_wash_ending(machine) -> None:
+    """The washing sits in the drum afterwards, and the card still shows it.
+
+    Clearing the phases when the cycle ends would empty the strip at
+    exactly the moment somebody walks over to find out what happened.
+    """
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(2250, for_minutes=4)
+    await m.draw(50, for_minutes=8)
+    await m.draw(0, for_minutes=0)
+    await m.advance(6)
+
+    assert m.sensor.state == APPLIANCE_IDLE
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert kinds, "the strip emptied the moment the wash finished"
+    assert "heat" in kinds
+
+
+async def test_a_restart_does_not_blank_the_strip(machine) -> None:
+    """The washing is still in the drum afterwards, and so is its story.
+
+    A cycle in flight is deliberately not resumed across a restart -- we
+    cannot know what the machine did while we were not looking. The
+    timeline of a wash that already FINISHED is a different thing: it is
+    a record, not a guess, and blanking it would empty the card at the
+    one moment somebody is walking over to read it. A new wash clears it
+    anyway, because `_begin` starts a fresh list.
+    """
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(2250, for_minutes=4)
+    await m.draw(50, for_minutes=8)
+    await m.draw(0, for_minutes=0)
+    await m.advance(6)
+    before = m.sensor.extra_state_attributes["phases"]
+    assert [p["kind"] for p in before] == ["fill", "heat", "tumble"], before
+
+    after_restart = ApplianceCycleSensor(FakeEntry(), dict(SPEC))
+    after_restart.hass = m.hass
+    after_restart.entity_id = "sensor.washing_machine_cycle"
+    after_restart._restore(m.sensor.extra_state_attributes)
+
+    assert after_restart.extra_state_attributes["phases"] == before
+    assert after_restart.extra_state_attributes["phase"] == "tumble"
+
+
+async def test_a_new_wash_starts_a_new_timeline(machine) -> None:
+    """Last week's phases are not this wash's."""
+    m = machine
+    await m.draw(30, for_minutes=2)
+    await m.draw(2250, for_minutes=4)
+    await m.draw(50, for_minutes=8)
+    await m.draw(0, for_minutes=0)
+    await m.advance(6)
+    first = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert "heat" in first
+
+    await m.draw(40, for_minutes=3)
+    kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
+    assert "heat" not in kinds, f"the new wash inherited the old one: {kinds}"
+    assert kinds == ["fill"], kinds
