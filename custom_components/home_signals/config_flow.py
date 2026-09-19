@@ -18,6 +18,25 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
+    CONF_DRYER_DOOR,
+    CONF_DRYER_ENERGY,
+    CONF_DRYER_PLUG,
+    CONF_DRYER_POWER,
+    CONF_IDLE_MINUTES,
+    CONF_IDLE_WATTS,
+    CONF_MIN_KWH,
+    CONF_MIN_MINUTES,
+    CONF_START_WATTS,
+    CONF_WASHER_DOOR,
+    CONF_WASHER_ENERGY,
+    CONF_WASHER_LEAK,
+    CONF_WASHER_PLUG,
+    CONF_WASHER_POWER,
+    DEFAULT_IDLE_MINUTES,
+    DEFAULT_IDLE_WATTS,
+    DEFAULT_MIN_KWH,
+    DEFAULT_MIN_MINUTES,
+    DEFAULT_START_WATTS,
     CONF_SALT_BOTH_THRESHOLD,
     CONF_SALT_ONE_THRESHOLD,
     CONF_SALT_SENSORS,
@@ -140,6 +159,108 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 default=defaults.get(CONF_IGNORE_UNAVAILABLE, []),
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(multiple=True)
+            ),
+            # Appliances. The power sensor is the switch: leave it empty and
+            # that machine contributes nothing at all — no cycle sensor, no
+            # rows, no cleaning light. Everything else about it is optional,
+            # and each missing part degrades on its own (no door means the
+            # drum is never reported full; no leak sensor means never red).
+            vol.Optional(
+                CONF_WASHER_POWER, default=defaults.get(CONF_WASHER_POWER, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+            vol.Optional(
+                CONF_WASHER_PLUG, default=defaults.get(CONF_WASHER_PLUG, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="switch")
+            ),
+            vol.Optional(
+                CONF_WASHER_DOOR, default=defaults.get(CONF_WASHER_DOOR, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="binary_sensor")
+            ),
+            vol.Optional(
+                CONF_WASHER_LEAK, default=defaults.get(CONF_WASHER_LEAK, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="binary_sensor", device_class="moisture"
+                )
+            ),
+            vol.Optional(
+                CONF_WASHER_ENERGY,
+                default=defaults.get(CONF_WASHER_ENERGY, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+            vol.Optional(
+                CONF_DRYER_POWER, default=defaults.get(CONF_DRYER_POWER, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+            vol.Optional(
+                CONF_DRYER_PLUG, default=defaults.get(CONF_DRYER_PLUG, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="switch")
+            ),
+            vol.Optional(
+                CONF_DRYER_DOOR, default=defaults.get(CONF_DRYER_DOOR, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="binary_sensor")
+            ),
+            vol.Optional(
+                CONF_DRYER_ENERGY,
+                default=defaults.get(CONF_DRYER_ENERGY, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+            # Shared by both machines. A dryer's profile is flatter than a
+            # washer's, so if one set stops fitting both, this is where it
+            # splits — but starting with two copies of numbers nobody has
+            # measured yet would be two things to get wrong.
+            vol.Optional(
+                CONF_START_WATTS,
+                default=defaults.get(CONF_START_WATTS, DEFAULT_START_WATTS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1, max=200, step=1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="W",
+                )
+            ),
+            vol.Optional(
+                CONF_IDLE_WATTS,
+                default=defaults.get(CONF_IDLE_WATTS, DEFAULT_IDLE_WATTS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=200, step=1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="W",
+                )
+            ),
+            vol.Optional(
+                CONF_IDLE_MINUTES,
+                default=defaults.get(CONF_IDLE_MINUTES, DEFAULT_IDLE_MINUTES),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="min",
+                )
+            ),
+            vol.Optional(
+                CONF_MIN_MINUTES,
+                default=defaults.get(CONF_MIN_MINUTES, DEFAULT_MIN_MINUTES),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=120, step=1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="min",
+                )
+            ),
+            vol.Optional(
+                CONF_MIN_KWH, default=defaults.get(CONF_MIN_KWH, DEFAULT_MIN_KWH),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=5, step=0.01, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="kWh",
+                )
             ),
         }
     )

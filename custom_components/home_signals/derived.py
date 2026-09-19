@@ -45,8 +45,10 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ACCENT_ALERT,
+    APPLIANCE_RUNNING,
     ATTR_HOURS,
     ATTR_ITEM_ID,
+    ATTR_LOAD_ID,
     ACCENT_INFO,
     ACCENT_WARN,
     CONF_BATTERY_THRESHOLD,
@@ -68,6 +70,7 @@ from .const import (
     SECURITY_GREEN,
     SECURITY_RED,
     SERVICE_DISMISS,
+    SERVICE_LAUNDRY_HUNG,
     SERVICE_SNOOZE,
 )
 
@@ -141,6 +144,20 @@ def _dismiss(item_id: str) -> dict[str, Any]:
     return {"service": f"{DOMAIN}.{SERVICE_DISMISS}", "data": {ATTR_ITEM_ID: item_id}}
 
 
+def _hung(load_id: str) -> dict[str, Any]:
+    """The action that says a load of washing is up.
+
+    Deliberately NOT a dismissal. A dismissal is card-side memory: it hides a
+    row while the thing that produced it carries on being true, and the
+    washing machine card would still be showing "2 to hang" next to a Needs
+    you list that had forgotten about them. This clears the load at source,
+    in the one place that counts them, so the wall button, this row and the
+    card cannot disagree.
+    """
+    return {"service": f"{DOMAIN}.{SERVICE_LAUNDRY_HUNG}",
+            "data": {ATTR_LOAD_ID: load_id}}
+
+
 def _snooze(item_id: str, hours: int = 8) -> dict[str, Any]:
     """The action that hides a row for a while.
 
@@ -174,7 +191,7 @@ class _Derived(SensorEntity):
         timer. These two are specific, cheap, and the ones a person expects
         to respond immediately.
         """
-        return [
+        watched = [
             entity_id
             for entity_id in (
                 self._option(CONF_BIN_SENSOR, None),
@@ -182,6 +199,11 @@ class _Derived(SensorEntity):
             )
             if entity_id
         ]
+        # A finished wash and a leak both want to appear the moment they are
+        # true rather than up to five minutes later, and both are already
+        # summarised onto one entity each.
+        watched.extend(self._appliance_entities())
+        return watched
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -330,6 +352,19 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         self.async_write_ha_state()
 
     @callback
+    def refresh(self) -> None:
+        """Recompute now, for a change no subscription could have caught.
+
+        The appliance sensors keep their pending loads in memory rather than
+        in an entity this could watch, and they are created after this is —
+        so they call in here instead of being subscribed to.
+        """
+        if self.hass is None:
+            return
+        self._recompute()
+        self.async_write_ha_state()
+
+    @callback
     def reset(self) -> None:
         """Bring everything back — the escape hatch when a rule misfires."""
         self._suppressed.clear()
@@ -355,6 +390,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         candidates.extend(self._tasks())
         candidates.extend(self._batteries())
         candidates.extend(self._salt())
+        candidates.extend(self._appliances())
         candidates.extend(self._offline())
 
         # A dismissal only clears the occurrence it was made against, so
@@ -517,6 +553,88 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 "action_label": "Snooze",
             })
         return rows
+
+    def _appliance_entities(self) -> list[str]:
+        """The cycle sensors this integration publishes, found by their id.
+
+        Looked up rather than injected so the rows keep working if the
+        entities are set up in a different order, and so this reads the same
+        state a card does — one source of truth, checked the same way.
+        """
+        found = []
+        for state in self.hass.states.async_all("sensor"):
+            if state.attributes.get("slug") and "pending_count" in state.attributes:
+                found.append(state.entity_id)
+        return found
+
+    def _appliances(self) -> list[dict[str, Any]]:
+        """Water on the floor, a machine left dead, and washing to hang.
+
+        Three different urgencies from one sensor. The leak is the only one
+        that cannot be finished by pressing something, so it is the only one
+        offered a snooze; the other two are cleared by doing the thing.
+        """
+        rows: list[dict[str, Any]] = []
+        for entity_id in self._appliance_entities():
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state in _NOT_A_READING:
+                continue
+            attrs = state.attributes
+            name = _name_of(state)
+            slug = attrs.get("slug") or entity_id
+
+            if attrs.get("leak"):
+                rows.append({
+                    "id": f"leak_{slug}",
+                    "title": f"{name} is leaking",
+                    "detail": "Power cut at the plug \u00b7 check the floor",
+                    "icon": "mdi:water-alert",
+                    "accent": ACCENT_ALERT,
+                    "action_label": "Snooze",
+                    "action": _snooze(f"leak_{slug}", hours=1),
+                })
+
+            # Deliberately independent of the leak: the sensor stays wet long
+            # after the floor is dealt with, and the cycle still has to be
+            # finished. "It is off" stays true and stays worth saying.
+            if not attrs.get("powered", True):
+                rows.append({
+                    "id": f"unpowered_{slug}",
+                    "title": f"{name} has no power",
+                    "detail": "Switched off at the plug",
+                    "icon": "mdi:power-plug-off",
+                    "accent": ACCENT_WARN,
+                    "action_label": "Snooze",
+                    "action": _snooze(f"unpowered_{slug}", hours=4),
+                })
+
+            # One row per load, keyed to the cycle that produced it, so
+            # clearing one leaves the other alone and next week's wash is
+            # never silenced by last week's dismissal.
+            pending = attrs.get("pending")
+            if not isinstance(pending, list):
+                continue
+            for load in pending:
+                if not isinstance(load, dict) or not load.get("id"):
+                    continue
+                rows.append({
+                    "id": load["id"],
+                    "title": "Laundry needs hanging",
+                    "detail": self._load_detail(load),
+                    "icon": "mdi:hanger",
+                    "accent": ACCENT_WARN,
+                    "action_label": "Hung",
+                    "action": _hung(load["id"]),
+                })
+        return rows
+
+    @staticmethod
+    def _load_detail(load: dict[str, Any]) -> str:
+        finished = load.get("finished_at")
+        parsed = dt_util.parse_datetime(finished) if finished else None
+        if parsed is None:
+            return "Finished"
+        return "Finished " + dt_util.as_local(parsed).strftime("%H:%M")
 
     def _offline(self) -> list[dict[str, Any]]:
         """One row for all of them, not one each.
