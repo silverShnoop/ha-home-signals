@@ -59,7 +59,17 @@ TITLE = "Home Signals"
 
 # Anything that can mark a moment: motion and door contacts, locks, and the
 # button/remote events that prove a person rather than a pet.
-_TRACKABLE_DOMAINS = ["binary_sensor", "event", "lock", "device_tracker"]
+#
+# Timestamp sensors are in as a narrow fifth case, because that is what a
+# ZHA button has to be represented as -- ZHA creates no event entities, so
+# a press only reaches an entity by being stamped onto one. The device
+# class keeps the picker from filling with every sensor in the house.
+_TRACKABLE = [
+    selector.EntityFilterSelectorConfig(
+        domain=["binary_sensor", "event", "lock", "device_tracker"]
+    ),
+    selector.EntityFilterSelectorConfig(domain="sensor", device_class="timestamp"),
+]
 
 
 def _schema(defaults: dict[str, Any]) -> vol.Schema:
@@ -68,9 +78,7 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_ENTITIES, default=defaults.get(CONF_ENTITIES, [])
             ): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain=_TRACKABLE_DOMAINS, multiple=True
-                )
+                selector.EntitySelectorConfig(filter=_TRACKABLE, multiple=True)
             ),
             vol.Optional(
                 CONF_MAX_EVENTS,

@@ -122,6 +122,56 @@ async def test_clearing_a_load_reaches_needs_you(hass: HomeAssistant) -> None:
     assert hass.states.get("sensor.washing_machine").attributes["pending_count"] == 0
 
 
+async def test_a_press_reaches_the_activity_feed_as_a_button(
+    hass: HomeAssistant,
+) -> None:
+    """The feed watches entities, and a ZHA button is not one.
+
+    ZHA creates no event entities at all, so the only way a press reaches
+    the feed is by being stamped onto a timestamp sensor. By domain and
+    device class that sensor says *when* something happened and nothing
+    about what, so it declares its own kind — rather than the feed
+    guessing from an entity id that ends in `_button`, which works right
+    up until somebody renames it.
+    """
+    await _start(hass, {**OPTIONS, "entities": ["sensor.washing_machine_button"]})
+
+    await hass.services.async_call(DOMAIN, SERVICE_LAUNDRY_HUNG, {}, blocking=True)
+    await hass.async_block_till_done()
+
+    feed = hass.states.get("sensor.activity_feed")
+    assert feed is not None
+    events = feed.attributes.get("events") or []
+    mine = [e for e in events if e.get("entity_id") == "sensor.washing_machine_button"]
+    assert mine, f"the press never reached the feed: {events}"
+    assert mine[0]["kind"] == "button", (
+        f"a press was filed as {mine[0]['kind']!r}, not a button"
+    )
+
+
+async def test_a_kind_nobody_recognises_is_not_believed(hass: HomeAssistant) -> None:
+    """The frontend draws an icon from the kind, so the set is closed.
+
+    An entity claiming `kind: "explosion"` would render as nothing at all,
+    which is worse than being filed as `other`.
+    """
+    await _start(hass, {**OPTIONS, "entities": ["binary_sensor.washer_door"]})
+
+    hass.states.async_set(
+        "binary_sensor.washer_door", "on",
+        {"device_class": "door", "kind": "explosion"},
+    )
+    await hass.async_block_till_done()
+
+    feed = hass.states.get("sensor.activity_feed")
+    events = feed.attributes.get("events") or []
+    mine = [e for e in events if e.get("entity_id") == "binary_sensor.washer_door"]
+    assert mine, "the door never reached the feed"
+    assert mine[0]["kind"] == "door", (
+        f"an invented kind was believed: {mine[0]['kind']!r}"
+    )
+
+
 async def test_the_press_is_recorded_even_with_nothing_to_clear(
     hass: HomeAssistant,
 ) -> None:
