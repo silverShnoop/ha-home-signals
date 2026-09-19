@@ -950,9 +950,20 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
                     )
                 continue
             if state.state != "locked":
-                unlocked.append(
-                    self._row(state, "Unlocked", "mdi:lock-open-variant")
+                # The word is "Unlocked" whether the bolt failed to throw
+                # or was never asked to. A jam is not a third state of the
+                # door -- it is the mechanism failing to reach one of the
+                # two -- and the honest reading of a jammed lock is that
+                # the door is not locked. The reason rides alongside as a
+                # flag, for the card to show as a chip.
+                jammed = state.state == "jammed"
+                row = self._row(
+                    state,
+                    "Unlocked",
+                    "mdi:lock-alert" if jammed else "mdi:lock-open-variant",
                 )
+                row["jammed"] = jammed
+                unlocked.append(row)
             else:
                 self._shut(entity_id)
 
@@ -984,15 +995,27 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
             self._status = SECURITY_AMBER
         else:
             # Off `_row_since`, not off `last_changed`. The Nuki drops to
-            # `unavailable` several times a day, and on the way back its
+            # `unavailable` about once a day -- nine times in the ten days
+            # of history this was checked against, and three times inside
+            # thirteen minutes on one of those nights -- and on the way back its
             # `last_changed` is the blip rather than the moment the door
             # was opened, so reading it here restarted the grace period
             # every time: a door left open never went red as long as the
             # lock blipped more often than every five minutes.
             earliest = min(self._row_since.values())
             self._since = earliest if self._since is None else min(self._since, earliest)
+            # A jam skips the grace entirely. The five minutes exist to
+            # cover a door somebody is using -- carrying shopping in, seeing
+            # someone out -- and a door that will shortly be shut by the
+            # person who opened it. A jammed lock is the opposite: nobody is
+            # coming back to finish it, because the mechanism already tried
+            # and failed. Waiting five minutes to say so is five minutes of
+            # a green-looking house with a door that will not lock.
+            jammed = any(row.get("jammed") for row in unlocked)
             self._status = (
-                SECURITY_RED if now - self._since >= self._grace() else SECURITY_AMBER
+                SECURITY_RED
+                if jammed or now - self._since >= self._grace()
+                else SECURITY_AMBER
             )
 
         self._detail = self._summarise()
@@ -1004,6 +1027,7 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
                 "sub": row["area"] or "No area",
                 "since": row["since"],
                 "icon": row["icon"],
+                "jammed": bool(row.get("jammed")),
                 "accent": ACCENT_ALERT
                 if self._status == SECURITY_RED
                 else ACCENT_WARN,
