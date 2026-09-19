@@ -99,6 +99,11 @@ _MOTION_CLASSES = {
     BinarySensorDeviceClass.OCCUPANCY,
     BinarySensorDeviceClass.PRESENCE,
 }
+# The kinds an entity is allowed to claim for itself. A closed set, because
+# the frontend draws an icon from it: an unknown kind would silently render
+# as nothing.
+_KINDS = {KIND_BUTTON, KIND_LOCK, KIND_MOTION, KIND_DOOR, KIND_OTHER}
+
 _DOOR_CLASSES = {
     BinarySensorDeviceClass.DOOR,
     BinarySensorDeviceClass.GARAGE_DOOR,
@@ -336,7 +341,11 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
             return
 
         entity_id = new_state.entity_id
-        kind = self._kind(entity_id, new_state.attributes.get(ATTR_DEVICE_CLASS))
+        kind = self._kind(
+            entity_id,
+            new_state.attributes.get(ATTR_DEVICE_CLASS),
+            new_state.attributes.get("kind"),
+        )
 
         # Motion clearing is not an event. A button or a lock changing is.
         if kind in (KIND_MOTION, KIND_DOOR) and new_state.state != STATE_ON:
@@ -357,12 +366,22 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         self.async_write_ha_state()
 
     @staticmethod
-    def _kind(entity_id: str, device_class: str | None) -> str:
+    def _kind(
+        entity_id: str, device_class: str | None, declared: str | None = None
+    ) -> str:
         """Classify an event by what it proves, not by what fired it.
 
         The rail's icon is the kind, and a button press is the interesting one
         because it proves a person rather than a cat.
+
+        An entity that declares its own `kind` is believed. A timestamp
+        sensor is the case that needs it: by domain and device class it
+        says only *when* something happened, so without this the feed
+        would have to guess from the entity id — and "ends in _button" is
+        the kind of guess that works until somebody renames something.
         """
+        if declared in _KINDS:
+            return declared
         domain = entity_id.partition(".")[0]
         if domain == "event":
             return KIND_BUTTON

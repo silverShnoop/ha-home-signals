@@ -38,6 +38,14 @@ One merged, newest-first feed of things that happened in the house.
 with the frontend: a rail draws its icon from the kind, and a button press is
 the interesting one because it proves a person rather than a cat.
 
+It is normally worked out from the domain and device class, but an entity
+may **declare its own `kind`** as an attribute and be believed — as long as
+it names one of those five, because an unrecognised kind would render as no
+icon at all. A timestamp sensor is the case that needs it: a ZHA button has
+no event entity to be watched (ZHA creates none), so a press only reaches
+the feed by being stamped onto a sensor, and by domain and device class
+that sensor says *when* something happened and nothing about what.
+
 ### What counts as an event
 
 - **Motion and door** — only the transition *to* on. Motion clearing is not
