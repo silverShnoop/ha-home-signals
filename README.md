@@ -95,6 +95,24 @@ integration's own options, alongside the battery threshold. With no sensors
 configured, or none of them readable, the check contributes nothing — a
 softener that cannot be read is not reported as full.
 
+### Salt is the one row you cannot put off
+
+Every other row can be dismissed or snoozed, because putting a job off
+is a real answer to it: the bins come round again, the washing waits.
+
+Salt does not wait. It runs out, and then the softener passes hard water
+through the house until somebody notices the limescale. The row is only
+ever true when there is a bag to fetch from the garage or a bag to buy,
+and it clears itself the moment the level comes back up — so there is
+nothing a snooze could usefully do except hide it.
+
+It carries `sticky: True` rather than simply dropping its button,
+because the button is not the only way in. The `snooze` and `dismiss`
+services are there for anything to call, and a suppression restored from
+before the button went would still be sitting in the record. A row that
+cannot be cleared by hand must not be clearable by any of those either,
+or "you cannot snooze it" is only true of the card.
+
 ### Dismissing
 
 Three actions: `home_signals.dismiss`, `home_signals.snooze` (with `hours`)
