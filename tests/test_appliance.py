@@ -406,14 +406,19 @@ async def test_a_load_already_out_of_the_drum_keeps_its_row(machine) -> None:
     assert on_the_airer in ids, "the load on the airer lost its row"
 
 
-async def test_a_rinse_puts_the_fullness_back(machine) -> None:
+async def test_a_run_too_short_to_be_a_wash_puts_the_fullness_back(
+    machine,
+) -> None:
     """A run that was not a wash leaves the drum as full as it found it.
 
-    This is the risk in dismissing on START rather than on finish: a
-    three-minute spin does not refill the drum, so without putting the
-    claim back the house would forget there is washing in the machine
-    entirely. Saying "Full" while it spins is a small wrong; losing the
-    washing is a real one.
+    This is the risk in dismissing on START rather than on finish. The
+    machine has no three-minute programme, but a run still ends under
+    `min_minutes` when somebody turns the dial off partway -- and then
+    nothing refills the drum, so without putting the claim back the
+    house forgets there is washing in the machine entirely.
+
+    Saying "Full" while it spins is a small wrong. Losing the washing
+    is a real one, and nothing else here would ever correct it.
     """
     m = machine
     await m.draw(2000, for_minutes=30)
@@ -424,7 +429,7 @@ async def test_a_rinse_puts_the_fullness_back(machine) -> None:
     assert m.attrs["drum_full"] is False, "it is running"
     await m.draw(0, for_minutes=6)
 
-    assert m.attrs["drum_full"] is True, "a rinse lost the washing in the drum"
+    assert m.attrs["drum_full"] is True, "a short run lost the washing in the drum"
     assert m.waiting == 1, "and it lost the job too"
 
 

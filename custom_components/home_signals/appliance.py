@@ -550,11 +550,24 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         drum any more, it is a running one, and this cycle will fill it
         again when it ends.
 
-        The claim is only parked, not spent. A three-minute rinse is not
-        a wash and will not refill the drum, so if this run is discarded
-        the fullness goes back exactly as it was. Forgetting there is
-        washing in the machine is the one outcome worse than saying
-        "Full" while it spins.
+        The claim is only parked, not spent, because not every run
+        refills the drum. `_finish` discards anything under
+        `min_minutes` or `min_kwh`, and a cycle can also end without
+        finishing at all. Three ways that happens, in the order they
+        actually matter:
+
+        - a RESTART mid-cycle. A cycle in flight is deliberately never
+          resumed, so without putting the fullness back Home Assistant
+          comes up saying the drum is empty while the washing is in it,
+          and the next finish adds a second hang row on top of the
+          first. This is the common one: restarts are routine.
+        - the PLUG being cut, which is what the leak automation does.
+        - an ABORTED run -- the dial turned off a few minutes in. Not a
+          programme this machine has, just a thing people do.
+
+        Forgetting there is washing in the machine is the one outcome
+        worse than saying "Full" while it spins, and nothing else in
+        the house would ever correct it.
         """
         self._rewashing = self._drum_full
         self._rewashing_load = (
