@@ -140,6 +140,18 @@ class Machine:
     def attrs(self) -> dict:
         return self.sensor.extra_state_attributes
 
+    async def empty_the_drum(self) -> None:
+        """Somebody opens the door and takes the washing out, then shuts it.
+
+        Needed between two loads. Two washes with the door never opened
+        are not two loads -- they are one load washed twice, which is
+        what `_begin` now says.
+        """
+        self.set(DOOR, "on")
+        await self.hass.async_block_till_done()
+        self.set(DOOR, "off")
+        await self.hass.async_block_till_done()
+
     @property
     def waiting(self) -> int:
         return self.attrs["pending_count"]
@@ -327,6 +339,149 @@ async def test_opening_the_door_empties_the_drum_but_not_the_hanging_list(
     assert machine.waiting == 1, "unloading the machine hung the washing up"
 
 
+async def test_a_full_drum_that_runs_again_is_not_full_any_more(machine) -> None:
+    """Starting the machine on a full drum means it is washing that load again.
+
+    `drum_full` says there is clean washing inside, and the door is the
+    only thing that empties it. If the machine starts without the door
+    having opened, the washing never came out -- so the drum is not
+    full, it is running, and "Full" on the card beside "Running" is the
+    house claiming two things that cannot both be true.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    assert m.attrs["drum_full"] is True
+
+    await m.draw(2000, for_minutes=2)
+    assert m.state == APPLIANCE_RUNNING
+    assert m.attrs["drum_full"] is False, "a running machine is not a full one"
+
+
+async def test_a_load_washed_twice_is_still_one_load_to_hang(machine) -> None:
+    """Re-washing does not double the job it left behind.
+
+    The first row cannot be satisfied while the washing is back in the
+    machine -- there is nothing on the airer to hang -- and if it were
+    left standing, the second wash would add a row of its own and Needs
+    you would ask for two armfuls of one.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    assert m.waiting == 1
+    first = m.attrs["pending"][0]["id"]
+
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+
+    assert m.waiting == 1, m.attrs["pending"]
+    assert m.attrs["pending"][0]["id"] != first, "it is the second wash that counts"
+    assert m.attrs["drum_full"] is True
+
+
+async def test_a_load_already_out_of_the_drum_keeps_its_row(machine) -> None:
+    """Only the load still INSIDE is the one being re-washed.
+
+    Washing taken out and not yet hung is on the airer, waiting, and
+    entirely unaffected by whatever the machine does next. Dropping
+    those rows too would quietly cancel a job somebody still has to do.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    on_the_airer = m.attrs["pending"][0]["id"]
+
+    await m.empty_the_drum()
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    assert m.waiting == 2
+
+    # And now that second load is re-washed without coming out.
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+
+    ids = [p["id"] for p in m.attrs["pending"]]
+    assert len(ids) == 2, ids
+    assert on_the_airer in ids, "the load on the airer lost its row"
+
+
+async def test_a_run_too_short_to_be_a_wash_puts_the_fullness_back(
+    machine,
+) -> None:
+    """A run that was not a wash leaves the drum as full as it found it.
+
+    This is the risk in dismissing on START rather than on finish. The
+    machine has no three-minute programme, but a run still ends under
+    `min_minutes` when somebody turns the dial off partway -- and then
+    nothing refills the drum, so without putting the claim back the
+    house forgets there is washing in the machine entirely.
+
+    Saying "Full" while it spins is a small wrong. Losing the washing
+    is a real one, and nothing else here would ever correct it.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    assert m.attrs["drum_full"] is True and m.waiting == 1
+
+    await m.draw(2000, for_minutes=3)
+    assert m.attrs["drum_full"] is False, "it is running"
+    await m.draw(0, for_minutes=6)
+
+    assert m.attrs["drum_full"] is True, "a short run lost the washing in the drum"
+    assert m.waiting == 1, "and it lost the job too"
+
+
+async def test_power_cut_mid_rewash_puts_the_fullness_back(machine) -> None:
+    """The leak cutoff must not empty the drum on paper."""
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    assert m.attrs["drum_full"] is True
+
+    await m.draw(2000, for_minutes=4)
+    m.set(PLUG, "off")
+    await m.hass.async_block_till_done()
+
+    assert m.attrs["drum_full"] is True, "cutting the power emptied the drum"
+    assert m.waiting == 1
+
+
+async def test_the_door_ends_a_rewash(machine) -> None:
+    """Opened mid-cycle, the washing is out and there is nothing to put back."""
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+
+    await m.draw(2000, for_minutes=4)
+    await m.empty_the_drum()
+    await m.draw(0, for_minutes=6)
+
+    assert m.attrs["drum_full"] is False, "the drum was emptied by hand"
+
+
+async def test_a_restart_mid_rewash_does_not_lose_the_washing(machine) -> None:
+    """A cycle in flight is not resumed, so the fullness goes back.
+
+    Without this the drum would come back empty on paper while the
+    washing sat in it -- the one state nothing else in the house would
+    ever correct.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    await m.draw(2000, for_minutes=4)
+    assert m.attrs["drum_full"] is False
+
+    after_restart = ApplianceCycleSensor(FakeEntry(), dict(SPEC))
+    after_restart.hass = m.hass
+    after_restart.entity_id = "sensor.washing_machine_cycle"
+    after_restart._restore(m.sensor.extra_state_attributes)
+
+    assert after_restart.extra_state_attributes["drum_full"] is True
+
+
 async def test_two_loads_are_two_rows_and_the_button_clears_the_oldest(
     machine: Machine,
 ) -> None:
@@ -334,6 +489,7 @@ async def test_two_loads_are_two_rows_and_the_button_clears_the_oldest(
     await machine.draw(0, for_minutes=6)
     first = machine.attrs["pending"][0]["id"]
 
+    await machine.empty_the_drum()
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
     assert machine.waiting == 2
@@ -353,6 +509,7 @@ async def test_a_named_load_clears_exactly_that_one(machine: Machine) -> None:
     await machine.draw(0, for_minutes=6)
     oldest = machine.attrs["pending"][0]["id"]
 
+    await machine.empty_the_drum()
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
     newest = machine.attrs["pending"][1]["id"]
