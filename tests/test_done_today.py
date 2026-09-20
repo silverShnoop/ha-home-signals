@@ -277,3 +277,291 @@ async def test_an_unreadable_list_says_nothing_rather_than_zero(
     assert _names(sensor) == ["Milk"], (
         "a failed read was taken as proof that nothing is done"
     )
+
+
+# --- Backfilling from the recorder -----------------------------------
+#
+# Watching only knows what happened while it was watching, and the first
+# morning of anything is the morning it knows nothing about. Home
+# Assistant does not record a to-do list's items -- they are not
+# attributes -- but it DOES record the activity entity's, and those name
+# the exact items with the exact time.
+#
+# Both tests below are about putting the wrong time on the right item,
+# because that is the only way this can fail quietly.
+
+
+def _activity(when: str, items: list[tuple[str, str]], kind: str = "list_items_removed"):
+    return {
+        "event_type": kind,
+        "items": [{"uuid": uid, "itemId": name} for uid, name in items],
+    }, when
+
+
+class _History:
+    """Stands in for the recorder, which is not running in these tests."""
+
+    def __init__(self, rows: list[tuple[dict, str]]) -> None:
+        self.rows = rows
+        self.asked_for: list[str] = []
+
+    def __call__(self, hass, start, end, entity_id, *args):
+        self.asked_for.append(entity_id)
+        return {
+            entity_id: [
+                State(entity_id, when, attrs) for attrs, when in self.rows
+            ]
+        }
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """Patch the recorder read, and nothing else."""
+    holder: dict[str, _History] = {}
+
+    def use(rows):
+        hist = _History(rows)
+        holder["hist"] = hist
+        monkeypatch.setattr(
+            "custom_components.home_signals.todo_done.history"
+            ".state_changes_during_period",
+            hist,
+        )
+        monkeypatch.setattr(
+            "custom_components.home_signals.todo_done.get_instance",
+            lambda hass: _Executor(),
+        )
+        return hist
+
+    return use
+
+
+class _Executor:
+    async def async_add_executor_job(self, fn, *args):
+        return fn(*args)
+
+
+async def test_the_morning_before_we_were_watching_is_filled_in(
+    hass: HomeAssistant, recorded
+) -> None:
+    """The whole reason the recorder is read at all.
+
+    Bring stamps nothing, so without this the section is empty until
+    the next tick -- and on the day the sensor is first deployed, that
+    means a morning's shopping simply did not happen.
+    """
+    morning = dt_util.now().replace(hour=9, minute=30, second=0, microsecond=0)
+    recorded([_activity(morning.isoformat(), [("aaaa-1111", "Milch")])])
+
+    lists = _Lists(hass, [_item("AAAA-1111", "Milk")])
+    hass.states.async_set(LIST, "3")
+    hass.states.async_set("event.shopping_activities", morning.isoformat())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    sensor = TodoDoneTodaySensor(entry, LIST, "Shopping", "event.shopping_activities")
+    sensor.hass = hass
+    sensor.entity_id = "sensor.shopping_done_today"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    rows = sensor.extra_state_attributes["items"]
+    assert [r["summary"] for r in rows] == ["Milk"], (
+        "the morning was not recovered from the history"
+    )
+    # The list's name, not the activity feed's. Bring's itemId is its
+    # catalogue id, which is in German for anything added from their
+    # suggestions -- "Milch" on a card that says Milk everywhere else.
+    assert rows[0]["summary"] == "Milk", rows[0]["summary"]
+    assert dt_util.as_local(
+        dt_util.parse_datetime(rows[0]["completed"])
+    ) == morning, "the item was dated to when we read it, not when it happened"
+
+
+async def test_a_restart_replaying_the_event_does_not_re_date_it(
+    hass: HomeAssistant, recorded
+) -> None:
+    """The trap that made this worth testing rather than just writing.
+
+    A restart republishes the entity, so the SAME event appears in the
+    history twice: once when it happened and once when Home Assistant
+    came back. `last_changed` is the restart. The state is the truth.
+    Take the wrong one and the morning's shopping is dated to whenever
+    the box last rebooted.
+    """
+    morning = dt_util.now().replace(hour=9, minute=30, second=0, microsecond=0)
+    # Both rows carry the same event, which is exactly what the recorder
+    # holds after a restart.
+    recorded([
+        _activity(morning.isoformat(), [("aaaa-1111", "Milch")]),
+        _activity(morning.isoformat(), [("aaaa-1111", "Milch")]),
+    ])
+
+    _Lists(hass, [_item("AAAA-1111", "Milk")])
+    hass.states.async_set(LIST, "3")
+    hass.states.async_set("event.shopping_activities", morning.isoformat())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    sensor = TodoDoneTodaySensor(entry, LIST, "Shopping", "event.shopping_activities")
+    sensor.hass = hass
+    sensor.entity_id = "sensor.shopping_done_today"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    rows = sensor.extra_state_attributes["items"]
+    assert len(rows) == 1, f"the replayed event was counted twice: {rows}"
+    assert dt_util.as_local(
+        dt_util.parse_datetime(rows[0]["completed"])
+    ) == morning, "the replay re-dated the item to the restart"
+
+
+async def test_something_put_back_on_the_list_is_not_done_today(
+    hass: HomeAssistant, recorded
+) -> None:
+    """The history says it was bought. The list says it is outstanding.
+
+    The list wins: it is the current fact, and the history is only a
+    record of what once happened.
+    """
+    morning = dt_util.now().replace(hour=9, minute=30, second=0, microsecond=0)
+    recorded([_activity(morning.isoformat(), [("aaaa-1111", "Milch")])])
+
+    _Lists(hass, [])  # nothing completed any more
+    hass.states.async_set(LIST, "3")
+    hass.states.async_set("event.shopping_activities", morning.isoformat())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    sensor = TodoDoneTodaySensor(entry, LIST, "Shopping", "event.shopping_activities")
+    sensor.hass = hass
+    sensor.entity_id = "sensor.shopping_done_today"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    assert _names(sensor) == [], (
+        "an item put back on the list was still counted as done today"
+    )
+
+
+async def test_adding_things_to_a_list_is_not_getting_them_done(
+    hass: HomeAssistant, recorded
+) -> None:
+    morning = dt_util.now().replace(hour=9, minute=30, second=0, microsecond=0)
+    recorded([
+        _activity(morning.isoformat(), [("aaaa-1111", "Milch")], "list_items_added"),
+    ])
+
+    _Lists(hass, [_item("AAAA-1111", "Milk")])
+    hass.states.async_set(LIST, "3")
+    hass.states.async_set("event.shopping_activities", morning.isoformat())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    sensor = TodoDoneTodaySensor(entry, LIST, "Shopping", "event.shopping_activities")
+    sensor.hass = hass
+    sensor.entity_id = "sensor.shopping_done_today"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    assert _names(sensor) == [], "items ADDED to the list were counted as done"
+
+
+async def test_a_list_with_no_activity_feed_reads_no_history(
+    hass: HomeAssistant, recorded
+) -> None:
+    """Most lists have none, and must not pay for the ones that do."""
+    hist = recorded([])
+    sensor, _ = await _sensor(hass, [_item("u1", "Something")])
+
+    assert hist.asked_for == [], hist.asked_for
+    assert _names(sensor) == []
+
+
+async def test_bought_put_back_and_bought_again_is_dated_to_the_second_time(
+    hass: HomeAssistant, recorded
+) -> None:
+    """Two removals of one item in a day, and only one of them is true.
+
+    Bought at half nine, put back at lunchtime, bought again at three.
+    It IS done -- the list says so -- and it was done at three. Dating
+    the row to half nine records a completion that was undone.
+    """
+    morning = dt_util.now().replace(hour=9, minute=30, second=0, microsecond=0)
+    afternoon = dt_util.now().replace(hour=15, minute=0, second=0, microsecond=0)
+    recorded([
+        _activity(morning.isoformat(), [("aaaa-1111", "Milch")]),
+        _activity(afternoon.isoformat(), [("aaaa-1111", "Milch")]),
+    ])
+
+    _Lists(hass, [_item("AAAA-1111", "Milk")])
+    hass.states.async_set(LIST, "3")
+    hass.states.async_set("event.shopping_activities", afternoon.isoformat())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    sensor = TodoDoneTodaySensor(entry, LIST, "Shopping", "event.shopping_activities")
+    sensor.hass = hass
+    sensor.entity_id = "sensor.shopping_done_today"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    rows = sensor.extra_state_attributes["items"]
+    assert len(rows) == 1, rows
+    assert dt_util.as_local(
+        dt_util.parse_datetime(rows[0]["completed"])
+    ) == afternoon, (
+        "dated to the completion that was undone, not the one that stands"
+    )
+
+
+async def test_the_two_sides_spell_the_uuid_differently(
+    hass: HomeAssistant, recorded
+) -> None:
+    """Bring's activity feed gives lowercase uuids; get_items gives upper.
+
+    Nothing documents that, so it could change in either direction --
+    hence both sides are folded rather than one. Written the wrong way
+    round on purpose: history UPPER, list lower.
+    """
+    morning = dt_util.now().replace(hour=9, minute=30, second=0, microsecond=0)
+    recorded([_activity(morning.isoformat(), [("AAAA-1111", "Milch")])])
+
+    _Lists(hass, [_item("aaaa-1111", "Milk")])
+    hass.states.async_set(LIST, "3")
+    hass.states.async_set("event.shopping_activities", morning.isoformat())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    sensor = TodoDoneTodaySensor(entry, LIST, "Shopping", "event.shopping_activities")
+    sensor.hass = hass
+    sensor.entity_id = "sensor.shopping_done_today"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    assert _names(sensor) == ["Milk"], (
+        "the two sides did not match because of letter case alone"
+    )
+
+
+async def test_an_item_that_stamps_itself_keeps_its_own_time(
+    hass: HomeAssistant, recorded
+) -> None:
+    """A list that records when it was done has already answered.
+
+    Its own answer beats any reconstruction from an activity feed.
+    """
+    stamped = dt_util.now().replace(hour=8, minute=0, second=0, microsecond=0)
+    wrong = dt_util.now().replace(hour=14, minute=0, second=0, microsecond=0)
+    recorded([_activity(wrong.isoformat(), [("aaaa-1111", "Whatever")])])
+
+    _Lists(hass, [_item("AAAA-1111", "Hang the washing", stamped.isoformat())])
+    hass.states.async_set(LIST, "3")
+    hass.states.async_set("event.shopping_activities", wrong.isoformat())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    sensor = TodoDoneTodaySensor(entry, LIST, "Shopping", "event.shopping_activities")
+    sensor.hass = hass
+    sensor.entity_id = "sensor.shopping_done_today"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    rows = sensor.extra_state_attributes["items"]
+    assert len(rows) == 1, rows
+    assert dt_util.as_local(
+        dt_util.parse_datetime(rows[0]["completed"])
+    ) == stamped, "the history overwrote a timestamp the item supplied itself"

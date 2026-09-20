@@ -300,6 +300,48 @@ happened before the restart.
 Un-ticking removes the row again. Putting something back on the list is as
 real an act as ticking it off was.
 
+### Backfilling the morning from the recorder
+
+Watching only knows what happened while it was watching, and the first
+morning of anything is the morning it knows nothing about.
+
+Home Assistant records state history for everything, but a to-do list's
+**items are not attributes** — they come from a service call — so the
+recorder has never seen them. What it *has* seen is the **activity
+entity**: Bring publishes `event.<list>_activities`, whose attributes
+name the exact items in each change, and those are recorded like any
+others. So on startup the history is read back to local midnight and the
+part of today that happened before we were looking is filled in.
+
+The entity is found by slug rather than configured — `todo.phoenix` →
+`event.phoenix_activities` — and confirmed against the state machine, so
+a list without one simply has no backfill and reads no history at all.
+
+Two traps in that history, both of which put the wrong time on the right
+item:
+
+- **The event's time is its state, not `last_changed`.** A restart
+  republishes the entity, so `last_changed` is when Home Assistant came
+  back and the state is when the shopping happened. Take the wrong one
+  and the morning is dated to the reboot.
+- **The same event therefore appears twice**, so items are deduplicated
+  on uuid.
+
+And two rules about which time is the true one:
+
+- Where an item was removed **more than once** today — bought, put back,
+  bought again — the row is dated to the **last** one. The first is a
+  completion that was undone.
+- An item that **stamps itself** keeps its own timestamp. Its own answer
+  beats any reconstruction from an activity feed.
+
+The name comes from the **list**, not the feed: Bring's `itemId` is its
+catalogue id, which is in German for anything added from their
+suggestions — "Milch" on a card that says Milk everywhere else.
+
+Only items that are **still completed** are taken. The history records
+what once happened; the list is the current fact, and it wins.
+
 ### The day ends at midnight, twice over
 
 A timer clears the record at local midnight. The rows are *also* filtered
