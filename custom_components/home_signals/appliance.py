@@ -168,6 +168,10 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # a wash -- see _put_back.
         self._rewashing = False
         self._rewashing_load: str | None = None
+        # The timeline the last real cycle left behind, held while a new
+        # run proves itself. A run that turns out not to be a wash gives
+        # it back rather than leaving the strip blank.
+        self._parked_phases: list[dict[str, Any]] | None = None
         self._pending: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = []
         self._door_was_open = False
@@ -288,6 +292,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
 
         Only a finished cycle fills the drum, so a door opened and shut to
         throw one more sock in leaves the machine empty, which it is.
+
+        An opening door also ends a run too short to have been a wash.
+        See _lock_released.
         """
         door = self._spec.get("door")
         if not door:
@@ -299,7 +306,44 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             # load is no longer the one this cycle is re-washing.
             self._rewashing = False
             self._rewashing_load = None
+            self._lock_released()
         self._door_was_open = open_now
+
+    def _lock_released(self) -> None:
+        """The door just opened. A short run was the lock, not a wash.
+
+        Unloading the machine drew ten watts for four seconds -- the
+        interlock letting go -- which is over `start_watts`, so the
+        cycle detector called it a cycle starting. "Enter fast, leave
+        slow" then held the card on RUNNING for the full five-minute
+        quiet floor, with the door standing open. Every unload, every
+        time. It also wiped the phase strip, which is meant to survive
+        the wash and show what it did while the washing is still in the
+        drum.
+
+        The door is the evidence that settles it: a washing machine
+        cannot run with its door open, because the door is interlocked.
+        So a door that opens during a run proves the run is not a wash
+        in progress.
+
+        The guard is on LENGTH, and it is what makes this safe. A run
+        already past `min_minutes` is left completely alone -- that is
+        the case where the wash really has finished and is sitting in
+        its quiet wait with its record not yet written, and abandoning
+        it would throw away ninety minutes of laundry. A run under
+        `min_minutes` is one `_finish` would have discarded anyway, so
+        this changes WHEN the card stops saying "running" and never
+        whether anything is recorded.
+        """
+        if self._state != APPLIANCE_RUNNING:
+            return
+        started = self._started_at
+        if started is None:
+            return
+        minutes = (dt_util.utcnow() - started).total_seconds() / 60.0
+        if minutes >= float(self._cfg("min_minutes", 10)):
+            return
+        self._abandon()
 
     # --- the state machine --------------------------------------------
 
@@ -336,6 +380,15 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         if watts >= start_watts:
             self._note_lull_ended(now)
             if self._state != APPLIANCE_RUNNING:
+                # Not with the door open. The interlock means a wash
+                # cannot be under way, so whatever this draw is -- the
+                # lock, a drum light, the panel waking -- it is not a
+                # cycle starting. Without this the abandon in
+                # _lock_released lasts exactly one reading: the plug
+                # was still reporting the lock's ten watts two seconds
+                # later and the run began all over again.
+                if self._door_was_open:
+                    return
                 self._begin(now)
             # After _begin, so the opening reading lands in a fresh
             # timeline rather than the end of the last cycle's.
@@ -580,6 +633,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._longest_lull = 0.0
         self._peak_watts = 0.0
         self._quiet_since = None
+        self._parked_phases = self._phases
         self._phases = []
         # `_phase_evidence` is NOT cleared. It is what the machine has
         # been seen doing across every wash, and clearing it per cycle
@@ -623,11 +677,21 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._publish()
 
     def _put_back(self) -> None:
-        """Undo _begin's claim on a full drum, for a run that was not a wash."""
+        """Undo what _begin claimed, for a run that was not a wash.
+
+        The fullness and the timeline both. A run that is thrown away
+        has to leave the machine looking exactly as it found it, or
+        every door-lock blip on the way to unloading costs the last
+        wash's strip -- which is kept precisely so somebody walking
+        over can see what it did.
+        """
         if self._rewashing:
             self._drum_full = True
         self._rewashing = False
         self._rewashing_load = None
+        if self._parked_phases is not None:
+            self._phases = self._parked_phases
+            self._parked_phases = None
 
     def _abandon(self) -> None:
         """A cycle that stopped without finishing. No laundry comes of it."""
@@ -697,6 +761,8 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._drum_full = True
         self._rewashing = False
         self._rewashing_load = None
+        # This run WAS a wash, so its own timeline is the one to keep.
+        self._parked_phases = None
 
     # --- what a person does to it --------------------------------------
 
