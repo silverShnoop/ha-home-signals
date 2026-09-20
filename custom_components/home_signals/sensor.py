@@ -240,8 +240,29 @@ def _done_today_sensors(
             friendly = state.attributes.get(ATTR_FRIENDLY_NAME)
             if isinstance(friendly, str) and friendly.strip():
                 name = friendly.strip()
-        sensors.append(TodoDoneTodaySensor(entry, list_entity, name))
+        sensors.append(
+            TodoDoneTodaySensor(entry, list_entity, name, _activity_for(hass, list_entity))
+        )
     return sensors
+
+
+def _activity_for(hass: HomeAssistant, list_entity: str) -> str | None:
+    """The activity feed that goes with a to-do list, if there is one.
+
+    Bring publishes `event.<slug>_activities` beside `todo.<slug>`, and
+    that entity is the only place the WHICH and the WHEN of a tick sit
+    together -- so it is what the backfill reads out of the recorder.
+    Matched by slug rather than configured: a second option naming a
+    thing that is always derivable is a second thing to get wrong, and
+    a list with no such entity simply has no backfill.
+
+    Confirmed against the state machine rather than assumed, so a
+    missing one is a missing backfill and not a history query for an
+    entity that has never existed.
+    """
+    slug = list_entity.split(".", 1)[-1]
+    candidate = f"event.{slug}_activities"
+    return candidate if hass.states.get(candidate) is not None else None
 
 
 @callback
