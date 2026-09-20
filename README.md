@@ -138,8 +138,9 @@ plug reports.
 - **`drum_full`** — whether there is still washing inside. The door is
   what empties it, with one exception: a machine started again on a full
   drum is washing that load a second time, so it is running rather than
-  full, and this cycle refills it. The claim is only parked — a
-  three-minute rinse does not count as a wash, and the fullness goes back
+  full, and this cycle refills it. The claim is only parked: if the run
+  never becomes a wash — cut short, the plug pulled, or Home Assistant
+  restarted mid-cycle, which never resumes one — the fullness goes back
   exactly as it was.
 - **`queues_loads`** — whether a finished load leaves a job behind after
   the drum is emptied. True for the washer, false for the dryer.
