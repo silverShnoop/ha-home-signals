@@ -135,7 +135,12 @@ plug reports.
 - **`pending`** — the loads that have finished and not been hung up, one
   entry each, keyed to the cycle that produced them. Always empty on a
   dryer, which has no such state.
-- **`drum_full`** — whether there is still washing inside.
+- **`drum_full`** — whether there is still washing inside. The door is
+  what empties it, with one exception: a machine started again on a full
+  drum is washing that load a second time, so it is running rather than
+  full, and this cycle refills it. The claim is only parked — a
+  three-minute rinse does not count as a wash, and the fullness goes back
+  exactly as it was.
 - **`queues_loads`** — whether a finished load leaves a job behind after
   the drum is emptied. True for the washer, false for the dryer.
 - **`finished` / `finished_today`** — completed cycles with their duration
@@ -151,7 +156,7 @@ They are tracked separately because three different things answer them:
 | --- | --- | --- |
 | Is it running | the plug's power sensor | the draw dropping and staying down |
 | Is there washing inside | the door contact | opening the door |
-| Is there washing to hang | a person | the wall button, or the Needs you row |
+| Is there washing to hang | a person | the wall button, the Needs you row, or the load going back in for another wash |
 
 Emptying the drum never clears the hanging list, and hanging never empties
 the drum. Conflating them is the obvious simplification and it is wrong: you
