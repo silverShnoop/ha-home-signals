@@ -72,6 +72,7 @@ from .const import (
     SERVICE_LAUNDRY_HUNG,
     SOURCE_BUTTON,
     SOURCE_UI,
+    CONF_DONE_LISTS,
     CONF_ENTITIES,
     CONF_MAX_EVENTS,
     DEFAULT_MAX_EVENTS,
@@ -91,6 +92,7 @@ from .appliance import (
     CleaningStatusSensor,
 )
 from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
+from .todo_done import TodoDoneTodaySensor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -212,8 +214,34 @@ async def async_setup_entry(
         entities.extend(presses)
         entities.append(CleaningStatusSensor(entry, cycles))
 
+    entities.extend(_done_today_sensors(hass, entry))
+
     async_add_entities(entities)
     _async_register_services(hass, needs_you, cycles, presses)
+
+
+def _done_today_sensors(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> list[SensorEntity]:
+    """One "done today" sensor per list that was asked for.
+
+    Named from the list's friendly name so the entity id reads
+    `sensor.phoenix_done_today` rather than carrying the to-do entity's
+    own id twice over.
+    """
+    lists = entry.options.get(CONF_DONE_LISTS, entry.data.get(CONF_DONE_LISTS, []))
+    sensors: list[SensorEntity] = []
+    for list_entity in lists:
+        if not isinstance(list_entity, str) or not list_entity:
+            continue
+        state = hass.states.get(list_entity)
+        name = list_entity.split(".", 1)[-1].replace("_", " ")
+        if state is not None:
+            friendly = state.attributes.get(ATTR_FRIENDLY_NAME)
+            if isinstance(friendly, str) and friendly.strip():
+                name = friendly.strip()
+        sensors.append(TodoDoneTodaySensor(entry, list_entity, name))
+    return sensors
 
 
 @callback

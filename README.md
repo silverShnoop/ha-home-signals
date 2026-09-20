@@ -260,6 +260,53 @@ a row while the thing behind it carries on being true, and the card would go
 on saying "2 to hang" next to a list that had forgotten them. This clears the
 load in the one place that counts them.
 
+## `sensor.<list>_done_today`
+
+What got ticked off a to-do list since midnight, one sensor per list. The
+state is how many; `items` carries the rows in the same shape the list
+itself hands the card, so the panel draws the completed section with the
+same row renderer as the list above it.
+
+### Why this is not a filter over the list
+
+A to-do entity remembers **what** was completed and, mostly, not **when**.
+`local_todo` writes a `completed` timestamp onto each item because
+iCalendar has a field for it. Bring has none — the eighteen completed
+items on the shopping list are eighteen items bought at some unknown point
+over some unknown number of days.
+
+So for half the lists in this house there is nothing to filter on, and
+"what did we get done today" has to be watched as it happens and written
+down. The sensor is a `RestoreEntity` for the same reason the activity
+feed is: losing the record on every restart would empty the section
+exactly when somebody wants to look at it.
+
+It is watched rather than polled. A to-do entity's state is its
+outstanding count, so ticking something off moves it, and that move is the
+cue to re-read the completed items and see which ones are new.
+
+### The first read after a restart is a census
+
+This is the rule that matters, and getting it wrong is loud: stamp every
+already-completed item with the moment you first read it, and the panel
+opens with a fortnight of shopping under a heading that says today.
+
+So an item with no timestamp of its own only counts if it **arrives** in
+the completed set while the sensor is watching. An item that carries its
+own timestamp is believed over the moment we happened to look — which is
+also what lets a list that records one answer for the part of today that
+happened before the restart.
+
+Un-ticking removes the row again. Putting something back on the list is as
+real an act as ticking it off was.
+
+### The day ends at midnight, twice over
+
+A timer clears the record at local midnight. The rows are *also* filtered
+on the way out, because nothing was running at midnight after an overnight
+reboot and that timer never fired — without the second check the panel
+comes up showing yesterday under today's heading.
+
 ## `sensor.security_status`
 
 Is the house shut, as one of three colours: `green`, `amber` or `red`. It

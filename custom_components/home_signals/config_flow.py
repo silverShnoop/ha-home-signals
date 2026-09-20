@@ -46,6 +46,7 @@ from .const import (
     CONF_ENTITIES,
     CONF_IGNORE_UNAVAILABLE,
     CONF_MAX_EVENTS,
+    CONF_DONE_LISTS,
     CONF_TASKS_SENSOR,
     DEFAULT_BATTERY_THRESHOLD,
     DEFAULT_SALT_BOTH_THRESHOLD,
@@ -108,6 +109,15 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 default=defaults.get(CONF_TASKS_SENSOR, vol.UNDEFINED),
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="binary_sensor")
+            ),
+            # Which to-do lists keep a "done today" record. Empty means
+            # none: watching a list costs a service call per tick, and
+            # most lists are not something anybody reviews at the end of
+            # the day.
+            vol.Optional(
+                CONF_DONE_LISTS, default=defaults.get(CONF_DONE_LISTS, [])
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="todo", multiple=True)
             ),
             vol.Optional(
                 CONF_SALT_SENSORS, default=defaults.get(CONF_SALT_SENSORS, [])
