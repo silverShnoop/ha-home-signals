@@ -414,7 +414,10 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # A dismissal only clears the occurrence it was made against, so
         # "bin out" returns next week rather than never coming back. That is
         # what the date in the id is doing.
-        self._items = [c for c in candidates if not self._is_suppressed(c["id"])]
+        self._items = [
+            c for c in candidates
+            if c.get("sticky") or not self._is_suppressed(c["id"])
+        ]
 
         # Clean up suppressions whose item is gone, so the dict cannot grow
         # without bound across months of restarts.
@@ -529,8 +532,22 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             # Every side low is the trip to buy a bag; one side low can wait
             # for the bag already in the garage.
             "accent": ACCENT_ALERT if all_low else ACCENT_WARN,
-            "action_label": "Snooze",
-            "action": _snooze("softener_salt", hours=24),
+            # No snooze, and not suppressible at all.
+            #
+            # Everything else on this list can be put off because
+            # putting it off costs nothing: the bins come round again,
+            # the washing waits. Salt does not wait -- it runs out,
+            # and then the softener is passing hard water through the
+            # house until somebody notices limescale. The row is only
+            # ever true when there is a bag to fetch or a bag to buy,
+            # and it clears itself the moment the level comes back up.
+            #
+            # `sticky` rather than just dropping the button, because
+            # the button is not the only way in: the service is there
+            # for anything to call, and a row that cannot be cleared
+            # by hand should not be clearable by a stale suppression
+            # either.
+            "sticky": True,
         }]
 
     def _batteries(self) -> list[dict[str, Any]]:
