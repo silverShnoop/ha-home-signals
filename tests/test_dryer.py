@@ -44,6 +44,11 @@ DRYER_SPEC = {
     "leak": None,
     "energy_sensor": DRYER_ENERGY,
     "queues_loads": False,
+    # As sensor.py builds it. A dryer has no classifier and one phase;
+    # test_setup asserts that the real spec says so, this asserts what
+    # the machine then does with it.
+    "tracks_phases": False,
+    "only_phase": "tumble",
     "start_watts": 8,
     "idle_watts": 4,
     "idle_minutes": 5,
@@ -219,3 +224,81 @@ async def test_a_full_dryer_turns_the_cleaning_light_amber(
 
     await dryer.open_door()
     assert status.native_value == CLEANING_GREEN
+
+
+# --- it only ever does the one thing, and says so ---------------------
+
+
+async def test_a_running_dryer_says_it_is_tumbling(dryer: Dryer) -> None:
+    """A dryer tumbles, and that is still an answer.
+
+    It has no classifier -- the washer's power bands were measured on
+    the washer, off one wash, and would label a dryer cycle
+    confidently and wrongly. But "it is doing the only thing it does"
+    is a real answer to what it is doing, and a running dryer used to
+    show nothing at all.
+    """
+    await dryer.draw(2200, for_minutes=20)
+
+    assert dryer.state == APPLIANCE_RUNNING
+    assert [p["kind"] for p in dryer.attrs["phases"]] == ["tumble"], (
+        dryer.attrs["phases"]
+    )
+
+
+async def test_and_only_ever_that_one(dryer: Dryer) -> None:
+    """The draw wanders across every band the washer uses.
+
+    A dryer's element cycling crosses the washer's heat and spin
+    thresholds repeatedly. If those bands were ever applied here the
+    card would narrate a wash that did not happen.
+    """
+    for watts in (2200, 950, 200, 2200, 120, 1800):
+        await dryer.draw(watts, for_minutes=5)
+
+    assert [p["kind"] for p in dryer.attrs["phases"]] == ["tumble"], (
+        f"the washer's bands were applied to a dryer: {dryer.attrs['phases']}"
+    )
+
+
+async def test_the_one_phase_grows_with_the_run(dryer: Dryer) -> None:
+    """It is the LIVE phase, so the card counts up from it."""
+    await dryer.draw(2200, for_minutes=5)
+    started = dryer.attrs["phases"][0]["started_at"]
+
+    await dryer.draw(2200, for_minutes=20)
+
+    phase = dryer.attrs["phases"][0]
+    assert phase["started_at"] == started, "the phase restarted mid-run"
+    assert phase["seconds"] >= 20 * 60, phase["seconds"]
+
+
+async def test_the_record_outlives_the_run(dryer: Dryer) -> None:
+    """Same as the washer: the strip is a record, not a progress bar."""
+    await dryer.run_a_load()
+
+    assert dryer.state == APPLIANCE_IDLE
+    assert [p["kind"] for p in dryer.attrs["phases"]] == ["tumble"], (
+        dryer.attrs["phases"]
+    )
+
+
+async def test_a_second_load_is_its_own_tumble(dryer: Dryer) -> None:
+    """Not one tumble growing across two loads with a gap in the middle."""
+    await dryer.run_a_load()
+    first = dryer.attrs["phases"][0]["started_at"]
+    # Emptied AND shut. `open_door` only opens it, and a machine whose
+    # door is still open does not start -- which is the guard working,
+    # not the phase failing, and it cost a confusing red the first time.
+    await dryer.open_door()
+    dryer.set(DRYER_DOOR, "off")
+    await dryer.hass.async_block_till_done()
+    await dryer.run_a_load()
+
+    assert dryer.attrs["finished"], "the second load never ran"
+
+    phases = dryer.attrs["phases"]
+    assert [p["kind"] for p in phases] == ["tumble"], phases
+    assert phases[0]["started_at"] != first, (
+        "the second load carried on the first load's phase"
+    )
