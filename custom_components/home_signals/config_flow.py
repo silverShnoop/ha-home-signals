@@ -47,6 +47,9 @@ from .const import (
     CONF_IGNORE_UNAVAILABLE,
     CONF_MAX_EVENTS,
     CONF_DONE_LISTS,
+    CONF_PEOPLE,
+    CONF_PRESENCE_GRACE_MINUTES,
+    DEFAULT_PRESENCE_GRACE_MINUTES,
     CONF_TASKS_SENSOR,
     DEFAULT_BATTERY_THRESHOLD,
     DEFAULT_SALT_BOTH_THRESHOLD,
@@ -118,6 +121,23 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_DONE_LISTS, default=defaults.get(CONF_DONE_LISTS, [])
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="todo", multiple=True)
+            ),
+            # Who is worth a row when nobody can locate them. Empty
+            # means none: a guest's phone dropping off is not a job.
+            vol.Optional(
+                CONF_PEOPLE, default=defaults.get(CONF_PEOPLE, [])
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="person", multiple=True)
+            ),
+            vol.Optional(
+                CONF_PRESENCE_GRACE_MINUTES,
+                default=defaults.get(
+                    CONF_PRESENCE_GRACE_MINUTES, DEFAULT_PRESENCE_GRACE_MINUTES
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=5, max=720, step=5, mode=selector.NumberSelectorMode.BOX
+                )
             ),
             vol.Optional(
                 CONF_SALT_SENSORS, default=defaults.get(CONF_SALT_SENSORS, [])
