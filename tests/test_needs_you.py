@@ -1,0 +1,131 @@
+"""What can be put off, and what cannot.
+
+Every row on `Needs you` can be dismissed or snoozed, because putting a
+job off is a real answer to it -- the bins come round again, the washing
+waits. Salt is the exception, and this file exists to keep it one.
+
+The softener row is only ever true when there is a bag to fetch from the
+garage or a bag to buy, and it clears itself the moment the level comes
+back up. Snoozing it does not make the softener wait: it passes hard
+water through the house until somebody notices the limescale.
+"""
+
+from __future__ import annotations
+
+import pytest
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.home_signals.const import DOMAIN
+from custom_components.home_signals.derived import NeedsYouSensor
+
+LEFT = "sensor.softener_left"
+RIGHT = "sensor.softener_right"
+
+OPTIONS = {
+    "salt_sensors": [LEFT, RIGHT],
+    "salt_both_threshold": 40,
+    "salt_one_threshold": 25,
+}
+
+
+def _sensor(hass: HomeAssistant) -> NeedsYouSensor:
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options=OPTIONS)
+    entry.add_to_hass(hass)
+    sensor = NeedsYouSensor(entry)
+    sensor.hass = hass
+    sensor.entity_id = "sensor.needs_you"
+    return sensor
+
+
+def _rows(sensor: NeedsYouSensor) -> list[dict]:
+    return sensor.extra_state_attributes["items"]
+
+
+def _salt(sensor: NeedsYouSensor) -> dict | None:
+    return next((r for r in _rows(sensor) if r["id"] == "softener_salt"), None)
+
+
+async def _low(hass: HomeAssistant) -> NeedsYouSensor:
+    hass.states.async_set(LEFT, "30")
+    hass.states.async_set(RIGHT, "0")
+    sensor = _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+    return sensor
+
+
+async def test_low_salt_is_a_row(hass: HomeAssistant) -> None:
+    sensor = await _low(hass)
+    row = _salt(sensor)
+    assert row is not None, _rows(sensor)
+    assert "salt" in row["title"].lower()
+
+
+async def test_it_offers_no_way_to_put_it_off(hass: HomeAssistant) -> None:
+    """No button. Snoozing does not make the softener wait."""
+    row = _salt(await _low(hass))
+
+    assert "action" not in row, row.get("action")
+    assert "action_label" not in row, row.get("action_label")
+
+
+async def test_and_snoozing_it_anyway_does_nothing(hass: HomeAssistant) -> None:
+    """The button is not the only way in.
+
+    The service is there for anything to call -- an automation, a voice
+    command, a stale suppression restored from before the button went.
+    A row that cannot be cleared by hand must not be clearable by any
+    of those either, or "you cannot snooze it" is only true of the card.
+    """
+    sensor = await _low(hass)
+    assert _salt(sensor) is not None
+
+    sensor.suppress("softener_salt", hours=24)
+    assert _salt(sensor) is not None, "the salt row was snoozed away"
+
+    sensor.suppress("softener_salt")  # a dismissal: no hours, forever
+    assert _salt(sensor) is not None, "the salt row was dismissed away"
+
+
+async def test_topping_it_up_is_what_clears_it(hass: HomeAssistant) -> None:
+    """The only thing that should, and the reason no button is needed."""
+    sensor = await _low(hass)
+    assert _salt(sensor) is not None
+
+    hass.states.async_set(LEFT, "90")
+    hass.states.async_set(RIGHT, "95")
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    assert _salt(sensor) is None, "the row survived the softener being filled"
+
+
+async def test_other_rows_can_still_be_put_off(hass: HomeAssistant) -> None:
+    """Sticky is the exception, not the new rule.
+
+    Without this, making salt permanent by breaking suppression for
+    everything would pass every assertion above.
+    """
+    hass.states.async_set(LEFT, "30")
+    hass.states.async_set(RIGHT, "0")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={},
+        options={**OPTIONS, "tasks_sensor": "binary_sensor.chores"},
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("binary_sensor.chores", "on")
+    sensor = NeedsYouSensor(entry)
+    sensor.hass = hass
+    sensor.entity_id = "sensor.needs_you"
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    chores = next((r for r in _rows(sensor) if r["id"] == "tasks_overdue"), None)
+    assert chores is not None, [r["id"] for r in _rows(sensor)]
+
+    sensor.suppress("tasks_overdue", hours=8)
+    assert not any(r["id"] == "tasks_overdue" for r in _rows(sensor)), (
+        "snoozing stopped working for everything, not just salt"
+    )
+    assert _salt(sensor) is not None
