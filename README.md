@@ -196,6 +196,27 @@ The gap between the two thresholds is the hysteresis: in that band, whatever
 state it is already in wins, so a machine hovering around one number cannot
 chatter.
 
+### The door is what says a short run was not a wash
+
+Unloading the machine draws about ten watts for four seconds as the
+interlock lets go — over `start_watts`, so that blip used to be read as a
+cycle starting, and "leave slow" then held the card on **Running** for the
+full five-minute floor with the door standing open. Every unload, every
+time. It also wiped the phase strip, which is kept after a cycle precisely
+so somebody walking over can see what the wash did.
+
+A washing machine cannot run with its door open, because the door is
+interlocked. So a door that opens during a run proves that run is not a
+wash in progress, and nothing starts a run while the door is open.
+
+The guard is on **length**, and that is what makes it safe. A run already
+past `min_minutes` is left alone — that is a real wash sitting in its quiet
+wait with its record not yet written, and abandoning it would throw the
+laundry away. A shorter run is one that would have been discarded anyway,
+so this changes *when* the card stops saying "running" and never *whether*
+anything is recorded. An abandoned run also hands back the fullness and the
+timeline it borrowed, leaving the machine exactly as it found it.
+
 A completed cycle only counts as laundry if it ran for `min_minutes` and used
 `min_kwh` — a drain-only run, or somebody nudging the dial, is not a wash. And
 a cycle interrupted by the plug going off is **abandoned, not finished**:
