@@ -45,6 +45,20 @@ DEFAULT_SALT_ONE_THRESHOLD = 25
 # rather than filtered out of the list afterwards.
 CONF_DONE_LISTS = "done_lists"
 
+# --- Presence --------------------------------------------------------
+#
+# A person reads "Unknown" when no tracker of theirs is reporting at all
+# -- not "away", which is a reading, but nothing. The card draws that in
+# the warning colour, and on this panel yellow is a promise that
+# something wants doing. So the job has to exist, or the colour is a lie.
+#
+# A grace period because a phone can be in a tunnel, on a plane, or
+# rebooting, and none of those is a job.
+CONF_PEOPLE = "people"
+CONF_PRESENCE_GRACE_MINUTES = "presence_grace_minutes"
+
+DEFAULT_PRESENCE_GRACE_MINUTES = 60
+
 # --- Security --------------------------------------------------------
 #
 # A traffic light rather than a list, because the panel is read from across

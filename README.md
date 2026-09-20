@@ -106,6 +106,24 @@ that memory lives. Dismissals survive a restart, and they are keyed to the
 **occurrence**: dismissing `bin_2026-09-16` clears tonight's bins and lets
 next week's come back.
 
+## Yellow is a promise
+
+A card may state any fact it likes. But **ochre — the warning role — is
+a promise that something wants doing**, and on this panel the thing that
+wants doing lives in `Needs you` and nowhere else. So every yellow thing
+must have a row behind it, or the colour is a lie: a job that exists
+only on the panel, that nobody can clear from a phone, and that no
+amount of doing the thing will make go away.
+
+That rule is why `_people` exists — the card draws an unlocatable person
+in ochre, so the row has to be real — and why `system_health` publishes
+an `accent`, so a tab tile wears the colour of what is actually there
+instead of a fixed one.
+
+It cuts the other way too. An open appliance door used to be drawn in
+ochre and has no row and never should: a machine spends half its life
+with the door open. That chip is neutral now.
+
 ## `sensor.system_health`
 
 What is wrong with the house's plumbing, as opposed to its jobs. Ambient
