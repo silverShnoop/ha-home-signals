@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.home_signals.const import DOMAIN, SERVICE_LAUNDRY_HUNG
+from custom_components.home_signals.sensor import _appliance_specs
 
 OPTIONS = {
     "washer_power": "sensor.washer_power",
@@ -462,3 +463,28 @@ async def test_watching_no_lists_creates_nothing(hass: HomeAssistant) -> None:
         if entity_id.endswith("_done_today")
     ]
     assert dead == [], dead
+
+
+async def test_the_dryer_is_wired_for_one_phase_and_no_classifier(
+    hass: HomeAssistant,
+) -> None:
+    """The spec the house actually builds, not the one the tests build.
+
+    test_dryer proves what the machine DOES with `only_phase`, from a
+    spec that file writes itself. This proves sensor.py sets it -- the
+    half a unit test carrying its own spec cannot see, and the half
+    that has been wrong before.
+    """
+    entry = await _start(hass, {**OPTIONS, **DRYER})
+    specs = {s["slug"]: s for s in _appliance_specs(entry)}
+
+    assert specs["tumble_dryer"]["tracks_phases"] is False, (
+        "the washer's power bands were switched on for the dryer"
+    )
+    assert specs["tumble_dryer"]["only_phase"] == "tumble", (
+        "a running dryer would show no phase at all"
+    )
+    assert specs["washing_machine"]["tracks_phases"] is True
+    assert specs["washing_machine"].get("only_phase") is None, (
+        "the washer would report one phase forever instead of classifying"
+    )

@@ -255,6 +255,22 @@ after the floor has been dealt with, and the cycle still has to be finished —
 so `leak` and `powered` are never inferred from each other, and nothing here
 stops power being restored while the sensor is still wet.
 
+### A dryer only tumbles, and says so
+
+The washer's phase bands were measured on the washer, off one wash, so
+the dryer does not use them — its element runs at a different power and
+they would label every dryer cycle confidently and wrongly.
+
+But *"it is doing the only thing it does"* is still an answer to what it
+is doing, and a running dryer showed nothing at all. So it reports one
+phase, `tumble`, opened when the run opens and grown for as long as the
+run lasts — the same shape a classified phase has, so the card needs to
+know nothing about the difference.
+
+`tracks_phases` picks the classifier; `only_phase` names the single
+phase for a machine that has just the one. A machine sets one or the
+other, never both.
+
 ## `sensor.cleaning_status`
 
 The same three colours as `security_status`, for the same reason: a tab on a

@@ -69,6 +69,7 @@ from .const import (
     DEFAULT_MIN_KWH,
     DEFAULT_MIN_MINUTES,
     DEFAULT_START_WATTS,
+    PHASE_TUMBLE,
     SERVICE_LAUNDRY_HUNG,
     SOURCE_BUTTON,
     SOURCE_UI,
@@ -171,11 +172,16 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             # leaving the drum is opening the door -- which this can see.
             # So there is nothing to queue and nothing to press.
             "queues_loads": False,
-            # No phase strip. A dryer does not fill and does not spin,
+            # No classifier. A dryer does not fill and does not spin,
             # and its heat runs at a different power to the washer's,
             # so the washer's bands would label every dryer cycle
             # confidently and wrongly. It needs its own trace first.
             "tracks_phases": False,
+            # It still says what it is doing, though -- it is just only
+            # ever the one thing. A dryer tumbles, and "tumbling" is a
+            # real answer to what it is doing even when it is the only
+            # answer the machine can give.
+            "only_phase": PHASE_TUMBLE,
             **shared,
         },
     ]

@@ -394,6 +394,8 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             # timeline rather than the end of the last cycle's.
             if self._cfg("tracks_phases", False):
                 self._note_phase(now, watts)
+            else:
+                self._hold_phase(now, watts)
             return
 
         if watts >= idle_watts:
@@ -557,6 +559,39 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._note_evidence(kind, self._phase_pending_low, opened=True)
         self._note_evidence(kind, self._phase_pending_high)
         self._forget_pending()
+
+    def _hold_phase(self, now: datetime, watts: float) -> None:
+        """One phase, held, for a machine that only does one thing.
+
+        A tumble dryer tumbles. It has no fill, no spin and nothing to
+        tell apart, so classifying its draw would be inventing detail
+        the machine does not have -- which is why it does not track
+        phases. But "it is doing the only thing it does" is still an
+        answer to what it is doing, and the card had nothing to show
+        for a running dryer at all.
+
+        So: one entry, opened when the run opens and grown for as long
+        as the run lasts. The same shape a classified phase has, so
+        the card needs to know nothing about the difference.
+        """
+        kind = self._cfg("only_phase", None)
+        if not kind:
+            return
+        if self._phases and self._phases[-1]["kind"] == kind:
+            run = self._phases[-1]
+            run["seconds"] = round(
+                (now - dt_util.parse_datetime(run["started_at"])).total_seconds()
+            )
+            run["low"] = min(run.get("low", watts), round(watts))
+            run["high"] = max(run.get("high", watts), round(watts))
+            return
+        self._phases.append({
+            "kind": kind,
+            "started_at": now.isoformat(),
+            "seconds": 0,
+            "low": round(watts),
+            "high": round(watts),
+        })
 
     def _forget_pending(self) -> None:
         self._phase_pending = None
