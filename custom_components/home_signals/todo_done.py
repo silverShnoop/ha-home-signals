@@ -16,6 +16,25 @@ count, so ticking something off moves it, and that is the cue to re-read
 the completed items and see which ones are new. The record survives a
 restart (RestoreEntity) and empties at local midnight, because the
 question is about a day.
+
+Watching only knows what happened while it was watching, though, and
+the first morning of anything is the morning it knows nothing about. So
+where the integration publishes an ACTIVITY entity -- Bring's
+`event.<list>_activities` names the exact items in each change -- the
+recorder is read back to local midnight and the part of today that
+happened before we were looking is filled in. That is the answer to
+"does Home Assistant already store this": not for the to-do entity,
+whose items are not attributes and so are never recorded, but yes for
+the activity entity, whose items are.
+
+Two traps in that history, both of which would put the wrong time on
+the right item:
+
+  * the event's own timestamp is its STATE, not `last_changed`. A
+    restart replays the entity, so `last_changed` is when Home
+    Assistant came back and the state is when the shopping happened.
+  * the same event therefore appears more than once. Deduplicated on
+    the item's uuid, keeping the earliest.
 """
 
 from __future__ import annotations
@@ -24,6 +43,7 @@ from datetime import datetime
 import logging
 from typing import Any
 
+from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -66,10 +86,17 @@ class TodoDoneTodaySensor(SensorEntity, RestoreEntity):
     _attr_has_entity_name = False
     _attr_icon = "mdi:check-all"
 
-    def __init__(self, entry: ConfigEntry, list_entity: str, name: str) -> None:
-        """Track one to-do list."""
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        list_entity: str,
+        name: str,
+        activity: str | None = None,
+    ) -> None:
+        """Track one to-do list, and the activity feed for it if it has one."""
         self._entry = entry
         self._list = list_entity
+        self._activity = activity
         self._attr_name = f"{name} done today"
         self._attr_unique_id = f"{entry.entry_id}_done_today_{list_entity}"
         # uid -> the row as it will be rendered, carrying `completed`.
@@ -130,6 +157,108 @@ class TodoDoneTodaySensor(SensorEntity, RestoreEntity):
             )
         )
         await self._sync()
+        await self._backfill()
+
+    async def _backfill(self) -> None:
+        """Fill in the part of today that happened before we were watching.
+
+        Only items that are STILL completed are taken: an item bought
+        this morning and put back on the list since is not done today,
+        and the live list is the authority on that. The name comes from
+        the list too -- the activity feed carries Bring's catalogue id,
+        which is in German for anything added from their suggestions.
+        """
+        if not self._activity:
+            return
+        rows = await self._activity_today()
+        if not rows:
+            return
+        items = await self._completed_items()
+        if items is None:
+            return
+        live = {
+            str(item.get("uid")).lower(): item
+            for item in items
+            if isinstance(item.get("uid"), str)
+        }
+
+        changed = False
+        for uid, when in rows.items():
+            item = live.get(uid)
+            if item is None:
+                continue
+            real = str(item.get("uid"))
+            # An item that stamps itself has already answered, and its
+            # own answer beats anybody's reconstruction of it. Only a
+            # list with no stamps ever gets here with something to add,
+            # which is the case this exists for -- but the guard is
+            # cheap and the alternative is a rule that happens to hold.
+            if _completed_at(item) is not None:
+                continue
+            self._done[real] = {
+                "uid": real,
+                "summary": item.get("summary"),
+                "description": item.get("description"),
+                "status": "completed",
+                "completed": dt_util.as_utc(when).isoformat(),
+            }
+            changed = True
+        if changed:
+            self.async_write_ha_state()
+
+    async def _activity_today(self) -> dict[str, datetime]:
+        """Item uuid -> when it was taken off the list, since midnight.
+
+        Read from the recorder, which keeps an entity's attributes as
+        well as its state -- and the activity entity's attributes are
+        the only place the WHICH and the WHEN sit together.
+        """
+        start = dt_util.start_of_local_day()
+        try:
+            states = await get_instance(self.hass).async_add_executor_job(
+                history.state_changes_during_period,
+                self.hass,
+                start,
+                dt_util.utcnow(),
+                self._activity,
+                False,
+                True,
+            )
+        except Exception:  # noqa: BLE001 - no history is not an error
+            LOGGER.warning("Could not read history for %s", self._activity)
+            return {}
+
+        found: dict[str, datetime] = {}
+        for state in (states or {}).get(self._activity, []):
+            if state.state in _IGNORED:
+                continue
+            if state.attributes.get("event_type") != "list_items_removed":
+                continue
+            # The STATE is when it happened. `last_changed` is when Home
+            # Assistant last republished it, which after a restart is
+            # the restart -- and that is how a morning's shopping ends
+            # up dated to the afternoon.
+            when = dt_util.parse_datetime(state.state)
+            if when is None or not _today(when):
+                continue
+            for item in state.attributes.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                uuid = item.get("uuid")
+                if not isinstance(uuid, str) or not uuid:
+                    continue
+                key = uuid.lower()
+                # The LATEST removal, not the first. An item bought in
+                # the morning, put back on the list at lunchtime and
+                # bought again at three was done at three -- the first
+                # one is a completion that was undone, and dating the
+                # row to it would be recording a fact that stopped
+                # being true. (A restart replays the same event with
+                # the same state, so the ordinary duplicate resolves to
+                # itself either way.)
+                if key not in found or when > found[key]:
+                    found[key] = when
+        return found
 
     @callback
     def _changed(self, event: Event[EventStateChangedData]) -> None:
