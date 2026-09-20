@@ -37,6 +37,14 @@ CONF_SALT_ONE_THRESHOLD = "salt_one_threshold"
 DEFAULT_SALT_BOTH_THRESHOLD = 40
 DEFAULT_SALT_ONE_THRESHOLD = 25
 
+# --- Done today ------------------------------------------------------
+#
+# A to-do entity remembers what was completed and, mostly, not when:
+# `local_todo` stamps each item because iCalendar has a field for it, Bring
+# does not. So "what did we get done today" has to be watched as it happens
+# rather than filtered out of the list afterwards.
+CONF_DONE_LISTS = "done_lists"
+
 # --- Security --------------------------------------------------------
 #
 # A traffic light rather than a list, because the panel is read from across

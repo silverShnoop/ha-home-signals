@@ -406,3 +406,59 @@ async def test_each_appliance_wears_its_own_icon(hass: HomeAssistant) -> None:
     assert dryer.attributes["icon"] != washer.attributes["icon"], (
         "the two machines are indistinguishable outside the card"
     )
+
+
+async def test_a_watched_list_gets_a_done_today_sensor_named_after_it(
+    hass: HomeAssistant,
+) -> None:
+    """The entity id is the whole point of naming it from the list.
+
+    Two lists in this house keep a record, so the sensors have to be
+    told apart at the dashboard -- `sensor.phoenix_done_today`, not two
+    entities called after the integration. Named from the friendly name
+    rather than the entity id because Bring's list entity is
+    `todo.phoenix` but a local list could be anything.
+    """
+    hass.states.async_set(
+        "todo.phoenix", "3", {"friendly_name": "Phoenix"}
+    )
+    hass.states.async_set(
+        "todo.home_tasks", "1", {"friendly_name": "Home Tasks"}
+    )
+    # A list whose name has moved on from its entity id, which is the only
+    # case where the two sources of a name disagree -- and the reason the
+    # friendly name is the one read. Bring's own list is `todo.phoenix`
+    # called "Phoenix", so it would prove nothing on its own.
+    hass.states.async_set(
+        "todo.local_todo_xyz", "2", {"friendly_name": "Garden jobs"}
+    )
+    await _start(
+        hass,
+        {
+            **OPTIONS,
+            "done_lists": [
+                "todo.phoenix", "todo.home_tasks", "todo.local_todo_xyz",
+            ],
+        },
+    )
+
+    assert hass.states.get("sensor.phoenix_done_today") is not None, (
+        "the watched list produced no sensor"
+    )
+    assert hass.states.get("sensor.home_tasks_done_today") is not None, (
+        "the second list did not get its own sensor"
+    )
+    assert hass.states.get("sensor.garden_jobs_done_today") is not None, (
+        "the sensor was named from the entity id rather than the list's name"
+    )
+
+
+async def test_watching_no_lists_creates_nothing(hass: HomeAssistant) -> None:
+    """Most houses review no list at the end of the day, and pay nothing."""
+    await _start(hass, OPTIONS)
+
+    dead = [
+        entity_id for entity_id in hass.states.async_entity_ids("sensor")
+        if entity_id.endswith("_done_today")
+    ]
+    assert dead == [], dead
