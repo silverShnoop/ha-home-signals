@@ -162,6 +162,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._phase_evidence: dict[str, dict[str, float]] = {}
 
         self._drum_full = False
+        # Set when a cycle starts on a drum that was still full: the
+        # washing never came out, so this run is washing it again. Held
+        # so the claim can be TAKEN BACK if the run turns out not to be
+        # a wash -- see _put_back.
+        self._rewashing = False
+        self._rewashing_load: str | None = None
         self._pending: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = []
         self._door_was_open = False
@@ -236,6 +242,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         if isinstance(history, list):
             self._history = [h for h in history if isinstance(h, dict)][:MAX_HISTORY]
         self._drum_full = bool(attrs.get("drum_full"))
+        self._rewashing = bool(attrs.get("rewashing"))
+        load = attrs.get("rewashing_load")
+        self._rewashing_load = str(load) if load else None
+        # A cycle in flight is not resumed, so the re-wash it was part of
+        # is over as far as we can tell. Put the fullness back rather
+        # than lose it: the washing is still in the drum either way.
+        self._put_back()
         phases = attrs.get("phases")
         if isinstance(phases, list):
             self._phases = [p for p in phases if isinstance(p, dict) and p.get("kind")]
@@ -282,6 +295,10 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         open_now = _is_on(self.hass, door, default=self._door_was_open)
         if open_now and not self._door_was_open:
             self._drum_full = False
+            # Whatever was in there is out. Nothing to put back, and the
+            # load is no longer the one this cycle is re-washing.
+            self._rewashing = False
+            self._rewashing_load = None
         self._door_was_open = open_now
 
     # --- the state machine --------------------------------------------
@@ -525,6 +542,38 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             seen["runs"] = seen.get("runs", 0) + 1
 
     def _begin(self, now: datetime) -> None:
+        """A cycle starts. If the drum was still full, this is a re-wash.
+
+        `drum_full` means there is clean washing inside, and only the
+        door clears it. A machine that starts without the door having
+        opened is washing the same load again -- so it is not a full
+        drum any more, it is a running one, and this cycle will fill it
+        again when it ends.
+
+        The claim is only parked, not spent, because not every run
+        refills the drum. `_finish` discards anything under
+        `min_minutes` or `min_kwh`, and a cycle can also end without
+        finishing at all. Three ways that happens, in the order they
+        actually matter:
+
+        - a RESTART mid-cycle. A cycle in flight is deliberately never
+          resumed, so without putting the fullness back Home Assistant
+          comes up saying the drum is empty while the washing is in it,
+          and the next finish adds a second hang row on top of the
+          first. This is the common one: restarts are routine.
+        - the PLUG being cut, which is what the leak automation does.
+        - an ABORTED run -- the dial turned off a few minutes in. Not a
+          programme this machine has, just a thing people do.
+
+        Forgetting there is washing in the machine is the one outcome
+        worse than saying "Full" while it spins, and nothing else in
+        the house would ever correct it.
+        """
+        self._rewashing = self._drum_full
+        self._rewashing_load = (
+            self._history[0]["id"] if self._drum_full and self._history else None
+        )
+        self._drum_full = False
         self._state = APPLIANCE_RUNNING
         self._started_at = now
         self._energy_at_start = _number(self.hass, self._spec.get("energy_sensor"))
@@ -573,8 +622,16 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._finish()
         self._publish()
 
+    def _put_back(self) -> None:
+        """Undo _begin's claim on a full drum, for a run that was not a wash."""
+        if self._rewashing:
+            self._drum_full = True
+        self._rewashing = False
+        self._rewashing_load = None
+
     def _abandon(self) -> None:
         """A cycle that stopped without finishing. No laundry comes of it."""
+        self._put_back()
         self._state = APPLIANCE_IDLE
         self._started_at = None
         self._energy_at_start = None
@@ -601,11 +658,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # A drain, a rinse-only, or somebody nudging the dial is not a load
         # of washing, and inventing one means a reminder nobody can satisfy.
         if minutes < float(self._cfg("min_minutes", 10)):
+            self._put_back()
             return
         min_kwh = float(self._cfg("min_kwh", 0.05))
         # Only enforced where there is an energy meter to enforce it with;
         # a missing meter must not silently swallow every cycle.
         if self._energy_at_start is not None and energy < min_kwh:
+            self._put_back()
             return
 
         record = {
@@ -624,10 +683,20 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # comes out, so queueing one would invent a reminder nothing can
         # satisfy.
         if self._spec.get("queues_loads", True):
+            # A load washed twice is still one load to hang. Its first
+            # row cannot be satisfied -- the washing was back in the
+            # machine, where nobody could hang it -- and leaving it would
+            # put "2 to hang" in Needs you for one armful.
+            if self._rewashing_load:
+                self._pending = [
+                    p for p in self._pending if p.get("id") != self._rewashing_load
+                ]
             self._pending.append(record)
         self._history.insert(0, record)
         del self._history[MAX_HISTORY:]
         self._drum_full = True
+        self._rewashing = False
+        self._rewashing_load = None
 
     # --- what a person does to it --------------------------------------
 
@@ -686,6 +755,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             # whether there is washing to hang, and cleared by a different
             # thing — the door, rather than a person.
             "drum_full": self._drum_full,
+            # A drum emptied by _begin rather than by the door, and the
+            # load it is re-washing. Restored so a restart mid-cycle
+            # cannot quietly lose the fact that there is washing inside.
+            "rewashing": self._rewashing,
+            "rewashing_load": self._rewashing_load,
             "started_at": self._started_at.isoformat() if self._started_at else None,
             "pending": list(self._pending),
             "pending_count": len(self._pending),
