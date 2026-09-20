@@ -482,6 +482,113 @@ async def test_a_restart_mid_rewash_does_not_lose_the_washing(machine) -> None:
     assert after_restart.extra_state_attributes["drum_full"] is True
 
 
+async def test_the_door_lock_letting_go_is_not_a_cycle(machine) -> None:
+    """Replayed from the unload on 20 Sep 2026, 11:47.
+
+        11:47:50   10 W   the interlock releasing
+        11:47:52          the door opens
+        11:47:54    7 W
+        11:47:55    2 W
+
+    Ten watts is over start_watts, so the detector called it a cycle
+    starting, and "enter fast, leave slow" then held the card on
+    RUNNING for the full five-minute quiet floor with the door standing
+    open. Every unload, every time.
+    """
+    m = machine
+    await m.draw(10, for_minutes=0)
+    await m.advance(0.03)
+    assert m.state == APPLIANCE_RUNNING, "the blip does start a run"
+
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert m.state == APPLIANCE_IDLE, "the open door did not end the blip"
+
+
+async def test_the_blip_does_not_simply_start_again(machine) -> None:
+    """The plug is still reporting the lock's watts a second later.
+
+    Abandoning once is not enough: the next reading arrives with the
+    draw still above start_watts and the run begins all over again. A
+    machine cannot wash with its door open, so nothing starts while it
+    is.
+    """
+    m = machine
+    await m.draw(10, for_minutes=0)
+    await m.advance(0.03)
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    await m.draw(10, for_minutes=0.2)
+    assert m.state == APPLIANCE_IDLE, "it restarted while the door was open"
+
+
+async def test_a_finished_wash_is_not_thrown_away_by_unloading(machine) -> None:
+    """The guard that makes this safe, and the reason it is on LENGTH.
+
+    A wash that has really finished sits in a five-minute quiet wait
+    with its record not yet written. Somebody who opens the door in
+    those five minutes -- which is exactly when they would, the machine
+    has just stopped -- must not lose ninety minutes of laundry.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=40)
+    await m.draw(0, for_minutes=1)
+
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+    await m.advance(6)
+
+    assert m.attrs["finished"], "unloading during the quiet wait lost the wash"
+    assert m.attrs["finished"][0]["duration_minutes"] >= 40
+    assert m.waiting == 1, "and lost the job with it"
+
+
+async def test_the_strip_survives_being_unloaded(machine) -> None:
+    """The blip reset the timeline, which is the opposite of the point.
+
+    The strip is kept after a cycle ends precisely so somebody walking
+    over to the machine can see what it did. Starting a phantom cycle
+    on the way to opening the door wiped it every time.
+    """
+    m = machine
+    await m.draw(28, for_minutes=1.5)
+    await m.draw(2240, for_minutes=4)
+    await m.draw(50, for_minutes=8)
+    await m.draw(0, for_minutes=0)
+    await m.advance(6)
+    before = [p["kind"] for p in m.attrs["phases"]]
+    assert before == ["fill", "heat", "tumble"], before
+
+    await m.draw(10, for_minutes=0)
+    await m.advance(0.03)
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert [p["kind"] for p in m.attrs["phases"]] == before, "unloading wiped it"
+
+
+async def test_a_wash_started_with_the_door_open_waits_for_it_to_shut(
+    machine,
+) -> None:
+    """Nothing runs with the door open, so nothing is recorded as running.
+
+    Not a contrivance: the door is open every time somebody is loading
+    the machine, and the panel lights up as they do it.
+    """
+    m = machine
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+    await m.draw(2000, for_minutes=3)
+    assert m.state == APPLIANCE_IDLE, m.state
+
+    m.set(DOOR, "off")
+    await m.hass.async_block_till_done()
+    await m.draw(2000, for_minutes=1)
+    assert m.state == APPLIANCE_RUNNING, "and starts once it is shut"
+
+
 async def test_two_loads_are_two_rows_and_the_button_clears_the_oldest(
     machine: Machine,
 ) -> None:
