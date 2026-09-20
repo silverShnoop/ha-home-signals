@@ -54,6 +54,9 @@ from .const import (
     ACCENT_WARN,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
+    CONF_PEOPLE,
+    CONF_PRESENCE_GRACE_MINUTES,
+    DEFAULT_PRESENCE_GRACE_MINUTES,
     CONF_IGNORE_UNAVAILABLE,
     CONF_SALT_BOTH_THRESHOLD,
     CONF_SALT_ONE_THRESHOLD,
@@ -319,6 +322,12 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # id -> when it becomes actionable again. A dismissal is a snooze with
         # no end, so one structure covers both.
         self._suppressed: dict[str, datetime | None] = {}
+        # person -> when their trackers went quiet. Held here rather than
+        # read off `last_changed`, because a person's `last_changed` is
+        # reset by a restart -- so a grace period measured from it would
+        # start again at every reboot and a tracker quiet since breakfast
+        # would never get past it.
+        self._dark_since: dict[str, datetime] = {}
 
     async def async_added_to_hass(self) -> None:
         """Restore suppressions, then recompute so a restart does not un-dismiss.
@@ -332,16 +341,22 @@ class NeedsYouSensor(_Derived, RestoreEntity):
 
         if (last := await self.async_get_last_state()) is None:
             return
+        dark = last.attributes.get("dark_since")
+        if isinstance(dark, dict):
+            for entity_id, when in dark.items():
+                parsed = dt_util.parse_datetime(when) if when else None
+                if parsed is not None:
+                    self._dark_since[entity_id] = parsed
+
         restored = last.attributes.get("suppressed")
-        if not isinstance(restored, dict):
-            return
-        for item_id, until in restored.items():
-            if until is None:
-                self._suppressed[item_id] = None
-                continue
-            parsed = dt_util.parse_datetime(until)
-            if parsed is not None:
-                self._suppressed[item_id] = parsed
+        if isinstance(restored, dict):
+            for item_id, until in restored.items():
+                if until is None:
+                    self._suppressed[item_id] = None
+                    continue
+                parsed = dt_util.parse_datetime(until)
+                if parsed is not None:
+                    self._suppressed[item_id] = parsed
         self._recompute()
 
     @callback
@@ -393,6 +408,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         candidates.extend(self._batteries())
         candidates.extend(self._salt())
         candidates.extend(self._appliances())
+        candidates.extend(self._people())
         candidates.extend(self._offline())
 
         # A dismissal only clears the occurrence it was made against, so
@@ -565,7 +581,11 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         both of them on setup, which is a whole entity missing from the
         house for a line that belongs one level down.
         """
-        return super()._watched() + self._appliance_entities()
+        return (
+            super()._watched()
+            + self._appliance_entities()
+            + list(self._option(CONF_PEOPLE, []) or [])
+        )
 
     def _appliance_entities(self) -> list[str]:
         """The cycle sensors this integration publishes, found by their id.
@@ -677,6 +697,59 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             return "Finished"
         return "Finished " + dt_util.as_local(parsed).strftime("%H:%M")
 
+    def _people(self) -> list[dict[str, Any]]:
+        """A person nobody can locate at all.
+
+        Not "away" -- that is a reading, and a perfectly good one. This
+        is the absence of any reading: no tracker of theirs is
+        reporting, so every presence automation in the house is now
+        guessing. The card draws it in the warning colour, and on this
+        panel yellow is a promise that something wants doing, so the
+        job has to exist here or the colour is a lie.
+
+        A grace period, because a phone can be in a tunnel, on a plane
+        or rebooting and none of those is a job. Measured from when we
+        first saw them go dark and held across a restart, for the
+        reason given where `_dark_since` is declared.
+        """
+        watched = list(self._option(CONF_PEOPLE, []) or [])
+        if not watched:
+            return []
+        grace = timedelta(
+            minutes=float(
+                self._option(
+                    CONF_PRESENCE_GRACE_MINUTES, DEFAULT_PRESENCE_GRACE_MINUTES
+                )
+            )
+        )
+        now = dt_util.utcnow()
+        rows: list[dict[str, Any]] = []
+        for entity_id in watched:
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                continue
+            if state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+                # A positive reading of any kind -- home, away, a zone --
+                # is the tracker working. Forget that it ever was not.
+                self._dark_since.pop(entity_id, None)
+                continue
+            since = self._dark_since.setdefault(entity_id, state.last_changed)
+            if now - since < grace:
+                continue
+            rows.append({
+                "id": f"dark_{entity_id}",
+                "title": f"{_name_of(state)} cannot be located",
+                "detail": (
+                    "No tracker reporting \u00b7 "
+                    f"quiet since {dt_util.as_local(since).strftime('%H:%M')}"
+                ),
+                "icon": "mdi:map-marker-question",
+                "accent": ACCENT_WARN,
+                "action_label": "Snooze",
+                "action": _snooze(f"dark_{entity_id}", hours=12),
+            })
+        return rows
+
     def _offline(self) -> list[dict[str, Any]]:
         """One row for all of them, not one each.
 
@@ -706,6 +779,14 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "suppressed": {
                 item_id: (until.isoformat() if until else None)
                 for item_id, until in self._suppressed.items()
+            },
+            # Persisted for the same reason it is not read off
+            # `last_changed`: a restart would otherwise restart the
+            # grace period, and a tracker quiet since breakfast would
+            # never get past it on a box that reboots twice a day.
+            "dark_since": {
+                entity_id: when.isoformat()
+                for entity_id, when in self._dark_since.items()
             },
         }
 
@@ -795,6 +876,12 @@ class SystemHealthSensor(_Derived):
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "items": list(self._items),
+            # The worst thing in the list, so a tab tile can wear the
+            # colour of what is actually there instead of a fixed one.
+            # The Maintenance tile was hardcoded ochre and so was yellow
+            # on a morning with nothing wrong -- and on this panel
+            # yellow is a promise that something wants doing.
+            "accent": self._worst(),
             "low_batteries": list(self._batteries),
             "offline": list(self._offline),
             "updates_pending": list(self._updates),
@@ -802,6 +889,23 @@ class SystemHealthSensor(_Derived):
             "offline_count": len(self._offline),
             "update_count": len(self._updates),
         }
+
+    def _worst(self) -> int | None:
+        """The most serious accent among the rows, or None for none.
+
+        Ordered by how loud the role is rather than by its number:
+        1 alerts, 2 warns, 5 is just information. Numeric order would
+        make information the worst thing in the house.
+        """
+        loudness = {ACCENT_ALERT: 3, ACCENT_WARN: 2, ACCENT_INFO: 1}
+        worst = None
+        for row in self._items:
+            accent = row.get("accent")
+            if accent not in loudness:
+                continue
+            if worst is None or loudness[accent] > loudness[worst]:
+                worst = accent
+        return worst
 
 
 class SecurityStatusSensor(_Derived, RestoreEntity):
