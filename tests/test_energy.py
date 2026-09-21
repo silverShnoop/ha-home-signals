@@ -264,6 +264,63 @@ async def test_a_stale_day_still_keeps_the_history(
     assert [row["day"] for row in a["recent_days"]] == ["2026-09-14"]
 
 
+async def test_a_stale_day_does_not_take_today_with_it(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Today comes from a different meter and is not stale.
+
+    A Home Mini reports today; Octopus reports settled days. When Octopus
+    stops delivering, the freshest figure in the house is still arriving --
+    and it is the one worth having. Only the comparison goes, because that
+    is made of the day that went quiet.
+    """
+    m = await _meter(
+        hass,
+        freezer,
+        {
+            "energy_cost_sensor": SOURCE,
+            "energy_today_cost": TODAY_COST,
+            "energy_today_kwh": TODAY_KWH,
+        },
+    )
+    publish(hass, "2026-09-14")
+    hass.states.async_set(TODAY_COST, "1.90")
+    hass.states.async_set(TODAY_KWH, "7.4")
+    await m.settle()
+
+    a = m.attrs
+    assert a["stale"] is True
+    assert a["today_cost_text"] == "£1.90"
+    assert a["today_kwh"] == 7.4
+    for key in ("today_vs_text", "today_vs_pct", "same_time_cost"):
+        assert key not in a, f"a stale day was still comparing against {key}"
+
+
+async def test_a_meter_with_no_settled_day_at_all_still_reports_today(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Which is every restart, for the first minute, and a new account.
+
+    Octopus has fetched nothing yet. The live meter has not stopped, so
+    there is no reason for the card to be empty.
+    """
+    m = await _meter(
+        hass,
+        freezer,
+        {
+            "energy_cost_sensor": SOURCE,
+            "energy_today_cost": TODAY_COST,
+            "energy_today_kwh": TODAY_KWH,
+        },
+    )
+    hass.states.async_set(TODAY_COST, "1.90")
+    await m.settle()
+
+    a = m.attrs
+    assert "for_day" not in a
+    assert a["today_cost_text"] == "£1.90"
+
+
 async def test_nothing_to_read_publishes_nothing(hass: HomeAssistant, freezer) -> None:
     """The Octopus integration has not fetched anything yet.
 

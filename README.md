@@ -344,6 +344,13 @@ cannot be recomputed from a source sensor holding a single day, so throwing
 it away while Octopus is quiet would cost the house its history at the next
 restart.
 
+**Today is not stale, and does not go with it.** `today_cost` and
+`today_kwh` come off a different meter, so they keep arriving when Octopus
+stops — and they are the freshest figures in the house, which is no thing
+to drop because another source went quiet. The *comparison* does go:
+`today_vs_text` and `same_time_cost` are made of the settled day, so they
+are exactly as stale as it is.
+
 #### Against a night somebody remembers
 
 `baseline_vs_prev_text` compares the floor to **the night before the one

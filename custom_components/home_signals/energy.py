@@ -615,11 +615,39 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             "baseline_vs_prev_text": text,
         }
 
+    def _today(self) -> dict[str, Any]:
+        """Today's own figures, which do not come from the settled day.
+
+        A separate meter reports these -- a Home Mini, or Hildebrand's
+        half-hourly feed -- so they are live whatever Octopus is doing with
+        its settled days. That is why they are assembled apart from the day
+        and survive it going stale: the freshest figure in the house must
+        not be dropped because a different source stopped delivering.
+
+        The *comparison* is another matter and stays with the day, because
+        it is made of it.
+
+        Absent rather than null-and-nothing when there is no meter, so that
+        a card renders a hole and an assistant can tell "not measured" from
+        "measured as nothing".
+        """
+        cost = _reading(self.hass, self._option(CONF_ENERGY_TODAY_COST))
+        kwh = _reading(self.hass, self._option(CONF_ENERGY_TODAY_KWH))
+        if cost is None and kwh is None:
+            return {}
+        out: dict[str, Any] = {
+            "today_cost": None if cost is None else round(cost, 2),
+            "today_kwh": None if kwh is None else round(kwh, 3),
+        }
+        if cost is not None:
+            out["today_cost_text"] = money(cost)
+        return out
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         day = self._day
         if day is None:
-            return {"days_of_history": len(self._history)}
+            return {"days_of_history": len(self._history), **self._today()}
 
         late = self._days_late(day)
         if late > ENERGY_STALE_DAYS:
@@ -643,6 +671,10 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 "stale": True,
                 "recent_days": list(self._history),
                 "days_of_history": len(self._history),
+                # Today is not stale. It comes from a different meter and
+                # is the freshest thing here; only the comparison against
+                # the settled day goes, because that is made of it.
+                **self._today(),
             }
         stamp = day["day"].isoformat()
         recent_nights = self._nights()[:ENERGY_SERIES_DAYS]
@@ -762,19 +794,9 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             "days_of_history": len(self._history),
         }
 
-        today_cost = _reading(self.hass, self._option(CONF_ENERGY_TODAY_COST))
-        today_kwh = _reading(self.hass, self._option(CONF_ENERGY_TODAY_KWH))
-        if today_cost is None and today_kwh is None:
-            # No Home Mini, no today. Absent rather than null-and-nothing, so
-            # that a card referencing it renders a hole and an assistant can
-            # tell "not measured" from "measured as nothing".
-            return out
-
-        out["today_cost"] = None if today_cost is None else round(today_cost, 2)
-        out["today_kwh"] = None if today_kwh is None else round(today_kwh, 3)
-        if today_cost is not None:
-            out["today_cost_text"] = money(today_cost)
-
+        today = self._today()
+        out.update(today)
+        today_cost = today.get("today_cost")
         if today_cost is not None:
             # Against the settled day UP TO NOW, never against the whole of
             # it. A morning measured against a complete day is the mistake
