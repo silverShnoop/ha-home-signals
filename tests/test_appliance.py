@@ -1063,3 +1063,75 @@ async def test_a_new_wash_starts_a_new_timeline(machine) -> None:
     kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
     assert "heat" not in kinds, f"the new wash inherited the old one: {kinds}"
     assert kinds == ["fill"], kinds
+
+
+async def test_two_loads_an_hour_apart_are_two_loads(machine) -> None:
+    """The morning of 2026-09-21, replayed from the recorder.
+
+    A wash ran 08:12 to 09:21. The machine then sat at 5 W -- its
+    standby, and inside the 4-8 W hysteresis band, so every reading
+    cancelled the quiet timer. At 09:23:49 the door opened for
+    twenty-one seconds: the washing came out and the next load went in.
+    At 09:26:25 the heater fired for a second programme.
+
+    What the sensor recorded was ONE run, still going two hours later,
+    with nothing to hang. Two armfuls of washing had been out of that
+    machine and neither existed as far as the house was concerned. The
+    five-minute floor never got five minutes: the longest the plug read
+    under 4 W was forty-eight seconds, while the door was open.
+
+    Twenty-one seconds is not too quick to be an unload. It was one.
+    """
+    m = machine
+
+    # --- the first programme, ending in standby rather than in silence
+    await m.draw(2000, for_minutes=45)
+    await m.draw(300, for_minutes=4)          # the extraction spin
+    await m.draw(5, for_minutes=2)            # stopped, but 5 W of standby
+
+    assert m.state == APPLIANCE_RUNNING, "a machine at 5 W has not stopped yet"
+    assert m.waiting == 0, "nothing is hung up until the door says so"
+
+    # --- twenty-one seconds, and the drum changes hands
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert m.state == APPLIANCE_IDLE, "the open door did not end the wash"
+    assert m.waiting == 1, "the first load was never recorded"
+    first = m.attrs["finished"][0]
+    assert first["duration_minutes"] >= 45, first
+    assert m.attrs["drum_full"] is False, "the washing came out with the door"
+
+    m.set(DOOR, "off")
+    await m.hass.async_block_till_done()
+
+    # --- the second programme, three minutes later
+    await m.draw(2100, for_minutes=45)
+    assert m.state == APPLIANCE_RUNNING
+    assert m.attrs["rewashing"] is False, (
+        "the door opened between them, so this is a new load, not a rewash"
+    )
+    await m.draw(0, for_minutes=6)
+
+    assert m.waiting == 2, "two armfuls of washing, two rows to hang"
+    assert len(m.attrs["finished"]) == 2, m.attrs["finished"]
+    assert m.attrs["finished"][0]["id"] != m.attrs["finished"][1]["id"]
+
+
+async def test_a_wrong_door_reading_does_not_cut_a_wash_in_half(machine) -> None:
+    """The one case the draw has to overrule the door.
+
+    A machine cannot wash with its door open, so a door that says open
+    while the drum is pulling two kilowatts is a sensor being wrong --
+    a tamper, a flat battery, a knock. Finishing there would write half
+    a wash into the history and put a row in Needs you for washing that
+    is still going round.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=40)
+
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert m.state == APPLIANCE_RUNNING, "a wrong door reading ended the wash"
+    assert m.waiting == 0, "and invented a load to hang"

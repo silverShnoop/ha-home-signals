@@ -301,12 +301,20 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             return
         open_now = _is_on(self.hass, door, default=self._door_was_open)
         if open_now and not self._door_was_open:
-            self._drum_full = False
+            # The run ends FIRST, and the order is the whole of it. A door
+            # opening on a wash that has stopped is two statements at once:
+            # "this is finished" and "and I have taken it out". Emptying
+            # the drum first loses both halves of the first one --
+            # `_finish` writes the record, queues the row to hang, and
+            # needs `_rewashing_load` to drop the row it is replacing --
+            # and then sets `drum_full` back to True on a machine somebody
+            # is standing in front of holding the washing.
+            self._lock_released()
             # Whatever was in there is out. Nothing to put back, and the
             # load is no longer the one this cycle is re-washing.
+            self._drum_full = False
             self._rewashing = False
             self._rewashing_load = None
-            self._lock_released()
         self._door_was_open = open_now
 
     def _lock_released(self) -> None:
@@ -326,14 +334,32 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         So a door that opens during a run proves the run is not a wash
         in progress.
 
-        The guard is on LENGTH, and it is what makes this safe. A run
-        already past `min_minutes` is left completely alone -- that is
-        the case where the wash really has finished and is sitting in
-        its quiet wait with its record not yet written, and abandoning
-        it would throw away ninety minutes of laundry. A run under
-        `min_minutes` is one `_finish` would have discarded anyway, so
-        this changes WHEN the card stops saying "running" and never
-        whether anything is recorded.
+        The guard is on LENGTH, and it decides which of two things the
+        door means. A run under `min_minutes` is one `_finish` would
+        have discarded anyway, so it is abandoned: that changes WHEN the
+        card stops saying "running" and never whether anything is
+        recorded. A run past `min_minutes` is a real wash, and the door
+        opening on it FINISHES it.
+
+        It used to be left alone instead, on the reasoning that it was
+        sitting in its quiet wait and the wait would collect it. That
+        holds only while the wait can run. This machine idles at 5 W,
+        inside the 4-8 W hysteresis band, and every reading in that band
+        calls `_note_lull_ended` and cancels the quiet timer -- so the
+        timer can only run while the plug reads 3 W or less. On the
+        morning this was found it managed 48 seconds of that against a
+        five-minute floor, and two loads washed an hour apart were
+        recorded as one run with nothing to hang.
+
+        The door settles it without a threshold to tune, because the
+        interlock cannot release while the drum is turning. A door open
+        on a stopped machine is proof the wash is over, and it is proof
+        the moment it happens rather than five minutes later.
+
+        The draw is still checked. The interlock makes a genuine
+        door-open mid-wash impossible, so a door reading that says
+        otherwise is the sensor being wrong, and a wash should not be
+        cut short and half-recorded on the word of a wrong sensor.
         """
         if self._state != APPLIANCE_RUNNING:
             return
@@ -341,9 +367,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         if started is None:
             return
         minutes = (dt_util.utcnow() - started).total_seconds() / 60.0
-        if minutes >= float(self._cfg("min_minutes", 10)):
+        if minutes < float(self._cfg("min_minutes", 10)):
+            self._abandon()
             return
-        self._abandon()
+        watts = _number(self.hass, self._spec.get("power_sensor"))
+        if watts is not None and watts >= float(self._cfg("start_watts", 8)):
+            return
+        self._finish()
 
     # --- the state machine --------------------------------------------
 
