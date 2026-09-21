@@ -301,12 +301,23 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             return
         open_now = _is_on(self.hass, door, default=self._door_was_open)
         if open_now and not self._door_was_open:
-            self._drum_full = False
+            # The run ends first, because `_finish` writes the record,
+            # queues the row to hang, and needs `_rewashing_load` to drop
+            # the row it is replacing -- all of which the lines below
+            # clear. It is told `fills_drum=False` rather than being left
+            # to set the drum full for one statement: a door opening on a
+            # stopped wash is both "this is finished" and "and I have
+            # taken it out", and there is no instant between them for
+            # anything to read.
+            self._lock_released()
             # Whatever was in there is out. Nothing to put back, and the
-            # load is no longer the one this cycle is re-washing.
+            # load is no longer the one this cycle is re-washing. This
+            # line is what empties the drum when the door opens on an
+            # idle machine, which is the ordinary case and the reason it
+            # is here at all.
+            self._drum_full = False
             self._rewashing = False
             self._rewashing_load = None
-            self._lock_released()
         self._door_was_open = open_now
 
     def _lock_released(self) -> None:
@@ -326,14 +337,32 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         So a door that opens during a run proves the run is not a wash
         in progress.
 
-        The guard is on LENGTH, and it is what makes this safe. A run
-        already past `min_minutes` is left completely alone -- that is
-        the case where the wash really has finished and is sitting in
-        its quiet wait with its record not yet written, and abandoning
-        it would throw away ninety minutes of laundry. A run under
-        `min_minutes` is one `_finish` would have discarded anyway, so
-        this changes WHEN the card stops saying "running" and never
-        whether anything is recorded.
+        The guard is on LENGTH, and it decides which of two things the
+        door means. A run under `min_minutes` is one `_finish` would
+        have discarded anyway, so it is abandoned: that changes WHEN the
+        card stops saying "running" and never whether anything is
+        recorded. A run past `min_minutes` is a real wash, and the door
+        opening on it FINISHES it.
+
+        It used to be left alone instead, on the reasoning that it was
+        sitting in its quiet wait and the wait would collect it. That
+        holds only while the wait can run. This machine idles at 5 W,
+        inside the 4-8 W hysteresis band, and every reading in that band
+        calls `_note_lull_ended` and cancels the quiet timer -- so the
+        timer can only run while the plug reads 3 W or less. On the
+        morning this was found it managed 48 seconds of that against a
+        five-minute floor, and two loads washed an hour apart were
+        recorded as one run with nothing to hang.
+
+        The door settles it without a threshold to tune, because the
+        interlock cannot release while the drum is turning. A door open
+        on a stopped machine is proof the wash is over, and it is proof
+        the moment it happens rather than five minutes later.
+
+        The draw is still checked. The interlock makes a genuine
+        door-open mid-wash impossible, so a door reading that says
+        otherwise is the sensor being wrong, and a wash should not be
+        cut short and half-recorded on the word of a wrong sensor.
         """
         if self._state != APPLIANCE_RUNNING:
             return
@@ -341,9 +370,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         if started is None:
             return
         minutes = (dt_util.utcnow() - started).total_seconds() / 60.0
-        if minutes >= float(self._cfg("min_minutes", 10)):
+        if minutes < float(self._cfg("min_minutes", 10)):
+            self._abandon()
             return
-        self._abandon()
+        watts = _number(self.hass, self._spec.get("power_sensor"))
+        if watts is not None and watts >= float(self._cfg("start_watts", 8)):
+            return
+        self._finish(fills_drum=False)
 
     # --- the state machine --------------------------------------------
 
@@ -711,8 +744,14 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._finish()
         self._publish()
 
-    def _put_back(self) -> None:
+    def _put_back(self, *, fills_drum: bool = True) -> None:
         """Undo what _begin claimed, for a run that was not a wash.
+
+        `fills_drum` carries the same meaning as it does on `_finish`,
+        and it has to reach here as well: a seventy-minute run thrown
+        away for drawing too little is still a run whose door has just
+        been opened, and the fullness it would put back is fullness
+        somebody is holding.
 
         The fullness and the timeline both. A run that is thrown away
         has to leave the machine looking exactly as it found it, or
@@ -720,7 +759,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         wash's strip -- which is kept precisely so somebody walking
         over can see what it did.
         """
-        if self._rewashing:
+        if self._rewashing and fills_drum:
             self._drum_full = True
         self._rewashing = False
         self._rewashing_load = None
@@ -737,8 +776,18 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._quiet_since = None
         self._stop_quiet_timer()
 
-    def _finish(self) -> None:
-        """The draw stayed down long enough. Decide whether that was a wash."""
+    def _finish(self, *, fills_drum: bool = True) -> None:
+        """The draw stayed down long enough. Decide whether that was a wash.
+
+        `fills_drum` is False when the thing that ended the run is the
+        door opening, because then the wash finishing and the washing
+        coming out are the same event. Setting the drum full and
+        clearing it a line later would also be correct, and was how
+        this worked first -- correct by the order of two statements,
+        which is a thing that survives exactly until somebody adds a
+        `_publish` between them. There is no moment to get wrong if the
+        moment never exists.
+        """
         ended = self._quiet_since or dt_util.utcnow()
         started = self._started_at or ended
         minutes = (ended - started).total_seconds() / 60.0
@@ -757,13 +806,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # A drain, a rinse-only, or somebody nudging the dial is not a load
         # of washing, and inventing one means a reminder nobody can satisfy.
         if minutes < float(self._cfg("min_minutes", 10)):
-            self._put_back()
+            self._put_back(fills_drum=fills_drum)
             return
         min_kwh = float(self._cfg("min_kwh", 0.05))
         # Only enforced where there is an energy meter to enforce it with;
         # a missing meter must not silently swallow every cycle.
         if self._energy_at_start is not None and energy < min_kwh:
-            self._put_back()
+            self._put_back(fills_drum=fills_drum)
             return
 
         record = {
@@ -793,7 +842,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._pending.append(record)
         self._history.insert(0, record)
         del self._history[MAX_HISTORY:]
-        self._drum_full = True
+        self._drum_full = fills_drum
         self._rewashing = False
         self._rewashing_load = None
         # This run WAS a wash, so its own timeline is the one to keep.
