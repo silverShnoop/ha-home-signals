@@ -289,6 +289,72 @@ know nothing about the difference.
 phase for a machine that has just the one. A machine sets one or the
 other, never both.
 
+### What the wash cost
+
+The plug already counts the kilowatt-hours. Given a sensor that says what a
+kilowatt-hour costs — `rate_sensor`, which Octopus publishes as
+`..._current_rate` — a finished cycle also records what it cost.
+
+```
+cost       0.33          # £, for arithmetic and for anything that is not a card
+cost_text  "33p"         # how a person says it
+```
+
+Both sit on each entry in `finished` and `finished_today`, with
+`last_cost`/`last_cost_text` for the most recent one and
+`cost_so_far`/`cost_so_far_text` while a cycle is in flight. The two forms
+are the same split `system_health` already makes between its rendered rows
+and its raw lists: an agent asked what the wash cost wants `0.33`, and a
+panel read from three metres away wants `33p`. One is derived from the other
+on a single line, so they cannot drift.
+
+The formatting is here rather than in the card because the switch at a pound
+is a *rule about the number*, and the card's value language has no room for
+one — a `suffix` cannot change its mind at 100p.
+
+**This is the figure worth having**, more than any house total. "£3.99
+yesterday" is a number about an abstraction; "that wash cost 33p" is a number
+about the thing somebody is standing in front of with a basket. It also
+answers the question people actually have about a washing machine, which is
+not *what does it cost* but *is it worth putting a half load on* — and two
+cycles a week apart answer that.
+
+#### Priced as it goes, not at the end
+
+A wash spans four or five half-hours. On a tariff that moves between them
+there is no single rate the cycle ran at, so multiplying the finished total
+by whatever the price happens to be when the drum stops would be a number
+about the end of the wash wearing the label of the whole thing. Each reading
+is priced as it arrives instead, at the rate in force then, and the slices
+are added up.
+
+On a flat tariff that is the same arithmetic done more often and lands on the
+same figure. On Agile it is the only version that is true. Writing it this
+way now means nothing — not this sensor, not the card — changes on the day
+the tariff does.
+
+One approximation is left, deliberately: if the plug stops reporting for a
+while, the kilowatt-hours that arrive when it comes back are priced at the
+rate current then, because nothing recorded which of the rates inside the gap
+applied to which part of it. Bounded by how long the plug was out, and on a
+single-rate tariff not an error at all.
+
+#### A cost that cannot be known is absent, not zero
+
+If any part of a cycle passes through unpriced — no `rate_sensor`
+configured, the tariff sensor `unavailable` while the integration reloads,
+the plug's own total resetting mid-wash because it was re-paired — the
+cost is **dropped for that cycle** rather than reported short.
+
+The tempting behaviour is the wrong one. Half a wash priced and reported as
+the whole thing reads as a cheap wash, and there is nothing on the card to
+tell the two apart. A missing figure leaves a hole, which the panel already
+knows how to render and which is the truth. `unknown` and `unavailable`
+become nothing, not the words.
+
+There is no configuration for this and no override. A panel earns the right
+to be believed about money by never being nearly right.
+
 ## `sensor.cleaning_status`
 
 The same three colours as `security_status`, for the same reason: a tab on a

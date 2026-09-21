@@ -92,6 +92,15 @@ CONF_DRYER_PLUG = "dryer_plug"
 CONF_DRYER_DOOR = "dryer_door"
 CONF_DRYER_ENERGY = "dryer_energy"
 
+# What a kWh costs, right now. One sensor for the house rather than one per
+# machine: the price of electricity is not a property of the washing machine,
+# and two copies of it would be two things to point at a new tariff.
+#
+# Octopus publishes it as `sensor.octopus_energy_electricity_<meter>_current_rate`
+# in GBP/kWh, but nothing here knows that -- any sensor reading money per unit
+# will do, which is the whole reason it is configured rather than found.
+CONF_RATE_SENSOR = "rate_sensor"
+
 # Enter fast, leave slow. Crossing START is decisive and instant; dropping
 # below IDLE only counts once it has held for IDLE_MINUTES, because the gaps
 # inside a wash are minutes long and are not the end of anything.

@@ -26,6 +26,7 @@ from .const import (
     CONF_IDLE_WATTS,
     CONF_MIN_KWH,
     CONF_MIN_MINUTES,
+    CONF_RATE_SENSOR,
     CONF_START_WATTS,
     CONF_WASHER_DOOR,
     CONF_WASHER_ENERGY,
@@ -251,6 +252,18 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 default=defaults.get(CONF_DRYER_ENERGY, vol.UNDEFINED),
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+            # What a kWh costs, in money per unit -- Octopus publishes it
+            # as `..._current_rate`. Shared by both machines and by
+            # anything else that prices energy, because the price of
+            # electricity is a fact about the house and not about the
+            # washing machine. Left empty, a cycle records its kWh and no
+            # cost, and the card shows a hole where the money would be.
+            vol.Optional(
+                CONF_RATE_SENSOR,
+                default=defaults.get(CONF_RATE_SENSOR, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
             ),
             # Shared by both machines. A dryer's profile is flatter than a
             # washer's, so if one set stops fitting both, this is where it
