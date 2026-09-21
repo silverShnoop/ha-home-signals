@@ -605,18 +605,31 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # number of days that actually went into it -- until the history
             # fills, "month" is the mean of what there is and says so.
             "week_cost": week["cost"],
+            "week_cost_text": None if week["cost"] is None else money(week["cost"]),
             "week_kwh": week["kwh"],
             "week_days": week["days"],
             "vs_week_pct": vs_week,
             "vs_week_text": _comparison(vs_week, "the week"),
             "month_cost": month["cost"],
+            "month_cost_text": None if month["cost"] is None else money(month["cost"]),
             "month_kwh": month["kwh"],
             "month_days": month["days"],
             "vs_month_pct": vs_month,
             "vs_month_text": _comparison(vs_month, "the month"),
             # Is the floor creeping, as opposed to having spiked once.
             "baseline_trend_pct": self._baseline_trend(),
+            # High and low as a pair, so the card's figures can be three
+            # wattages rather than two wattages and a percentage. A row of
+            # metrics that mixes units is read as three unrelated numbers.
             "baseline_high": max(recent_nights) if recent_nights else None,
+            "baseline_low": min(recent_nights) if recent_nights else None,
+            # The verdict without the number in it. `baseline_text` repeats
+            # the watts, which is right in a Needs-you row that has no hero
+            # and wrong under a hero that has just said it.
+            "baseline_verdict": _comparison(baseline_excess, "usual"),
+            "baseline_trend_text": _comparison(
+                self._baseline_trend(), "last week"
+            ),
             # Plain arrays, oldest first, for a chart to read straight off.
             # Shaped here rather than in the card for the reason nothing in
             # this house is shaped in a card.

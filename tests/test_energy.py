@@ -702,3 +702,75 @@ async def test_the_series_runs_oldest_first(hass: HomeAssistant, freezer) -> Non
     m = await _days(hass, freezer, [1.0, 2.0, 3.0])
     costs = m.attrs["cost_series"]
     assert costs == sorted(costs), costs
+
+
+# --- the figures a card puts in one row ------------------------------
+#
+# A three-up row of metrics that mixes units reads as three unrelated
+# numbers. So the floor card's trio is three wattages, and the money is
+# money all the way down its own column on a different card.
+
+
+async def test_the_floor_reports_a_high_and_a_low(
+    hass: HomeAssistant, freezer
+) -> None:
+    """So a card can show three wattages rather than two and a percentage."""
+    m = await _nights(hass, freezer, [280, 420, 234, 300, 290, 286])
+    a = m.attrs
+    assert a["baseline_high"] == 420
+    assert a["baseline_low"] == 234
+
+
+async def test_the_verdict_leaves_the_number_to_the_hero(
+    hass: HomeAssistant, freezer
+) -> None:
+    """`baseline_text` repeats the watts; `baseline_verdict` does not.
+
+    Both are right in their place: the Needs-you row has no hero and needs
+    the figure in the sentence, and a card whose hero has just said "420 W"
+    must not say it again underneath.
+    """
+    m = await _nights(hass, freezer, [280, 280, 280, 280, 280, 420])
+    a = m.attrs
+    assert a["baseline_verdict"] == "50% above usual"
+    assert "420" not in a["baseline_verdict"]
+    assert "420" in a["baseline_text"], "the row still wants the figure"
+
+
+async def test_an_ordinary_night_reads_as_about_usual(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _nights(hass, freezer, [280, 280, 280, 280, 280, 284])
+    assert m.attrs["baseline_verdict"] == "about usual"
+
+
+async def test_the_trend_reads_as_a_sentence(hass: HomeAssistant, freezer) -> None:
+    m = await _nights(hass, freezer, [280] * 7 + [340] * 7)
+    assert m.attrs["baseline_trend_text"] == "21% above last week"
+
+
+async def test_the_windows_carry_money_the_way_people_say_it(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Formatted in the backend, like every other cost in this house.
+
+    A card prefixing "£" onto a bare number would render 87p as "£0.87",
+    and the switch at a pound is a rule about the number rather than
+    something a suffix can express.
+    """
+    m = await _days(hass, freezer, [1.0] * 8)
+    a = m.attrs
+    assert a["week_cost_text"] == "£3.99"
+    assert a["month_cost_text"] == "£3.99"
+
+    # A very cheap week is said in pence, not pounds.
+    m2 = await _days(hass, freezer, [0.1] * 8)
+    assert m2.attrs["week_cost_text"].endswith("p"), m2.attrs["week_cost_text"]
+
+
+async def test_no_window_means_no_money_text(hass: HomeAssistant, freezer) -> None:
+    """Absent rather than "£0.00", which is a week that cost nothing."""
+    m = await _days(hass, freezer, [1.0, 1.0])
+    a = m.attrs
+    assert a["week_cost"] is None
+    assert a["week_cost_text"] is None
