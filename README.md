@@ -196,7 +196,8 @@ card is the difference between one Python function and a template per tile.
 
 - **State** — the cost of the day being reported. `device_class: monetary`.
 - **`for_day`, `for_date`, `days_late`, `stale`** — which day that is.
-- **`kwh`, `usage`, `standing_p`, `peak_slot`, `peak_kwh`, `slots`**.
+- **`kwh`, `usage`, `standing_p`, `standing_cost_year`, `peak_slot`,
+  `peak_kwh`, `slots`**.
 - **`baseline_watts`, `baseline_share`** — what the house draws asleep.
 - **`week_*`, `month_*`, `vs_week_*`, `vs_month_*`** — the day against its
   own two windows; the comparison that works without a live meter.
@@ -302,7 +303,7 @@ A floor in watts is not a fact anybody can act on. What it *costs* is:
 ```
 floor_kwh   6.9    floor_cost_text  "£1.70"   floor_cost_year  621
 rest_kwh    7.3    rest_cost_text   "£1.81"
-standing_p   48
+standing_p   48    standing_cost_year 175
 ```
 
 The three sum to the day's total, to the penny. That is deliberate — a
@@ -321,7 +322,27 @@ a perfectly flat day is the boundary. That means Octopus delivered a
 partial day, and a split whose parts exceed the whole is fiction.
 
 `floor_cost_year` exists because £1.70 a day is ignorable and £621 a year
-is not, and they are the same fact.
+is not, and they are the same fact. `standing_cost_year` is there so the
+row beside it is the same kind of figure — and because the difference is
+the point: the floor is a year somebody can go and reduce, the standing
+charge is a year they cannot, which is worth knowing before starting the
+hunt.
+
+#### Going stale empties the attributes too, not just the state
+
+Every card on the panel is built out of attributes — `cost_text`,
+`week_cost_text`, `floor_cost_text` — and not one of them looks at the
+state. So dropping the state past `days_late > 3` and leaving the
+attributes populated would keep drawing Saturday's figures on Thursday
+underneath a state nobody reads, which is precisely the failure the
+staleness rule exists to prevent.
+
+Past that point the sensor publishes only what *explains* the silence:
+`for_day`, `for_date`, `days_late`, `stale`. Plus `recent_days`, which
+nothing draws and the restore reads back — it is the one thing here that
+cannot be recomputed from a source sensor holding a single day, so throwing
+it away while Octopus is quiet would cost the house its history at the next
+restart.
 
 #### Against a night somebody remembers
 

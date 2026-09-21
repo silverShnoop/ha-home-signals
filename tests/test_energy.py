@@ -212,6 +212,58 @@ async def test_a_day_too_far_behind_goes_quiet(hass: HomeAssistant, freezer) -> 
     assert m.state is None, "a week-old total was still being reported"
 
 
+async def test_a_stale_day_publishes_nothing_a_card_could_draw(
+    hass: HomeAssistant, freezer
+) -> None:
+    """The state going quiet is not enough -- every card reads attributes.
+
+    `cost_text`, `week_cost_text`, `floor_cost_text`: the three Maintenance
+    cards are built out of these, and not one of them looks at the state. So
+    an empty state beside full attributes would keep drawing Saturday's
+    figures on Thursday under a state nobody reads, which is exactly the
+    failure the staleness rule exists to prevent.
+    """
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-09-14")
+    await m.settle()
+
+    a = m.attrs
+    assert a["for_date"] == "Mon 14 Sep", "the date that explains the silence"
+    for key in (
+        "cost_text",
+        "kwh",
+        "week_cost_text",
+        "month_cost_text",
+        "vs_week_text",
+        "floor_cost_text",
+        "rest_cost_text",
+        "baseline_watts",
+        "baseline_text",
+        "cost_series",
+        "series_labels",
+    ):
+        assert key not in a, f"a stale day was still publishing {key}"
+
+
+async def test_a_stale_day_still_keeps_the_history(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Because `recent_days` is what the restore reads back.
+
+    Nothing draws it, so it is not a figure going stale -- and it is the one
+    thing here that cannot be recomputed from the source sensor, which only
+    ever holds a single day. Dropping it while Octopus was quiet would throw
+    the house's accumulated history away on the next restart.
+    """
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-09-14")
+    await m.settle()
+
+    a = m.attrs
+    assert a["days_of_history"] == 1
+    assert [row["day"] for row in a["recent_days"]] == ["2026-09-14"]
+
+
 async def test_nothing_to_read_publishes_nothing(hass: HomeAssistant, freezer) -> None:
     """The Octopus integration has not fetched anything yet.
 
@@ -822,6 +874,18 @@ async def test_the_floor_says_what_a_year_of_it_costs(meter: Meter) -> None:
     £1.70 a day is ignorable. £621 a year is not, and it is the same fact.
     """
     assert meter.attrs["floor_cost_year"] == 621
+
+
+async def test_the_standing_charge_says_its_year_too(meter: Meter) -> None:
+    """Beside the floor's year, so the two rows are the same kind of figure.
+
+    48p a day is background noise; £175 a year is a line on a bill. The
+    difference from the floor is the point of putting them side by side --
+    that one is a year somebody can go and reduce and this one is not.
+    """
+    a = meter.attrs
+    assert a["standing_p"] == 48
+    assert a["standing_cost_year"] == 175
 
 
 async def test_a_floor_bigger_than_its_day_publishes_no_split(

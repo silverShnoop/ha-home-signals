@@ -622,6 +622,28 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             return {"days_of_history": len(self._history)}
 
         late = self._days_late(day)
+        if late > ENERGY_STALE_DAYS:
+            # The state has already gone to None here, and the attributes
+            # have to follow it. Every card on the panel reads attributes --
+            # `cost_text`, `week_cost_text`, `floor_cost_text` -- so leaving
+            # them populated would keep rendering Saturday's figures on
+            # Thursday under a state nobody looks at. That is precisely the
+            # failure the staleness rule exists to prevent.
+            #
+            # What stays is what explains the silence rather than filling it:
+            # the date, how late it is, and the flag a row already checks.
+            # `recent_days` stays too, and is not rendered by anything -- it
+            # is what `_restore` reads back, and dropping it would throw the
+            # house's accumulated history away on the next restart, which is
+            # the one thing here that cannot be recomputed.
+            return {
+                "for_day": day["day"].isoformat(),
+                "for_date": _day_label(day["day"]),
+                "days_late": late,
+                "stale": True,
+                "recent_days": list(self._history),
+                "days_of_history": len(self._history),
+            }
         stamp = day["day"].isoformat()
         recent_nights = self._nights()[:ENERGY_SERIES_DAYS]
         week = self._window(ENERGY_WEEK_DAYS, stamp)
@@ -657,11 +679,25 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             "for_day": day["day"].isoformat(),
             "for_date": _day_label(day["day"]),
             "days_late": late,
-            "stale": late > ENERGY_STALE_DAYS,
+            # Always False by this point -- a stale day returned above. Kept
+            # so that one key answers "may I believe this" whichever branch
+            # produced the attributes.
+            "stale": False,
             "cost_text": money(day["cost"]),
             "kwh": day["kwh"],
             "usage": day["usage"],
             "standing_p": day["standing_p"],
+            # The standing charge as a year, beside the floor's year. Both
+            # rows on the "Where it went" card are then the same kind of
+            # figure: a thing you pay for by the day, said in the units
+            # anybody decides anything in. The difference between them is the
+            # point -- the floor is a year you can go and reduce, and this is
+            # a year you cannot, which is worth knowing before hunting for it.
+            "standing_cost_year": (
+                None
+                if day["standing_p"] is None
+                else round(day["standing_p"] * 365 / 100)
+            ),
             # What the house draws doing nothing, and how much of the day
             # that accounts for. No price chart would ever have shown this,
             # and on a flat tariff it is the only figure that can be acted

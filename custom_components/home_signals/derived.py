@@ -625,10 +625,16 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         Looked up rather than injected, for the reasons the appliance lookup
         gives: setup order stops mattering, and this reads the same state a
         card reads.
+
+        Matched on the two keys the day sensor publishes whatever state it
+        is in. A signature built from `baseline_watts` would stop matching
+        the moment the data went stale -- which happens to give the right
+        answer, by failing to find the sensor at all, and would leave the
+        staleness check below as dead code that only looked like the reason.
         """
         for state in self.hass.states.async_all("sensor"):
             attrs = state.attributes
-            if "baseline_watts" in attrs and "for_day" in attrs:
+            if "for_day" in attrs and "days_late" in attrs:
                 return state.entity_id
         return None
 
