@@ -16,7 +16,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.home_signals.const import DOMAIN
+from custom_components.home_signals.const import ACCENT_ALERT, ACCENT_WARN, DOMAIN
 from custom_components.home_signals.derived import NeedsYouSensor
 
 LEFT = "sensor.softener_left"
@@ -130,6 +130,34 @@ async def test_other_rows_can_still_be_put_off(hass: HomeAssistant) -> None:
     )
     assert _salt(sensor) is not None
 
+
+async def test_salt_is_ochre_whichever_rule_raised_it(hass: HomeAssistant) -> None:
+    """The colour reports the urgency, not the shopping.
+
+    It used to be terracotta when every side was low and ochre when
+    only one was -- which made the loudest colour in the house mean
+    "the bag is not in the garage". Nobody reads a colour that way, and
+    terracotta here is for water on the floor and doors left unlocked.
+    A softener running low is an errand.
+
+    Both rules are exercised, because a version that simply swapped the
+    two would pass a test that only checked one of them.
+    """
+    # Every side under 40: the trip out to buy a bag.
+    row = _salt(await _low(hass))
+    assert row["accent"] == ACCENT_WARN, row
+    assert row["accent"] != ACCENT_ALERT, row
+
+    # Only one side under 25, the other comfortable: the earlier warning.
+    hass.states.async_set(LEFT, "60")
+    hass.states.async_set(RIGHT, "20")
+    sensor = _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    row = _salt(sensor)
+    assert row is not None, _rows(sensor)
+    assert row["accent"] == ACCENT_WARN, row
 
 # --- something was on overnight ---------------------------------------
 #

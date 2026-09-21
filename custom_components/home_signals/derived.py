@@ -532,9 +532,21 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "title": "Water softener needs salt",
             "detail": detail,
             "icon": "mdi:shaker-outline",
-            # Every side low is the trip to buy a bag; one side low can wait
-            # for the bag already in the garage.
-            "accent": ACCENT_ALERT if all_low else ACCENT_WARN,
+            # Ochre, whichever rule raised it. It was terracotta when
+            # every side was low and ochre when only one was, which made
+            # the colour report the SHOPPING -- a bag to buy rather than
+            # a bag in the garage -- and not the urgency. Nobody reads a
+            # colour that way.
+            #
+            # And terracotta on this panel is for something going wrong
+            # now: water on the floor, the house left unlocked. A
+            # softener running low is slow, recoverable, and fixed by an
+            # errand. Ochre already means exactly that -- something wants
+            # doing, and there is a row for it -- which is what this is.
+            #
+            # The row appearing at all is the signal. Splitting it into
+            # two colours spent the loudest one in the house on a chore.
+            "accent": ACCENT_WARN,
             # No snooze, and not suppressible at all.
             #
             # Everything else on this list can be put off because
