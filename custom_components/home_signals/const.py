@@ -148,10 +148,38 @@ ATTR_SOURCE = "source"
 SOURCE_BUTTON = "button"
 SOURCE_UI = "ui"
 
-# Accent roles, by meaning rather than colour. 1 alerts, 2 warnings,
-# 3 positive, 5 secondary series.
-ACCENT_ALERT = 1
-ACCENT_WARN = 2
+# The three levels a job can be at, and the only colours on the panel
+# that mean the house is asking a person for something.
+#
+# Named rather than numbered because they are ORDERED, and because the
+# numbers they replace were accent slots -- decorative roles that said
+# which tab a card belonged to. Sharing one namespace is how a row came
+# to claim an alarm by naming a hue, and how repainting a decorative
+# slot would have silently repainted a leak.
+#
+# The name is a promise about a timeline, and that is the whole test a
+# new row has to pass:
+#
+#   ATTENTION  needs doing today or tomorrow. Real, but it keeps.
+#   WAITING    something is paused or degrading until a person acts.
+#   CRITICAL   damage or risk is accruing now.
+#
+# A thing that needs no doing at all takes no level. It is information,
+# it belongs on a card, and it is not a Needs-you row.
+LEVEL_ATTENTION = "attention"
+LEVEL_WAITING = "waiting"
+LEVEL_CRITICAL = "critical"
+
+# How loud each level is, for picking the worst in a list. Ordered by
+# what the level means, never by anything incidental about its name.
+LEVEL_LOUDNESS = {
+    LEVEL_ATTENTION: 1,
+    LEVEL_WAITING: 2,
+    LEVEL_CRITICAL: 3,
+}
+
+# Accent roles, by meaning rather than colour. These are DECORATIVE and
+# may never carry a level: 3 positive, 5 secondary series.
 ACCENT_OK = 3
 ACCENT_INFO = 5
 

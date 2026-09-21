@@ -16,7 +16,12 @@ import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.home_signals.const import ACCENT_ALERT, ACCENT_WARN, DOMAIN
+from custom_components.home_signals.const import (
+    DOMAIN,
+    LEVEL_ATTENTION,
+    LEVEL_CRITICAL,
+    LEVEL_WAITING,
+)
 from custom_components.home_signals.derived import NeedsYouSensor
 
 LEFT = "sensor.softener_left"
@@ -131,22 +136,23 @@ async def test_other_rows_can_still_be_put_off(hass: HomeAssistant) -> None:
     assert _salt(sensor) is not None
 
 
-async def test_salt_is_ochre_whichever_rule_raised_it(hass: HomeAssistant) -> None:
-    """The colour reports the urgency, not the shopping.
+async def test_salt_is_attention_whichever_rule_raised_it(
+    hass: HomeAssistant,
+) -> None:
+    """The level reports the urgency, not the shopping.
 
     It used to be terracotta when every side was low and ochre when
     only one was -- which made the loudest colour in the house mean
-    "the bag is not in the garage". Nobody reads a colour that way, and
-    terracotta here is for water on the floor and doors left unlocked.
-    A softener running low is an errand.
+    "the bag is not in the garage". Nobody reads a colour that way.
+    A softener running low is an errand: today or tomorrow, which is
+    what attention means.
 
     Both rules are exercised, because a version that simply swapped the
     two would pass a test that only checked one of them.
     """
     # Every side under 40: the trip out to buy a bag.
     row = _salt(await _low(hass))
-    assert row["accent"] == ACCENT_WARN, row
-    assert row["accent"] != ACCENT_ALERT, row
+    assert row["level"] == LEVEL_ATTENTION, row
 
     # Only one side under 25, the other comfortable: the earlier warning.
     hass.states.async_set(LEFT, "60")
@@ -157,40 +163,28 @@ async def test_salt_is_ochre_whichever_rule_raised_it(hass: HomeAssistant) -> No
 
     row = _salt(sensor)
     assert row is not None, _rows(sensor)
-    assert row["accent"] == ACCENT_WARN, row
+    assert row["level"] == LEVEL_ATTENTION, row
 
-# --- something was on overnight ---------------------------------------
+# --- something was on overnight is NOT a row ---------------------------
 #
-# The row exists because the floor is the one figure no tariff change
-# touches and no price chart would ever have shown. It is also LATE -- one
-# or two days, without a live meter -- and the tests below are mostly about
-# that: the row has to name the night it is about rather than implying last
-# night, and it must not fire on a day so old it is no longer news.
+# It reported a night that had already happened, with no action beyond
+# Dismiss -- which is the one thing a Needs-you row may not be: it did
+# not need doing. The figures are still published; what left is the
+# claim that they were a job.
 
 ENERGY = "sensor.energy_day"
 
 
 def _publish_night(
     hass: HomeAssistant,
-    *,
+    day: str = "2026-09-19",
     watts: int = 420,
     norm: int = 280,
-    excess: int = 50,
-    day: str = "2026-09-19",
+    excess: float = 50.0,
     label: str = "Sat 19 Sep",
     stale: bool = False,
 ) -> None:
-    """The day sensor's shape, as `_energy_entity` looks for it.
-
-    `for_day` and `days_late` are the signature, so both are here whatever
-    else is: they are the two keys the real sensor publishes in either
-    state, which is the point of matching on them.
-
-    A stale night keeps its baseline figures on purpose. The real sensor
-    drops them, so this is more than the truth -- and that is what makes
-    the stale test worth having: the row must be refused because the day is
-    stale, not merely because there was nothing to read.
-    """
+    """The day sensor's shape, as the integration publishes it."""
     hass.states.async_set(
         ENERGY,
         "3.99",
@@ -207,120 +201,34 @@ def _publish_night(
     )
 
 
-async def _energy(hass: HomeAssistant, **kwargs) -> NeedsYouSensor:
-    _publish_night(hass, **kwargs)
+async def test_a_night_over_the_usual_floor_raises_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """The loudest version of the case that used to raise a row.
+
+    50% over the usual floor, fresh data, everything the old rule wanted.
+    A row here would be the panel asking about a Saturday that is over.
+    """
+    _publish_night(hass)
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
-    return sensor
-
-
-def _night_row(sensor: NeedsYouSensor) -> dict | None:
-    return next(
-        (r for r in _rows(sensor) if str(r["id"]).startswith("baseline_")), None
+    assert not [r for r in _rows(sensor) if str(r["id"]).startswith("baseline_")], (
+        _rows(sensor)
     )
 
 
-async def test_a_night_well_over_the_usual_floor_is_a_row(
+async def test_the_overnight_figures_are_still_published(
     hass: HomeAssistant,
 ) -> None:
-    row = _night_row(await _energy(hass))
-    assert row is not None, [r["id"] for r in _rows(await _energy(hass))]
-    assert "overnight" in row["title"].lower()
+    """Dropping the row must not drop the data behind it.
 
-
-async def test_the_row_names_the_night_because_it_is_late(
-    hass: HomeAssistant,
-) -> None:
-    """The lag is shown, not hidden.
-
-    Without a live meter this arrives one or two days behind. "Something is
-    on now" is a claim the data cannot support; "something was on, on
-    Saturday" is one it can, and the difference is the whole reason the
-    detail carries the date.
+    The Electricity card reads these off sensor.energy_day and always
+    did -- the row was a second copy of them wearing a colour. Asserted
+    so that "it is not a job" cannot quietly become "it is not reported".
     """
-    row = _night_row(await _energy(hass))
-    assert "Sat 19 Sep" in row["detail"]
-    assert "420" in row["detail"] and "280" in row["detail"]
-
-
-async def test_an_ordinary_night_is_not_a_row(hass: HomeAssistant) -> None:
-    row = _night_row(await _energy(hass, watts=290, excess=3))
-    assert row is None
-
-
-async def test_a_night_under_the_threshold_is_not_a_row(
-    hass: HomeAssistant,
-) -> None:
-    """20% over is a house having an evening, not a job.
-
-    The threshold is what keeps the row rare, and a row that is not rare is
-    one nobody reads.
-    """
-    assert _night_row(await _energy(hass, watts=336, excess=20)) is None
-    assert _night_row(await _energy(hass, watts=420, excess=50)) is not None
-
-
-async def test_a_stale_day_is_not_news_about_last_night(
-    hass: HomeAssistant,
-) -> None:
-    """Octopus stopped delivering. A week-old night is not a job.
-
-    The sensor already drops its own state when the data goes stale; the row
-    has to drop for the same reason, or the panel spends a week asking about
-    one Saturday.
-    """
-    assert _night_row(await _energy(hass, stale=True)) is None
-
-
-async def test_no_usual_yet_means_no_row(hass: HomeAssistant) -> None:
-    """Before there are enough nights the sensor publishes no excess.
-
-    A row on the strength of a norm that does not exist yet would fire on
-    the house's first week and teach somebody to ignore it.
-    """
-    hass.states.async_set(
-        ENERGY,
-        "3.99",
-        {
-            "for_day": "2026-09-19",
-            "for_date": "Sat 19 Sep",
-            # The signature, so the sensor is found and the row is refused
-            # for the reason this test is about rather than because nothing
-            # was looking at it.
-            "days_late": 2,
-            "stale": False,
-            "baseline_watts": 420,
-            "baseline_norm": None,
-            "baseline_excess_pct": None,
-        },
-        force_update=True,
-    )
-    sensor = _sensor(hass)
-    await sensor.async_added_to_hass()
-    await hass.async_block_till_done()
-    assert _night_row(sensor) is None
-
-
-async def test_answering_for_one_night_does_not_silence_the_next(
-    hass: HomeAssistant,
-) -> None:
-    """"I know what that was" is a real answer, for that night only.
-
-    Guests, a wash left running, the oven on late. The occurrence key is
-    what makes the answer specific -- the same rule the bins row follows.
-    """
-    sensor = await _energy(hass)
-    row = _night_row(sensor)
-    assert row["action_label"] == "Dismiss"
-
-    sensor.suppress(row["id"])
-    assert _night_row(sensor) is None, "the dismissal did not take"
-
-    _publish_night(hass, day="2026-09-20", label="Sun 20 Sep")
-    await hass.async_block_till_done()
-    sensor._recompute()  # noqa: SLF001
-
-    again = _night_row(sensor)
-    assert again is not None, "answering for Saturday silenced Sunday too"
-    assert again["id"] == "baseline_2026-09-20"
+    _publish_night(hass)
+    attrs = hass.states.get(ENERGY).attributes
+    assert attrs["baseline_watts"] == 420
+    assert attrs["baseline_norm"] == 280
+    assert attrs["baseline_excess_pct"] == 50.0
