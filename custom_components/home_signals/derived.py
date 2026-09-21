@@ -44,15 +44,16 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    ACCENT_ALERT,
     APPLIANCE_RUNNING,
     ATTR_HOURS,
     ATTR_ITEM_ID,
     ATTR_LOAD_ID,
     ATTR_SOURCE,
     ACCENT_INFO,
-    ACCENT_WARN,
-    CONF_BASELINE_EXCESS_PCT,
+    LEVEL_ATTENTION,
+    LEVEL_CRITICAL,
+    LEVEL_LOUDNESS,
+    LEVEL_WAITING,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
     CONF_PEOPLE,
@@ -66,7 +67,6 @@ from .const import (
     CONF_SECURITY_LOCKS,
     CONF_SECURITY_OPENINGS,
     CONF_TASKS_SENSOR,
-    DEFAULT_BASELINE_EXCESS_PCT,
     DEFAULT_BATTERY_THRESHOLD,
     DEFAULT_SALT_BOTH_THRESHOLD,
     DEFAULT_SALT_ONE_THRESHOLD,
@@ -409,7 +409,12 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         candidates.extend(self._tasks())
         candidates.extend(self._batteries())
         candidates.extend(self._salt())
-        candidates.extend(self._baseline())
+        # No overnight-baseline row. It reported a night that had already
+        # happened, with no action beyond Dismiss, which is the one thing
+        # a Needs-you row may not be: it did not need doing. The figures
+        # stay where they always were, on sensor.energy_day, where the
+        # Electricity card reads them -- what leaves is the claim that
+        # they were a job.
         candidates.extend(self._appliances())
         candidates.extend(self._people())
         candidates.extend(self._offline())
@@ -461,7 +466,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "title": title,
             "detail": detail,
             "icon": "mdi:trash-can-outline",
-            "accent": ACCENT_WARN,
+            "level": LEVEL_ATTENTION,
             "action_label": "Done",
             "action": _dismiss(f"bin_{collection.isoformat()}"),
         }]
@@ -479,7 +484,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "title": "Overdue chores",
             "detail": _name_of(state),
             "icon": "mdi:clipboard-alert-outline",
-            "accent": ACCENT_WARN,
+            "level": LEVEL_ATTENTION,
             "action_label": "Snooze",
             "action": _snooze("tasks_overdue"),
         }]
@@ -546,7 +551,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             #
             # The row appearing at all is the signal. Splitting it into
             # two colours spent the loudest one in the house on a chore.
-            "accent": ACCENT_WARN,
+            "level": LEVEL_ATTENTION,
             # No snooze, and not suppressible at all.
             #
             # Everything else on this list can be put off because
@@ -586,7 +591,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 "detail": f"{names} and {len(flat) - 3} more"
                           if len(flat) > 3 else names,
                 "icon": "mdi:battery-alert-variant-outline",
-                "accent": ACCENT_WARN,
+                "level": LEVEL_ATTENTION,
                 "action_label": "Snooze",
             }]
 
@@ -599,7 +604,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 "title": f"{_battery_label(state)} battery",
                 "detail": f"{level:.0f}%" + (f" · {area}" if area else ""),
                 "icon": "mdi:battery-alert-variant-outline",
-                "accent": ACCENT_WARN,
+                "level": LEVEL_ATTENTION,
                 "action_label": "Snooze",
             })
         return rows
@@ -637,60 +642,6 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             if "for_day" in attrs and "days_late" in attrs:
                 return state.entity_id
         return None
-
-    def _baseline(self) -> list[dict[str, Any]]:
-        """A night whose floor sat well above the usual one.
-
-        The floor is what the house draws with everybody asleep, so a night
-        well above it is something that was left running -- and it is the one
-        signal here that no tariff change touches and no price chart would
-        ever have shown.
-
-        **It is late, and the row says so.** Without a live meter the settled
-        day arrives one or two days behind, so the detail names the night
-        rather than implying last night. Hiding that would make the row a
-        worse version of itself: "something is on now" is a claim this data
-        cannot support, and "something was on, on Saturday" is one it can.
-
-        Dismissable, and keyed to the night. "I know what that was" is a real
-        answer -- guests, a wash left running, the oven on late -- and the
-        occurrence key means answering for Saturday does not silence Sunday.
-
-        No snooze. A night is over; there is nothing to come back to later.
-        """
-        entity_id = self._energy_entity()
-        if not entity_id:
-            return []
-        state = self.hass.states.get(entity_id)
-        if state is None:
-            return []
-        attrs = state.attributes
-        # A stale day is not news about last night. The sensor already drops
-        # its own state when the data stops arriving; this drops the row for
-        # the same reason rather than reporting a week-old night as a job.
-        if attrs.get("stale"):
-            return []
-        excess = attrs.get("baseline_excess_pct")
-        watts = attrs.get("baseline_watts")
-        norm = attrs.get("baseline_norm")
-        night = attrs.get("for_day")
-        label = attrs.get("for_date")
-        if not isinstance(excess, (int, float)) or not night:
-            return []
-        threshold = float(self._option(
-            CONF_BASELINE_EXCESS_PCT, DEFAULT_BASELINE_EXCESS_PCT
-        ))
-        if excess < threshold:
-            return []
-        return [{
-            "id": f"baseline_{night}",
-            "title": "Something was on overnight",
-            "detail": f"{label} \u00b7 {watts} W against a usual {norm} W",
-            "icon": "mdi:power-plug-outline",
-            "accent": ACCENT_WARN,
-            "action_label": "Dismiss",
-            "action": _dismiss(f"baseline_{night}"),
-        }]
 
     def _appliance_entities(self) -> list[str]:
         """The cycle sensors this integration publishes, found by their id.
@@ -733,7 +684,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     "title": f"{name} is leaking",
                     "detail": "Power cut at the plug \u00b7 check the floor",
                     "icon": "mdi:water-alert",
-                    "accent": ACCENT_ALERT,
+                    "level": LEVEL_CRITICAL,
                     "action_label": "Snooze",
                     "action": _snooze(f"leak_{slug}", hours=1),
                 })
@@ -747,7 +698,12 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     "title": f"{name} has no power",
                     "detail": "Switched off at the plug",
                     "icon": "mdi:power-plug-off",
-                    "accent": ACCENT_WARN,
+                    # Waiting, not attention. A machine without power
+                    # mid-cycle is wet washing and a clock running: the
+                    # activity is paused until somebody acts, which is
+                    # exactly what the middle level is for. It shared a
+                    # colour with "bins tomorrow" before there was one.
+                    "level": LEVEL_WAITING,
                     "action_label": "Snooze",
                     "action": _snooze(f"unpowered_{slug}", hours=4),
                 })
@@ -764,7 +720,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     "title": f"{name} needs emptying",
                     "detail": self._drum_detail(attrs),
                     "icon": "mdi:door-open",
-                    "accent": ACCENT_WARN,
+                    "level": LEVEL_ATTENTION,
                 })
 
             # One row per load, keyed to the cycle that produced it, so
@@ -781,7 +737,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     "title": "Laundry needs hanging",
                     "detail": self._load_detail(load),
                     "icon": "mdi:hanger",
-                    "accent": ACCENT_WARN,
+                    "level": LEVEL_ATTENTION,
                     "action_label": "Hung",
                     "action": _hung(load["id"]),
                 })
@@ -849,7 +805,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     f"quiet since {dt_util.as_local(since).strftime('%H:%M')}"
                 ),
                 "icon": "mdi:map-marker-question",
-                "accent": ACCENT_WARN,
+                "level": LEVEL_ATTENTION,
                 "action_label": "Snooze",
                 "action": _snooze(f"dark_{entity_id}", hours=12),
             })
@@ -873,7 +829,12 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "title": f"{len(gone)} entities offline",
             "detail": names,
             "icon": "mdi:lan-disconnect",
-            "accent": ACCENT_ALERT,
+            # Nothing is accruing damage and nothing is paused waiting
+            # for a person: 31 offline entities is an investigation for
+            # today or tomorrow. It was the loudest thing on the panel
+            # and it was pushing the Maintenance tile red every morning,
+            # which is how a red stops meaning anything.
+            "level": LEVEL_ATTENTION,
             "action_label": "Snooze",
         }]
 
@@ -923,9 +884,13 @@ class SystemHealthSensor(_Derived):
                 "entity_id": state.entity_id,
                 "name": _name_of(state),
                 "area": _area_of(self.hass, state.entity_id),
-                "level": level,
+                # "percent", not "level". A level is now one of the three
+                # names a job can carry, and a dict published to a card
+                # with a level key meaning 41.0 is a trap waiting for the
+                # first person who renders low_batteries as rows.
+                "percent": percent,
             }
-            for state, level in self._batteries_below(threshold)
+            for state, percent in self._batteries_below(threshold)
         ]
         self._offline = [
             {
@@ -952,10 +917,10 @@ class SystemHealthSensor(_Derived):
             rows.append({
                 "id": "batteries",
                 "name": "Low batteries",
-                "sub": f"{worst['name']} at {worst['level']:.0f}%",
+                "sub": f"{worst['name']} at {worst['percent']:.0f}%",
                 "value": str(len(self._batteries)),
                 "icon": "mdi:battery-alert-variant-outline",
-                "accent": ACCENT_WARN,
+                "level": LEVEL_ATTENTION,
             })
         if self._offline:
             rows.append({
@@ -964,7 +929,7 @@ class SystemHealthSensor(_Derived):
                 "sub": self._offline[0]["name"],
                 "value": str(len(self._offline)),
                 "icon": "mdi:lan-disconnect",
-                "accent": ACCENT_ALERT,
+                "level": LEVEL_ATTENTION,
             })
         if self._updates:
             rows.append({
@@ -973,6 +938,11 @@ class SystemHealthSensor(_Derived):
                 "sub": self._updates[0]["name"],
                 "value": str(len(self._updates)),
                 "icon": "mdi:package-up",
+                # No level, deliberately. An update pending needs no
+                # doing today or tomorrow, nothing is paused on it, and
+                # nothing is accruing -- so it fails every one of the
+                # three timelines. It is information on a card, and it
+                # takes a decorative accent like any other fact.
                 "accent": ACCENT_INFO,
             })
         self._items = rows
@@ -982,11 +952,14 @@ class SystemHealthSensor(_Derived):
         return {
             "items": list(self._items),
             # The worst thing in the list, so a tab tile can wear the
-            # colour of what is actually there instead of a fixed one.
+            # level of what is actually there instead of a fixed one.
             # The Maintenance tile was hardcoded ochre and so was yellow
-            # on a morning with nothing wrong -- and on this panel
-            # yellow is a promise that something wants doing.
-            "accent": self._worst(),
+            # on a morning with nothing wrong -- and yellow is now one of
+            # the three colours that promise something wants doing.
+            #
+            # None when nothing carries a level, so the tile goes back to
+            # its own accent rather than to the quietest alarm.
+            "level": self._worst(),
             "low_batteries": list(self._batteries),
             "offline": list(self._offline),
             "updates_pending": list(self._updates),
@@ -995,21 +968,20 @@ class SystemHealthSensor(_Derived):
             "update_count": len(self._updates),
         }
 
-    def _worst(self) -> int | None:
-        """The most serious accent among the rows, or None for none.
+    def _worst(self) -> str | None:
+        """The most serious level among the rows, or None for none.
 
-        Ordered by how loud the role is rather than by its number:
-        1 alerts, 2 warns, 5 is just information. Numeric order would
-        make information the worst thing in the house.
+        Rows carrying no level are skipped rather than ranked last: a
+        card full of information is a card with nothing wrong, and a
+        tile that colours for it is a tile that is always on.
         """
-        loudness = {ACCENT_ALERT: 3, ACCENT_WARN: 2, ACCENT_INFO: 1}
         worst = None
         for row in self._items:
-            accent = row.get("accent")
-            if accent not in loudness:
+            level = row.get("level")
+            if level not in LEVEL_LOUDNESS:
                 continue
-            if worst is None or loudness[accent] > loudness[worst]:
-                worst = accent
+            if worst is None or LEVEL_LOUDNESS[level] > LEVEL_LOUDNESS[worst]:
+                worst = level
         return worst
 
 
@@ -1244,9 +1216,12 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
                 "since": row["since"],
                 "icon": row["icon"],
                 "jammed": bool(row.get("jammed")),
-                "accent": ACCENT_ALERT
+                # Red is a door left open past the grace period, which
+                # is accruing risk now. Amber is inside the grace: the
+                # house is waiting on somebody to shut it.
+                "level": LEVEL_CRITICAL
                 if self._status == SECURITY_RED
-                else ACCENT_WARN,
+                else LEVEL_WAITING,
             }
             for row in (unlocked + opened + unreadable)
         ]

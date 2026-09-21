@@ -40,8 +40,8 @@ from custom_components.home_signals.derived import SecurityStatusSensor
 FRONT = "lock.front_door"
 BACK = "binary_sensor.back_door"
 
-ACCENT_WARN = 2
-ACCENT_ALERT = 1
+LEVEL_WAITING = "waiting"
+LEVEL_CRITICAL = "critical"
 
 
 class FakeEntry:
@@ -112,7 +112,7 @@ async def test_just_unlocked_is_amber_not_red(hass: HomeAssistant, clock) -> Non
     assert sensor._since == dt_util.utcnow()
     assert len(sensor._items) == 1
     assert sensor._items[0]["value"] == "Unlocked"
-    assert sensor._items[0]["accent"] == ACCENT_WARN
+    assert sensor._items[0]["level"] == LEVEL_WAITING
 
 
 async def test_still_amber_a_minute_before_the_grace_is_up(
@@ -154,7 +154,7 @@ async def test_it_goes_red_on_its_own_when_the_grace_expires(
     assert sensor.native_value == SECURITY_RED, (
         "the grace period was armed but never actually expired"
     )
-    assert sensor._items[0]["accent"] == ACCENT_ALERT
+    assert sensor._items[0]["level"] == LEVEL_CRITICAL
 
 
 async def test_a_one_minute_grace_is_honoured_on_both_sides(
@@ -574,7 +574,7 @@ async def test_a_jam_says_unlocked_and_carries_the_reason_separately(
     row = sensor._items[0]
     assert row["value"] == "Unlocked", row["value"]
     assert row["jammed"] is True
-    assert row["accent"] == ACCENT_ALERT
+    assert row["level"] == LEVEL_CRITICAL
     assert "jam" not in row["value"].lower()
 
 

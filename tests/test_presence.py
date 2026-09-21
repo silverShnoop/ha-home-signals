@@ -26,7 +26,13 @@ from pytest_homeassistant_custom_component.common import (
     mock_restore_cache,
 )
 
-from custom_components.home_signals.const import DOMAIN
+from custom_components.home_signals.const import (
+    ACCENT_INFO,
+    DOMAIN,
+    LEVEL_ATTENTION,
+    LEVEL_CRITICAL,
+    LEVEL_WAITING,
+)
 from custom_components.home_signals.derived import NeedsYouSensor
 
 JAINA = "person.jaina"
@@ -203,40 +209,51 @@ def _health(hass: HomeAssistant, rows: list[dict]) -> SystemHealthSensor:
 
 
 async def test_nothing_wrong_is_not_a_colour(hass: HomeAssistant) -> None:
-    assert _health(hass, []).extra_state_attributes["accent"] is None, (
+    assert _health(hass, []).extra_state_attributes["level"] is None, (
         "the tile would be coloured on a morning with nothing wrong"
     )
 
 
-async def test_information_alone_does_not_warn(hass: HomeAssistant) -> None:
-    """Seven pending updates is worth knowing and is not a warning."""
-    sensor = _health(hass, [{"id": "updates", "accent": 5}])
-    assert sensor.extra_state_attributes["accent"] == 5
+async def test_information_alone_is_not_a_level(hass: HomeAssistant) -> None:
+    """Seven pending updates is worth knowing and is not a job.
+
+    It carries a decorative accent and no level at all, so the tile has
+    nothing to wear -- which is the point. A row that needs no doing
+    must not be able to colour a tab.
+    """
+    sensor = _health(hass, [{"id": "updates", "accent": ACCENT_INFO}])
+    assert sensor.extra_state_attributes["level"] is None, (
+        "information coloured the tile, so it was ranked rather than skipped"
+    )
 
 
 async def test_the_worst_thing_wins_not_the_last_one(
     hass: HomeAssistant,
 ) -> None:
     sensor = _health(hass, [
-        {"id": "offline", "accent": 1},
-        {"id": "updates", "accent": 5},
+        {"id": "leak", "level": LEVEL_CRITICAL},
+        {"id": "updates", "accent": ACCENT_INFO},
+        {"id": "batteries", "level": LEVEL_ATTENTION},
     ])
-    assert sensor.extra_state_attributes["accent"] == 1, (
-        "an alert was drowned out by the information listed after it"
+    assert sensor.extra_state_attributes["level"] == LEVEL_CRITICAL, (
+        "a critical row was drowned out by what was listed after it"
     )
 
 
-async def test_loudness_is_not_the_accent_number(hass: HomeAssistant) -> None:
-    """The trap in ordering by number: 5 is information, 1 is an alert.
+async def test_loudness_is_the_meaning_not_the_name(
+    hass: HomeAssistant,
+) -> None:
+    """The trap the numbers used to set, in its new clothes.
 
-    max() over the raw numbers makes "7 updates pending" the most
-    serious thing in the house.
+    Ordered any incidental way -- alphabetically, say -- "attention"
+    comes first and would outrank "waiting". The order has to come from
+    what the levels mean.
     """
     sensor = _health(hass, [
-        {"id": "updates", "accent": 5},
-        {"id": "batteries", "accent": 2},
+        {"id": "batteries", "level": LEVEL_ATTENTION},
+        {"id": "unpowered", "level": LEVEL_WAITING},
     ])
-    assert sensor.extra_state_attributes["accent"] == 2, (
-        "information outranked a warning, so the numbers were compared "
-        "rather than the meanings"
+    assert sensor.extra_state_attributes["level"] == LEVEL_WAITING, (
+        "attention outranked waiting, so something other than the "
+        "meaning was being compared"
     )
