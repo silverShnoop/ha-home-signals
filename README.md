@@ -194,8 +194,13 @@ card is the difference between one Python function and a template per tile.
 - **`for_day`, `for_date`, `days_late`, `stale`** — which day that is.
 - **`kwh`, `usage`, `standing_p`, `peak_slot`, `peak_kwh`, `slots`**.
 - **`baseline_watts`, `baseline_share`** — what the house draws asleep.
-- **`recent_days`, `average_cost`, `average_kwh`, `vs_average_pct`,
-  `vs_average_text`** — the comparison that works without a live meter.
+- **`week_*`, `month_*`, `vs_week_*`, `vs_month_*`** — the day against its
+  own two windows; the comparison that works without a live meter.
+- **`recent_days`** — the rolling five weeks the windows are built from.
+- **`cost_series`, `kwh_series`, `baseline_series`, `series_labels`** — plain
+  arrays, oldest first, for a chart to read straight off.
+- **`baseline_norm`, `baseline_excess_pct`, `baseline_trend_pct`,
+  `baseline_high`** — the floor, against its usual and against itself.
 - **`today_cost`, `today_kwh`, `same_time_cost`, `today_vs_pct`,
   `today_vs_text`** — only where there is a live meter to read.
 
@@ -285,6 +290,59 @@ odd night away from being wrong is worse than no norm. Below that,
 And `baseline_text` only mentions the norm when there is something to say. A
 sentence reading "3% under usual" every single morning is how a figure stops
 being read.
+
+#### A spike and a creep are different questions
+
+`baseline_excess_pct` measures the night against a **trailing fortnight**, so
+a slow drift upwards moves the norm with it and stops firing the row. That is
+right for catching a spike and useless for catching a creep — and a creep is
+a fridge seal going, a pump starting to fail, something plugged in during the
+summer that never got switched off again.
+
+So `baseline_trend_pct` asks the other question: the median of the last week
+of nights against the median of the week before. Seven nights at 280 W
+followed by seven at 340 W is a 21% trend and *not* a spike, and the pair of
+figures is what tells those apart. It needs a fortnight of nights before it
+says anything.
+
+#### The arrays are shaped here, not in the card
+
+`cost_series`, `kwh_series` and `baseline_series` are plain arrays, oldest
+first, capped at fourteen days — a Spectra `chart` reads them with no
+`auto-entities`, no `apexcharts-card` and no Jinja, which is the whole point
+of the split.
+
+Fourteen rather than thirty-five because a chart on a wall panel should draw
+a shape rather than a texture. The history is longer than the series on
+purpose: it exists to be averaged, and only part of it to be drawn.
+
+Every series is the same length as `series_labels` **by construction**, not by
+luck: `_remember` writes all four figures together, and `_restore` drops any
+row missing one. A row missing a figure would be skipped by that series and
+kept by the labels, drawing every bar after it against the wrong day — and a
+chart off by one is worse than a chart one day shorter.
+
+### The week and the month, which can disagree
+
+Two trailing windows rather than one blended average:
+
+```
+week_cost  7.50   week_kwh  28.3   week_days   7   vs_week_pct   0
+month_cost 4.90   month_kwh 18.5   month_days 27   vs_month_pct 53
+```
+
+They exist as a pair because they answer differently exactly when it
+matters. A cold snap moves the week and leaves the month alone; a new
+appliance moves both. One blended figure splits the difference and says
+neither. Both exclude the day being judged, for the reason given below.
+
+`week_days` and `month_days` are published because until the history has
+filled a month, a "month average" is the mean of whatever there is — and
+something has to say so rather than the label implying thirty days of
+evidence that do not exist yet.
+
+The history keeps **five weeks**, which is a month plus room for the days
+Octopus delivers late or not at all.
 
 ### The average is the comparison that always works
 

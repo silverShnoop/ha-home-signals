@@ -14,6 +14,8 @@ produce a number, and a number is exactly what must not appear.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 from homeassistant.core import HomeAssistant
 
@@ -259,7 +261,7 @@ async def test_today_is_absent_without_a_live_meter(meter: Meter) -> None:
     assert "today_cost" not in a
     assert "today_vs_pct" not in a
     # The comparison that DOES work without one is still there.
-    assert "vs_average_text" in a
+    assert "vs_week_text" in a
 
 
 async def test_today_is_compared_against_the_same_time_of_day(metered: Meter) -> None:
@@ -323,10 +325,14 @@ async def test_two_days_are_not_an_average(hass: HomeAssistant, freezer) -> None
 
     assert m.attrs["days_of_history"] == 3
     # Three days in, but the day being judged is excluded -- so only two are
-    # left to average, which is not enough.
-    assert m.attrs["average_cost"] is None
-    assert m.attrs["vs_average_pct"] is None
-    assert m.attrs["vs_average_text"] is None
+    # left to average, which is not enough for either window.
+    assert m.attrs["week_cost"] is None
+    assert m.attrs["vs_week_pct"] is None
+    assert m.attrs["vs_week_text"] is None
+    assert m.attrs["month_cost"] is None
+    # The count is still published, so "why is there no comparison" has an
+    # answer rather than a silence.
+    assert m.attrs["week_days"] == 2
 
 
 async def test_a_day_is_judged_against_the_others_and_not_itself(
@@ -350,9 +356,9 @@ async def test_a_day_is_judged_against_the_others_and_not_itself(
 
     a = m.attrs
     assert a["days_of_history"] == 4
-    assert a["average_cost"] == pytest.approx(round(0.1 * 48 * RATE + STANDING, 2), abs=0.02)
-    assert a["vs_average_pct"] is not None and a["vs_average_pct"] > 100
-    assert "above average" in a["vs_average_text"]
+    assert a["week_cost"] == pytest.approx(round(0.1 * 48 * RATE + STANDING, 2), abs=0.02)
+    assert a["vs_week_pct"] is not None and a["vs_week_pct"] > 100
+    assert "above the week" in a["vs_week_text"]
 
 
 async def test_an_ordinary_day_is_about_average(hass: HomeAssistant, freezer) -> None:
@@ -366,8 +372,8 @@ async def test_an_ordinary_day_is_about_average(hass: HomeAssistant, freezer) ->
         publish(hass, day)
         await m.settle()
 
-    assert m.attrs["vs_average_pct"] == 0
-    assert m.attrs["vs_average_text"] == "about average"
+    assert m.attrs["vs_week_pct"] == 0
+    assert m.attrs["vs_week_text"] == "about the week"
 
 
 async def test_a_revised_day_replaces_rather_than_doubles(
@@ -411,7 +417,7 @@ async def test_the_recent_days_come_back_after_a_restart(
     fresh.hass = hass
     fresh._restore({"recent_days": kept})
     assert len(fresh._history) == 4
-    assert fresh._average("2026-09-19")[0] is not None
+    assert fresh._window(7, "2026-09-19")["cost"] is not None
 
 
 # --- the wording ------------------------------------------------------
@@ -533,3 +539,166 @@ async def test_the_floor_is_kept_per_night(hass: HomeAssistant, freezer) -> None
     m = await _nights(hass, freezer, [280, 300, 290])
     watts = [row["baseline_watts"] for row in m.attrs["recent_days"]]
     assert sorted(watts) == [280, 290, 300], m.attrs["recent_days"]
+
+
+# --- the day against the week and the month --------------------------
+#
+# Two windows rather than one blended average, because they answer
+# differently exactly when it matters: a cold snap moves the week and leaves
+# the month alone, and that gap is the information.
+
+
+async def _days(hass: HomeAssistant, freezer, costs: list[float]) -> Meter:
+    """One settled day per entry, oldest first, ending on 2026-09-19.
+
+    `costs` are relative consumption multipliers rather than pounds -- the
+    day is driven through the real charges so the totals come out of the
+    same arithmetic the card will read.
+    """
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    last = date(2026, 9, 19)
+    for offset, factor in enumerate(costs):
+        day = last - timedelta(days=len(costs) - 1 - offset)
+        publish(hass, day.isoformat(), [c * factor for c in SATURDAY])
+        await m.settle()
+    return m
+
+
+async def test_the_week_and_the_month_can_disagree(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A quiet month, a heavy week, and a day that is normal for the week.
+
+    Twenty quiet days, then a full heavy week, then a heavy day. Against the
+    week it is unremarkable; against the month it is half again up -- and a
+    single blended average would have split the difference and said neither.
+
+    The week has to be SEVEN heavy days, not six: with six, the seventh day
+    in the window is still a quiet one, the week average lands at £7.00
+    against a £7.50 day, and the test would be asserting 7% while claiming
+    to demonstrate 0.
+    """
+    m = await _days(hass, freezer, [1.0] * 20 + [2.0] * 7 + [2.0])
+    a = m.attrs
+
+    assert a["week_days"] == 7
+    assert a["month_days"] == 27
+    assert a["vs_week_pct"] == 0, a["week_cost"]
+    assert a["vs_month_pct"] == 53
+    assert a["vs_week_text"] == "about the week"
+    assert "above the month" in a["vs_month_text"]
+
+
+async def test_a_window_says_how_many_days_it_had(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Until the history fills, "month" is the mean of what there is.
+
+    Something has to say so, or the label implies thirty days of evidence
+    that do not exist yet.
+    """
+    m = await _days(hass, freezer, [1.0] * 5)
+    a = m.attrs
+    assert a["week_days"] == 4
+    assert a["month_days"] == 4
+    assert a["week_cost"] == a["month_cost"], "same days, so the same mean"
+
+
+async def test_the_windows_carry_kwh_as_well_as_cost(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Both, because a tariff change moves one and not the other."""
+    m = await _days(hass, freezer, [1.0] * 8)
+    a = m.attrs
+    assert a["week_kwh"] == pytest.approx(round(sum(SATURDAY), 3))
+    assert a["month_kwh"] == pytest.approx(round(sum(SATURDAY), 3))
+
+
+# --- is the floor creeping -------------------------------------------
+
+
+async def test_a_creeping_floor_is_not_the_same_as_a_spike(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Seven nights at 280, then seven at 340.
+
+    The norm follows the drift and stops calling it a spike -- which is
+    right, and is why the norm cannot answer this. The trend compares the
+    last week of nights against the week before and sees the creep.
+    """
+    m = await _nights(hass, freezer, [280] * 7 + [340] * 7)
+    a = m.attrs
+    assert a["baseline_trend_pct"] == 21
+    # And the row's own test: against a fortnight's median the latest night
+    # is nothing like a spike, so nothing fires.
+    assert a["baseline_excess_pct"] is not None
+    assert a["baseline_excess_pct"] < 40
+
+
+async def test_a_steady_floor_has_no_trend(hass: HomeAssistant, freezer) -> None:
+    m = await _nights(hass, freezer, [280] * 14)
+    assert m.attrs["baseline_trend_pct"] == 0
+
+
+async def test_a_fortnight_is_needed_before_a_trend(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Two weeks of nights, because the figure compares one week to another."""
+    m = await _nights(hass, freezer, [280] * 13)
+    assert m.attrs["baseline_trend_pct"] is None
+
+
+# --- the arrays a chart reads ----------------------------------------
+
+
+async def test_the_series_are_arrays_a_chart_can_read(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Plain arrays, oldest first, shaped here rather than in the card.
+
+    Length is capped so a card draws a shape rather than a texture: thirty
+    five bars read from a doorway is neither.
+    """
+    m = await _days(hass, freezer, [1.0] * 20)
+    a = m.attrs
+
+    assert len(a["cost_series"]) == 14
+    assert len(a["kwh_series"]) == 14
+    assert len(a["baseline_series"]) == 14
+    assert len(a["series_labels"]) == 14
+    assert all(isinstance(v, (int, float)) for v in a["cost_series"])
+
+
+async def test_every_series_lines_up_with_its_labels(
+    hass: HomeAssistant, freezer
+) -> None:
+    """The bug this guards against draws every bar against the wrong day.
+
+    A row missing one figure would be skipped by that series and kept by the
+    labels, shifting everything after it. `_restore` drops such rows on the
+    way in, so the lengths match by construction.
+    """
+    m = await _days(hass, freezer, [1.0] * 6)
+    a = m.attrs
+    assert (
+        len(a["cost_series"])
+        == len(a["kwh_series"])
+        == len(a["baseline_series"])
+        == len(a["series_labels"])
+        == 6
+    )
+
+    # A row from a version before the floor was recorded is dropped rather
+    # than left to shift the chart.
+    m.sensor._restore({"recent_days": [
+        {"day": "2026-09-18", "cost": 3.99, "kwh": 14.164, "baseline_watts": 286},
+        {"day": "2026-09-17", "cost": 3.50, "kwh": 13.0},
+    ]})
+    assert len(m.sensor._history) == 1
+
+
+async def test_the_series_runs_oldest_first(hass: HomeAssistant, freezer) -> None:
+    """The direction a chart is read in, decided here rather than in YAML."""
+    m = await _days(hass, freezer, [1.0, 2.0, 3.0])
+    costs = m.attrs["cost_series"]
+    assert costs == sorted(costs), costs

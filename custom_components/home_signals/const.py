@@ -195,10 +195,31 @@ BASELINE_UNTIL_HOUR = 6
 # designing against -- and the panel already knows how to render nothing.
 ENERGY_STALE_DAYS = 3
 
-# Days of settled history kept for the rolling average, and the fewest that
-# may be called one. A mean of two days is not an average, it is two days.
-ENERGY_HISTORY_DAYS = 14
+# Days of settled history kept, and the fewest that may be called an average.
+# A mean of two days is not an average, it is two days.
+#
+# Five weeks rather than two, so a month window has a month to average over
+# and still has room for the days Octopus delivers late or not at all.
+ENERGY_HISTORY_DAYS = 35
 ENERGY_MIN_DAYS_FOR_AVERAGE = 3
+
+# The two windows a person actually compares a day against: "is this a normal
+# week for us" and "is this a normal month". Both are trailing and both
+# exclude the day being judged -- see _window.
+ENERGY_WEEK_DAYS = 7
+ENERGY_MONTH_DAYS = 30
+
+# How many days the card's chart draws. Shorter than the history on purpose:
+# thirty-five bars across a card read from a doorway is a texture, not a
+# shape, and the history exists to be averaged rather than drawn.
+ENERGY_SERIES_DAYS = 14
+
+# The floor's norm looks at the trailing fortnight, not the whole history.
+# A norm over five weeks would absorb a slow creep and keep reporting it as
+# normal; over a fortnight it tracks the drift, so only a real spike fires
+# the row. The creep itself is a different question, answered by comparing
+# the last week of nights against the week before -- see `baseline_trend_pct`.
+ENERGY_NORM_DAYS = 14
 
 # Within this, the day is "about the same" rather than up or down. Without a
 # band, a normal day reads as 3% down and the comparison becomes noise that

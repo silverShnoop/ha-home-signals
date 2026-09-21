@@ -56,8 +56,12 @@ from .const import (
     ENERGY_HISTORY_DAYS,
     ENERGY_MIN_DAYS_FOR_AVERAGE,
     ENERGY_MIN_DAYS_FOR_NORM,
+    ENERGY_MONTH_DAYS,
+    ENERGY_NORM_DAYS,
     ENERGY_SAME_PCT,
+    ENERGY_SERIES_DAYS,
     ENERGY_STALE_DAYS,
+    ENERGY_WEEK_DAYS,
 )
 from .money import money
 
@@ -235,7 +239,17 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         self._history = [
             dict(row)
             for row in rows
-            if isinstance(row, dict) and isinstance(row.get("day"), str)
+            if isinstance(row, dict)
+            and isinstance(row.get("day"), str)
+            # All four or none. A row missing one figure would be skipped by
+            # that series and kept by the labels, drawing every bar after it
+            # against the wrong day -- and a chart off by one is worse than
+            # a chart one day shorter. Rows like this only come from a
+            # version before the figure existed, so this self-heals.
+            and all(
+                _as_float(row.get(key)) is not None
+                for key in ("cost", "kwh", "baseline_watts")
+            )
         ][:ENERGY_HISTORY_DAYS]
 
     @callback
@@ -417,21 +431,36 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
     def _days_late(self, day: dict[str, Any]) -> int:
         return (dt_util.now().date() - day["day"]).days
 
-    def _average(self, excluding: str) -> tuple[float | None, float | None]:
-        """The house's own recent average, leaving out the day being judged.
+    def _window(self, days: int, excluding: str) -> dict[str, Any]:
+        """The trailing `days` settled days, averaged, without the day itself.
+
+        Two windows rather than one blended average, because the question a
+        person actually asks has two forms -- "is this a normal week for us"
+        and "is this a normal month" -- and they answer differently exactly
+        when it matters: a cold snap moves the week and leaves the month
+        alone, and that gap IS the information.
 
         A day included in its own average is measured partly against itself,
-        which flattens exactly the comparison the figure exists to make.
+        which flattens the comparison the figure exists to make.
+
+        `days` is how many of them it reports, because until the history has
+        filled a month a "month average" is the mean of whatever there is,
+        and something has to say so rather than the label implying thirty.
         """
-        rows = [row for row in self._history if row["day"] != excluding]
-        if len(rows) < ENERGY_MIN_DAYS_FOR_AVERAGE:
-            return None, None
+        rows = sorted(
+            (row for row in self._history if row["day"] != excluding),
+            key=lambda row: row["day"],
+            reverse=True,
+        )[:days]
         costs = [c for row in rows if (c := _as_float(row.get("cost"))) is not None]
         kwhs = [k for row in rows if (k := _as_float(row.get("kwh"))) is not None]
-        return (
-            round(sum(costs) / len(costs), 2) if costs else None,
-            round(sum(kwhs) / len(kwhs), 3) if kwhs else None,
-        )
+        if len(costs) < ENERGY_MIN_DAYS_FOR_AVERAGE:
+            return {"cost": None, "kwh": None, "days": len(costs)}
+        return {
+            "cost": round(sum(costs) / len(costs), 2),
+            "kwh": round(sum(kwhs) / len(kwhs), 3) if kwhs else None,
+            "days": len(costs),
+        }
 
     def _baseline_norm(self, excluding: str) -> int | None:
         """What this house usually draws asleep, from the other nights.
@@ -445,16 +474,65 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         odd night away from being wrong -- and this figure's whole job is to
         be the thing an odd night fails against.
         """
-        watts = [
-            w
-            for row in self._history
-            if row["day"] != excluding
-            and (w := _as_float(row.get("baseline_watts"))) is not None
-        ]
+        watts = self._nights(excluding)[:ENERGY_NORM_DAYS]
         if len(watts) < ENERGY_MIN_DAYS_FOR_NORM:
             return None
         norm = _median(watts)
         return None if norm is None else round(norm)
+
+    def _nights(self, excluding: str | None = None) -> list[float]:
+        """Every night's floor that is known, newest first."""
+        return [
+            w
+            for row in sorted(
+                self._history, key=lambda row: row["day"], reverse=True
+            )
+            if row["day"] != excluding
+            and (w := _as_float(row.get("baseline_watts"))) is not None
+        ]
+
+    def _baseline_trend(self) -> int | None:
+        """Is the floor creeping -- last week of nights against the week before.
+
+        A different question from the norm, and the norm cannot answer it: a
+        trailing norm follows a slow drift upwards and keeps calling it
+        normal, which is right for catching a spike and useless for catching
+        a creep. A creep is a fridge seal going, a pump starting to fail,
+        something plugged in during the summer that never got switched off.
+
+        Both halves are medians, for the reason the norm is one.
+        """
+        nights = self._nights()
+        if len(nights) < ENERGY_WEEK_DAYS * 2:
+            return None
+        recent = _median(nights[:ENERGY_WEEK_DAYS])
+        before = _median(nights[ENERGY_WEEK_DAYS : ENERGY_WEEK_DAYS * 2])
+        if recent is None or before is None:
+            return None
+        return _pct(recent, before)
+
+    def _series(self, key: str, digits: int) -> list[float]:
+        """The last `ENERGY_SERIES_DAYS` days of one figure, OLDEST first.
+
+        Oldest first because that is the direction a chart is read in, and
+        the marshaller hands the array straight to the card -- so the order
+        is decided here rather than by whoever writes the dashboard.
+        """
+        rows = sorted(self._history, key=lambda row: row["day"])[-ENERGY_SERIES_DAYS:]
+        # No filter: `_remember` writes every figure and `_restore` drops any
+        # row missing one, so this is the same length as the labels by
+        # construction rather than by luck.
+        return [round(_as_float(row.get(key)) or 0.0, digits) for row in rows]
+
+    def _series_labels(self) -> list[str]:
+        """Weekday initials for the series, in the same order and length."""
+        out = []
+        for row in sorted(self._history, key=lambda row: row["day"])[
+            -ENERGY_SERIES_DAYS:
+        ]:
+            parsed = dt_util.parse_datetime(f"{row['day']}T00:00:00")
+            out.append(f"{parsed:%a}"[0] if parsed else "")
+        return out
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -464,9 +542,14 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
 
         late = self._days_late(day)
         stamp = day["day"].isoformat()
-        average_cost, average_kwh = self._average(stamp)
-        vs_average = (
-            _pct(day["cost"], average_cost) if average_cost is not None else None
+        recent_nights = self._nights()[:ENERGY_SERIES_DAYS]
+        week = self._window(ENERGY_WEEK_DAYS, stamp)
+        month = self._window(ENERGY_MONTH_DAYS, stamp)
+        vs_week = (
+            _pct(day["cost"], week["cost"]) if week["cost"] is not None else None
+        )
+        vs_month = (
+            _pct(day["cost"], month["cost"]) if month["cost"] is not None else None
         )
 
         baseline_norm = self._baseline_norm(stamp)
@@ -518,10 +601,29 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # an assistant asked "what have we been spending" actually wants,
             # and because the restore reads them back -- one copy, not two.
             "recent_days": list(self._history),
-            "average_cost": average_cost,
-            "average_kwh": average_kwh,
-            "vs_average_pct": vs_average,
-            "vs_average_text": _comparison(vs_average, "average"),
+            # The two windows a person compares a day against, each with the
+            # number of days that actually went into it -- until the history
+            # fills, "month" is the mean of what there is and says so.
+            "week_cost": week["cost"],
+            "week_kwh": week["kwh"],
+            "week_days": week["days"],
+            "vs_week_pct": vs_week,
+            "vs_week_text": _comparison(vs_week, "the week"),
+            "month_cost": month["cost"],
+            "month_kwh": month["kwh"],
+            "month_days": month["days"],
+            "vs_month_pct": vs_month,
+            "vs_month_text": _comparison(vs_month, "the month"),
+            # Is the floor creeping, as opposed to having spiked once.
+            "baseline_trend_pct": self._baseline_trend(),
+            "baseline_high": max(recent_nights) if recent_nights else None,
+            # Plain arrays, oldest first, for a chart to read straight off.
+            # Shaped here rather than in the card for the reason nothing in
+            # this house is shaped in a card.
+            "cost_series": self._series("cost", 2),
+            "kwh_series": self._series("kwh", 3),
+            "baseline_series": self._series("baseline_watts", 0),
+            "series_labels": self._series_labels(),
             # How much of an average there is to have had. Zero days and a
             # quiet average look the same on a card and should not to an
             # assistant asked why there is no comparison yet.
