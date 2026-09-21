@@ -21,6 +21,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.home_signals.appliance import ApplianceCycleSensor
+from custom_components.home_signals.money import money
 from custom_components.home_signals.const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
@@ -1218,3 +1219,222 @@ async def test_a_run_thrown_away_at_the_door_does_not_put_the_washing_back(
 
     assert True not in writes, f"the parked fullness came back: {writes}"
     assert m.attrs["drum_full"] is False
+
+
+# --- what it cost -----------------------------------------------------
+#
+# Every one of these is about the same thing: a cost is only worth putting
+# on a wall if it is either right or absent. The interesting tests are the
+# ones where it cannot be known -- a tariff that goes quiet, a plug whose
+# counter resets -- because the tempting behaviour there is to report a
+# number that is short, and a number that is short looks exactly like a
+# number that is right.
+
+RATE = "sensor.electricity_rate"
+
+PRICED_SPEC = {**SPEC, "rate_sensor": RATE}
+
+
+@pytest.fixture
+async def priced(hass: HomeAssistant, freezer):
+    """The same machine, with a price for what it uses."""
+    freezer.move_to("2026-09-19 09:00:00+00:00")
+    sensor = ApplianceCycleSensor(FakeEntry(), dict(PRICED_SPEC))
+    sensor.hass = hass
+    sensor.entity_id = "sensor.washing_machine_cycle"
+
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(DOOR, "off")
+    hass.states.async_set(LEAK, "off")
+    hass.states.async_set(POWER, "0")
+    hass.states.async_set(ENERGY, "0")
+    hass.states.async_set(RATE, "0.40")
+    await hass.async_block_till_done()
+
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+    return Machine(hass, sensor, freezer)
+
+
+async def test_a_wash_records_what_it_cost(priced: Machine) -> None:
+    """2000 W for twelve minutes is 0.4 kWh, and at 40p that is 16p."""
+    m = priced
+    await m.draw(2000, for_minutes=12)
+    await m.draw(0, for_minutes=6)
+
+    run = m.attrs["finished"][0]
+    assert run["energy_kwh"] == pytest.approx(0.4)
+    assert run["cost"] == pytest.approx(0.16)
+    assert run["cost_text"] == "16p"
+
+
+async def test_the_rate_is_the_one_it_was_used_at(priced: Machine) -> None:
+    """The discriminating test, and the reason cost accrues as it goes.
+
+    Half the wash at 40p and half at 20p costs 12p. Pricing the finished
+    total at whatever the tariff says when the drum stops gives 8p, and
+    pricing it at the opening rate gives 16p. Both are a number about one
+    moment of the wash wearing the label of the whole thing.
+
+    On a flat tariff all three agree, which is exactly why this has to be
+    tested rather than noticed -- nothing in this house would show the
+    difference until the day the tariff changes.
+    """
+    m = priced
+    await m.draw(2000, for_minutes=6)          # 0.2 kWh at 40p = 8p
+
+    m.set(RATE, "0.20")
+    await m.hass.async_block_till_done()
+    await m.draw(2000, for_minutes=6)          # 0.2 kWh at 20p = 4p
+
+    await m.draw(0, for_minutes=6)
+
+    run = m.attrs["finished"][0]
+    assert run["energy_kwh"] == pytest.approx(0.4)
+    assert run["cost"] == pytest.approx(0.12)
+    assert run["cost"] != pytest.approx(0.08), "priced at the closing rate"
+    assert run["cost"] != pytest.approx(0.16), "priced at the opening rate"
+
+
+async def test_a_rate_change_alone_costs_nothing(priced: Machine) -> None:
+    """The tariff moving is not the machine using anything.
+
+    The rate sensor is deliberately not watched: it is read when there is a
+    kWh to price, not subscribed to. Half-hourly, that is a re-evaluation of
+    every appliance forty-eight times a day to learn nothing.
+    """
+    m = priced
+    await m.draw(2000, for_minutes=6)
+    before = m.attrs["cost_so_far"]
+
+    for rate in ("0.90", "0.05", "0.33"):
+        m.set(RATE, rate)
+        await m.hass.async_block_till_done()
+
+    assert m.attrs["cost_so_far"] == pytest.approx(before)
+
+
+async def test_a_wash_with_no_tariff_records_no_cost(machine: Machine) -> None:
+    """No rate sensor configured. The kWh is still recorded; the cost is not.
+
+    Absent, not zero. A wash that cost nothing did not happen, and the card
+    renders a missing figure as a hole -- which is the truth.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=12)
+    await m.draw(0, for_minutes=6)
+
+    run = m.attrs["finished"][0]
+    assert run["energy_kwh"] > 0
+    assert "cost" not in run
+    assert "cost_text" not in run
+    assert m.attrs["last_cost"] is None
+    assert m.attrs["last_cost_text"] is None
+
+
+async def test_a_tariff_that_goes_quiet_mid_wash_drops_the_cost(
+    priced: Machine,
+) -> None:
+    """Real kWh went through at a price nobody can name.
+
+    The wrong answer here is 8p -- the half of the wash that was priced,
+    reported as the whole. It is indistinguishable from a cheap wash, and
+    a panel cannot be believed about money if it rounds the unknown down.
+    """
+    m = priced
+    await m.draw(2000, for_minutes=6)
+    assert m.attrs["cost_so_far"] == pytest.approx(0.08)
+
+    m.set(RATE, "unavailable")
+    await m.hass.async_block_till_done()
+    await m.draw(2000, for_minutes=6)
+
+    assert m.attrs["cost_so_far"] is None, "a blind cycle still quoted a figure"
+
+    # And the price coming back does not un-blind it: the kWh that went
+    # through the gap is still unpriced, and always will be.
+    m.set(RATE, "0.40")
+    await m.hass.async_block_till_done()
+    await m.draw(0, for_minutes=6)
+
+    run = m.attrs["finished"][0]
+    assert run["energy_kwh"] > 0
+    assert "cost" not in run
+
+
+async def test_a_meter_that_resets_mid_wash_drops_the_cost(priced: Machine) -> None:
+    """A plug re-paired mid-cycle. Its total starts again from nothing.
+
+    The energy it did not report is gone, so the cost of this wash is not
+    knowable. The same guard already zeroes the cycle's kWh; this stops the
+    cost quietly disagreeing with it.
+    """
+    m = priced
+    await m.draw(2000, for_minutes=12)
+
+    m.set(ENERGY, "0")
+    await m.hass.async_block_till_done()
+    await m.draw(2000, for_minutes=6)
+    await m.draw(0, for_minutes=6)
+
+    run = m.attrs["finished"][0]
+    assert "cost" not in run
+
+
+async def test_a_running_wash_says_what_it_has_cost_so_far(priced: Machine) -> None:
+    """The one live money figure in the house, and it is per machine.
+
+    Nothing here can say what the house is drawing right now -- that needs a
+    meter this house has not got. What it can say is what the thing you are
+    standing in front of has spent, because its plug is counting.
+    """
+    m = priced
+    # Twelve minutes, not six: a six-minute run is under `min_minutes` and
+    # would be thrown away, so there would be no record to compare against.
+    await m.draw(2000, for_minutes=12)
+    assert m.state == APPLIANCE_RUNNING
+    assert m.attrs["cost_so_far"] == pytest.approx(0.16)
+    assert m.attrs["cost_so_far_text"] == "16p"
+
+    await m.draw(0, for_minutes=6)
+    assert m.state == APPLIANCE_IDLE
+    # A finished wash's cost belongs to the record, not to a running total
+    # that has stopped running.
+    assert m.attrs["cost_so_far"] is None
+    assert m.attrs["cost_so_far_text"] is None
+    assert m.attrs["last_cost"] == pytest.approx(0.16)
+    assert m.attrs["last_cost_text"] == "16p"
+
+
+async def test_a_discarded_run_leaves_no_cost_behind(priced: Machine) -> None:
+    """A run thrown away for being too short must not bill for it either.
+
+    It also must not leak into the next cycle: `_begin` resets the accrual,
+    so two aborted starts and then a real wash costs what the real wash
+    cost.
+    """
+    m = priced
+    await m.draw(2000, for_minutes=2)
+    await m.draw(0, for_minutes=6)
+    assert m.attrs["finished"] == []
+
+    await m.draw(2000, for_minutes=12)
+    await m.draw(0, for_minutes=6)
+
+    run = m.attrs["finished"][0]
+    assert run["cost"] == pytest.approx(0.16), "the aborted run was billed too"
+
+
+def test_money_is_said_the_way_people_say_it() -> None:
+    """Pence under a pound, pounds over it, and nothing in between.
+
+    The boundary is the case worth pinning: 99.6p is a pound, and rendering
+    it as "100p" would be the one string that is technically right and
+    obviously wrong.
+    """
+    assert money(0.0) == "0p"
+    assert money(0.08) == "8p"
+    assert money(0.335) == "34p"
+    assert money(0.996) == "£1.00"
+    assert money(1.2) == "£1.20"
+    assert money(12.5) == "£12.50"

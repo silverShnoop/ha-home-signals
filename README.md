@@ -73,8 +73,8 @@ a dashboard that is permanently red stops being read.
 
 What it reports, each optional and off unless configured: bins out (only the
 evening before, when it is actionable), overdue chores, batteries under a
-threshold one row each, water softener salt, and everything offline as a
-**single** row — twenty-seven unavailable entities is one problem, an
+threshold one row each, water softener salt, a night whose floor sat well
+above the usual one, and everything offline as a **single** row — twenty-seven unavailable entities is one problem, an
 integration being down, and twenty-seven rows would bury everything else.
 
 ### Water softener salt
@@ -98,6 +98,26 @@ Terracotta here is for water on the floor and doors left unlocked. Both are set 
 integration's own options, alongside the battery threshold. With no sensors
 configured, or none of them readable, the check contributes nothing — a
 softener that cannot be read is not reported as full.
+
+### A night that was not like the others
+
+The floor is what the house draws with everybody asleep, so a night well
+above it is something that was left running. `sensor.energy_day` works out
+the excess; this turns it into a row past `baseline_excess_pct` (40% by
+default, high enough to stay rare — a house has ordinary nights that run
+10–20% over for no reason worth chasing).
+
+**The row is late, and says so.** Without a live meter the settled day
+arrives one or two days behind, so the detail names the night —
+`Sat 19 Sep · 420 W against a usual 280 W` — rather than implying last
+night. Hiding the lag would make it a worse row: *"something is on now"* is
+a claim this data cannot support, and *"something was on, on Saturday"* is
+one it can. A stale day produces no row at all, for the same reason the
+sensor drops its own state.
+
+It is dismissable and keyed to the night, because "I know what that was" is
+a real answer to it — and answering for Saturday must not silence Sunday.
+No snooze: a night is over, and there is nothing to come back to later.
 
 ### Salt is the one row you cannot put off
 
@@ -165,6 +185,268 @@ Entities in an entity category, and the `update`, `button`, `scene`, `script`
 and `automation` domains, are excluded from the offline count. They go
 unavailable constantly and nobody acts on it. Anything else noisy can be
 listed under "Never report these as offline".
+
+## `sensor.energy_day`
+
+What the house's electricity cost, reduced once. Octopus publishes the
+previous complete day as a single sensor whose `charges` attribute carries
+all forty-eight half-hours of it; everything a card or an assistant wants
+about that day is already in there, and reducing it here rather than in a
+card is the difference between one Python function and a template per tile.
+
+- **State** — the cost of the day being reported. `device_class: monetary`.
+- **`for_day`, `for_date`, `days_late`, `stale`** — which day that is.
+- **`kwh`, `usage`, `standing_p`, `standing_cost_year`, `peak_slot`,
+  `peak_kwh`, `slots`**.
+- **`baseline_watts`, `baseline_share`** — what the house draws asleep.
+- **`week_*`, `month_*`, `vs_week_*`, `vs_month_*`** — the day against its
+  own two windows; the comparison that works without a live meter.
+- **`recent_days`** — the rolling five weeks the windows are built from.
+- **`cost_series`, `kwh_series`, `baseline_series`, `series_labels`** — plain
+  arrays, oldest first, for a chart to read straight off.
+- **`baseline_norm`, `baseline_excess_pct`, `baseline_trend_pct`,
+  `baseline_high`** — the floor, against its usual and against itself.
+- **`today_cost`, `today_kwh`, `same_time_cost`, `today_vs_pct`,
+  `today_vs_text`** — only where there is a live meter to read.
+
+### It is not "yesterday", and must never say so
+
+The source sensor is called `previous_accumulative_cost` and the obvious
+reading is yesterday. The reads land when Octopus gets them: one day behind,
+and quite often two — the first time this was looked at, on a Monday
+lunchtime, the freshest complete day was **Saturday**.
+
+So nothing here says the word. It reports the date it is actually
+describing, taken off the charges themselves, and publishes `days_late`
+beside it. Past `ENERGY_STALE_DAYS` the state goes to `unknown` and the cell
+disappears, because a figure that has stopped being updated looks exactly
+like one that is current — and that is the failure worth designing against,
+not the missing data.
+
+### What the house draws asleep
+
+`baseline_watts` is the mean of the midnight-to-six slots, and
+`baseline_share` is what that would be as a share of the whole day.
+
+It is the figure this turned out to be worth doing for. On the first day
+read, the house drew a steady **286 W** overnight and never dropped below
+234 W — 6.86 kWh held over a day, **48% of everything it used**, about £1.70
+a day. No tariff change touches that number and no price chart would ever
+have shown it; it falls out of the half-hours as a by-product.
+
+### There is no "now", and that is not something shaping can fix
+
+A live house-wide figure needs an **Octopus Home Mini** (or a Home Pro).
+Without one the API has nothing for today at all — the meter records
+half-hourly, but the consumption endpoint only serves days Octopus has
+already settled. Two smart plugs can say what the washing machine is doing;
+nothing in the house can say what the house is doing.
+
+So today is an optional pair of *inputs* rather than something this
+computes. Point `energy_today_cost` and `energy_today_kwh` at the Home
+Mini's accumulative sensors and today appears; leave them empty and the
+`today_*` attributes are **absent** rather than null, so a card renders a
+hole and an assistant can tell "not measured" from "measured as nothing".
+
+### Today against a whole yesterday is a trap
+
+At nine in the morning, *"today £1.20, yesterday £3.99"* reads as a good day
+and means nothing whatsoever. Every partial day beats every complete one.
+
+So today is compared against the settled day **up to the same time of day**,
+which is only possible because the half-hours are here to be cut. On the
+measured Saturday: £3.99 all in, but £1.68 by noon. A today sitting at £1.90
+is 13% **above** that — while against the whole day it reads as 52% under,
+and the card congratulates somebody for a day that is running hot.
+
+The comparison is named for the day it actually used — `about Sat 19 Sep` —
+because on a two-day lag "vs yesterday" would be wrong twice a week.
+
+### Something was left on overnight
+
+`baseline_watts` on its own is a number nobody has a feel for. Against a
+`baseline_norm` — what this house usually draws asleep — it becomes the one
+thing in here anybody can act on:
+
+```
+baseline_watts        420
+baseline_norm         280
+baseline_excess_pct    50
+baseline_text         "420 W overnight against a usual 280 W"
+```
+
+Past a threshold it also becomes a `Needs you` row. Three rules keep it
+honest.
+
+**The norm is a median, not a mean.** Guests, a wash left running, an
+evening of the oven on — a mean would let one such night lift the very bar
+it should have failed against. The median leaves the bar where it was, so
+the next bad night is still caught.
+
+**A night is never in its own norm**, for the reason the cost average gives:
+included, it is partly measured against itself and the excess understates.
+
+**Five nights before there is a "usual" at all** — stricter than the cost
+average's three. A floor is the quietest number the house produces, and this
+figure's whole job is to be what an odd night fails against, so a norm one
+odd night away from being wrong is worse than no norm. Below that,
+`baseline_norm` and the excess are absent and no row can fire.
+
+And `baseline_text` only mentions the norm when there is something to say. A
+sentence reading "3% under usual" every single morning is how a figure stops
+being read.
+
+#### The floor in money, and the day split around it
+
+A floor in watts is not a fact anybody can act on. What it *costs* is:
+
+```
+floor_kwh   6.9    floor_cost_text  "£1.70"   floor_cost_year  621
+rest_kwh    7.3    rest_cost_text   "£1.81"
+standing_p   48    standing_cost_year 175
+```
+
+The three sum to the day's total, to the penny. That is deliberate — a
+table whose rows do not add up to the figure above them is a table nobody
+trusts — so `rest` is the **remainder** rather than a second
+multiplication, and any rounding penny lands there rather than going
+missing.
+
+Priced at the day's own average rate (`usage / kwh`) rather than at
+whatever the tariff says now. On a flat tariff they are the same number; on
+a variable one the day's own rate is the only one that can divide up the
+day's own money.
+
+The split is **absent when the floor projects to more than the day used** —
+a perfectly flat day is the boundary. That means Octopus delivered a
+partial day, and a split whose parts exceed the whole is fiction.
+
+`floor_cost_year` exists because £1.70 a day is ignorable and £621 a year
+is not, and they are the same fact. `standing_cost_year` is there so the
+row beside it is the same kind of figure — and because the difference is
+the point: the floor is a year somebody can go and reduce, the standing
+charge is a year they cannot, which is worth knowing before starting the
+hunt.
+
+#### Going stale empties the attributes too, not just the state
+
+Every card on the panel is built out of attributes — `cost_text`,
+`week_cost_text`, `floor_cost_text` — and not one of them looks at the
+state. So dropping the state past `days_late > 3` and leaving the
+attributes populated would keep drawing Saturday's figures on Thursday
+underneath a state nobody reads, which is precisely the failure the
+staleness rule exists to prevent.
+
+Past that point the sensor publishes only what *explains* the silence:
+`for_day`, `for_date`, `days_late`, `stale`. Plus `recent_days`, which
+nothing draws and the restore reads back — it is the one thing here that
+cannot be recomputed from a source sensor holding a single day, so throwing
+it away while Octopus is quiet would cost the house its history at the next
+restart.
+
+**Today is not stale, and does not go with it.** `today_cost` and
+`today_kwh` come off a different meter, so they keep arriving when Octopus
+stops — and they are the freshest figures in the house, which is no thing
+to drop because another source went quiet. The *comparison* does go:
+`today_vs_text` and `same_time_cost` are made of the settled day, so they
+are exactly as stale as it is.
+
+#### Against a night somebody remembers
+
+`baseline_vs_prev_text` compares the floor to **the night before the one
+being reported** — `20 W up on Fri` — with a two-watt band so it does not
+read "1 W up" every morning.
+
+Not against the median. A median is the right thing to fire a row off and
+the wrong thing to hand a person, because nobody remembers their median.
+And on a two-day lag the previous night is not last night, so it is named
+rather than implied.
+
+#### A spike and a creep are different questions
+
+`baseline_excess_pct` measures the night against a **trailing fortnight**, so
+a slow drift upwards moves the norm with it and stops firing the row. That is
+right for catching a spike and useless for catching a creep — and a creep is
+a fridge seal going, a pump starting to fail, something plugged in during the
+summer that never got switched off again.
+
+So `baseline_trend_pct` asks the other question: the median of the last week
+of nights against the median of the week before. Seven nights at 280 W
+followed by seven at 340 W is a 21% trend and *not* a spike, and the pair of
+figures is what tells those apart. It needs a fortnight of nights before it
+says anything.
+
+#### The arrays are shaped here, not in the card
+
+`cost_series`, `kwh_series` and `baseline_series` are plain arrays, oldest
+first, capped at fourteen days — a Spectra `chart` reads them with no
+`auto-entities`, no `apexcharts-card` and no Jinja, which is the whole point
+of the split.
+
+Fourteen rather than thirty-five because a chart on a wall panel should draw
+a shape rather than a texture. The history is longer than the series on
+purpose: it exists to be averaged, and only part of it to be drawn.
+
+Every series is the same length as `series_labels` **by construction**, not by
+luck: `_remember` writes all four figures together, and `_restore` drops any
+row missing one. A row missing a figure would be skipped by that series and
+kept by the labels, drawing every bar after it against the wrong day — and a
+chart off by one is worse than a chart one day shorter.
+
+Three series, and the pair worth drawing together is **cost and the floor**.
+Cost over kWh was the obvious pairing and is one fact drawn twice: on a flat
+tariff cost *is* kWh × 24.78p, so the line and the bars have the same shape
+and the second one says nothing. (On a tariff that varies, the gap between
+them becomes the information, and the pairing earns itself back.) The floor
+shares no axis with anything — it is a wattage, on its own scale, under bars
+made of money — and it is the series that answers a question the bars cannot:
+whether the thing underneath every day is creeping upwards.
+
+### The week and the month, which can disagree
+
+Two trailing windows rather than one blended average:
+
+```
+week_cost  7.50   week_kwh  28.3   week_days   7   vs_week_pct   0
+month_cost 4.90   month_kwh 18.5   month_days 27   vs_month_pct 53
+```
+
+They exist as a pair because they answer differently exactly when it
+matters. A cold snap moves the week and leaves the month alone; a new
+appliance moves both. One blended figure splits the difference and says
+neither. Both exclude the day being judged, for the reason given below.
+
+`week_days` and `month_days` are published because until the history has
+filled a month, a "month average" is the mean of whatever there is — and
+something has to say so rather than the label implying thirty days of
+evidence that do not exist yet.
+
+The history keeps **five weeks**, which is a month plus room for the days
+Octopus delivers late or not at all.
+
+### The average is the comparison that always works
+
+Without a Home Mini there is no today, but "is this day normal?" is still
+answerable: the settled day against the house's own recent average.
+
+`recent_days` is a rolling fortnight, kept across a restart. It is the one
+thing here that cannot be recomputed — the source sensor only ever holds a
+single day, so the average has to be accumulated as the days go past, and
+losing it on every restart would lose the only comparison available, every
+time Home Assistant updates. It is restored from the published attribute
+rather than through `ExtraStoredData`, the same way `pending` and `finished`
+come back on the appliances: the rows are worth publishing anyway, so there
+is no second copy to keep in step.
+
+Two rules keep it honest. **A day is never in its own average** — included,
+it is measured partly against itself, and four days of £1 beside one of £2
+puts the average at £1.20 and calls the spike 67% up when it is double. And
+**fewer than `ENERGY_MIN_DAYS_FOR_AVERAGE` days is not an average**, it is
+some days; below that the comparison is absent rather than invented.
+
+There is also a band, `ENERGY_SAME_PCT`. Without it a perfectly ordinary day
+reads as "3% down", and a comparison that always has something to say is one
+nobody reads.
 
 ## `sensor.washing_machine_cycle` (and the tumble dryer)
 
@@ -292,6 +574,72 @@ know nothing about the difference.
 `tracks_phases` picks the classifier; `only_phase` names the single
 phase for a machine that has just the one. A machine sets one or the
 other, never both.
+
+### What the wash cost
+
+The plug already counts the kilowatt-hours. Given a sensor that says what a
+kilowatt-hour costs — `rate_sensor`, which Octopus publishes as
+`..._current_rate` — a finished cycle also records what it cost.
+
+```
+cost       0.33          # £, for arithmetic and for anything that is not a card
+cost_text  "33p"         # how a person says it
+```
+
+Both sit on each entry in `finished` and `finished_today`, with
+`last_cost`/`last_cost_text` for the most recent one and
+`cost_so_far`/`cost_so_far_text` while a cycle is in flight. The two forms
+are the same split `system_health` already makes between its rendered rows
+and its raw lists: an agent asked what the wash cost wants `0.33`, and a
+panel read from three metres away wants `33p`. One is derived from the other
+on a single line, so they cannot drift.
+
+The formatting is here rather than in the card because the switch at a pound
+is a *rule about the number*, and the card's value language has no room for
+one — a `suffix` cannot change its mind at 100p.
+
+**This is the figure worth having**, more than any house total. "£3.99
+yesterday" is a number about an abstraction; "that wash cost 33p" is a number
+about the thing somebody is standing in front of with a basket. It also
+answers the question people actually have about a washing machine, which is
+not *what does it cost* but *is it worth putting a half load on* — and two
+cycles a week apart answer that.
+
+#### Priced as it goes, not at the end
+
+A wash spans four or five half-hours. On a tariff that moves between them
+there is no single rate the cycle ran at, so multiplying the finished total
+by whatever the price happens to be when the drum stops would be a number
+about the end of the wash wearing the label of the whole thing. Each reading
+is priced as it arrives instead, at the rate in force then, and the slices
+are added up.
+
+On a flat tariff that is the same arithmetic done more often and lands on the
+same figure. On Agile it is the only version that is true. Writing it this
+way now means nothing — not this sensor, not the card — changes on the day
+the tariff does.
+
+One approximation is left, deliberately: if the plug stops reporting for a
+while, the kilowatt-hours that arrive when it comes back are priced at the
+rate current then, because nothing recorded which of the rates inside the gap
+applied to which part of it. Bounded by how long the plug was out, and on a
+single-rate tariff not an error at all.
+
+#### A cost that cannot be known is absent, not zero
+
+If any part of a cycle passes through unpriced — no `rate_sensor`
+configured, the tariff sensor `unavailable` while the integration reloads,
+the plug's own total resetting mid-wash because it was re-paired — the
+cost is **dropped for that cycle** rather than reported short.
+
+The tempting behaviour is the wrong one. Half a wash priced and reported as
+the whole thing reads as a cheap wash, and there is nothing on the card to
+tell the two apart. A missing figure leaves a hole, which the panel already
+knows how to render and which is the truth. `unknown` and `unavailable`
+become nothing, not the words.
+
+There is no configuration for this and no override. A panel earns the right
+to be believed about money by never being nearly right.
 
 ## `sensor.cleaning_status`
 
@@ -450,6 +798,22 @@ actions are actions.
 Install through HACS, restart once so Home Assistant picks up the new
 component, then add **Home Signals** from Settings → Devices & Services and
 choose the entities to watch, point Needs you at your bin and chore sensors, and pick the locks and door contacts the security light should hold to account. Everything is editable afterwards via Configure.
+
+### What to point at Octopus
+
+Four of the settings expect a tariff integration, and nothing here knows it
+is Octopus — any sensor of the right shape will do, which is why they are
+configured rather than found.
+
+| Setting | Octopus entity | Without it |
+| --- | --- | --- |
+| `rate_sensor` | `..._current_rate` | A cycle records its kWh and no cost |
+| `energy_cost_sensor` | `..._previous_accumulative_cost` | No `sensor.energy_day` at all |
+| `energy_today_cost` | `..._current_accumulative_cost` | No today; the average still works |
+| `energy_today_kwh` | `..._current_accumulative_consumption` | As above |
+
+The last two need an **Octopus Home Mini** or Home Pro. The first two work
+on any account.
 
 ### A note on choosing motion sensors
 

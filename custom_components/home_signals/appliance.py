@@ -68,6 +68,7 @@ from .const import (
     PHASE_SPIN,
     PHASE_TUMBLE,
 )
+from .money import money as _money
 
 LOGGER = logging.getLogger(__name__)
 
@@ -145,6 +146,17 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._quiet_since: datetime | None = None
         self._longest_lull = 0.0
         self._peak_watts = 0.0
+        # What this cycle has cost so far, and the meter reading the last
+        # slice of it was priced from. Accrued as the cycle runs rather
+        # than worked out at the end -- see _accrue.
+        self._cost = 0.0
+        self._cost_last_kwh: float | None = None
+        # Set the moment a slice of this cycle cannot be priced. The cost
+        # is then dropped entirely rather than reported short: a wash that
+        # cost 12p because the tariff sensor was reloading for half of it
+        # is a worse answer than no answer, and the panel already has a
+        # rule for no answer -- it leaves a hole.
+        self._cost_blind = False
         self._cancel_quiet: CALLBACK_TYPE | None = None
         # What the machine has been doing this cycle, oldest first. One
         # entry per run of a phase, so a wash that heats twice has two
@@ -380,11 +392,63 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
 
     # --- the state machine --------------------------------------------
 
+    def _accrue(self) -> None:
+        """Price what has been used since the last reading, at what it cost then.
+
+        Priced as it goes rather than once at the end, and that is the whole
+        point of it. A wash spans four or five half-hours, and on a tariff
+        that moves between them there is no single rate the cycle ran at --
+        multiplying the total by whatever the price happens to be when the
+        drum stops would be a number about the end of the wash pretending to
+        be a number about the wash.
+
+        On a flat tariff this is the same arithmetic done more often and
+        lands on the same figure. On Agile it is the only version that is
+        true, and writing it this way now means neither the sensor nor the
+        card changes the day the tariff does.
+
+        Called on every reading and once more at the end, so the last slice
+        is not left out; it tracks the meter it has already priced, so
+        calling it twice cannot charge for anything twice.
+        """
+        if self._cost_last_kwh is None:
+            return
+        now_kwh = _number(self.hass, self._spec.get("energy_sensor"))
+        if now_kwh is None:
+            # The plug went quiet. Hold the meter: the next reading's delta
+            # covers the gap, and the only thing lost is knowing which of
+            # the rates inside the gap applied to which part of it.
+            return
+        if now_kwh < self._cost_last_kwh:
+            # The plug's own total went backwards -- re-paired, power-cycled
+            # or replaced. There is no delta to price and the energy it
+            # never reported is not recoverable.
+            self._cost_last_kwh = now_kwh
+            self._cost_blind = True
+            return
+        delta = now_kwh - self._cost_last_kwh
+        if delta <= 0:
+            return
+        rate = _number(self.hass, self._spec.get("rate_sensor"))
+        if rate is None:
+            # No price for a real kWh. Take the reading so the same slice is
+            # not offered again, and give up on this cycle's cost.
+            self._cost_last_kwh = now_kwh
+            self._cost_blind = True
+            return
+        self._cost += delta * rate
+        self._cost_last_kwh = now_kwh
+
     def _evaluate(self) -> None:
         now = dt_util.utcnow()
         start_watts = float(self._cfg("start_watts", 8))
         idle_watts = float(self._cfg("idle_watts", 4))
         watts = _number(self.hass, self._spec.get("power_sensor"))
+
+        # Before any of the branching below, all of which can return early.
+        # What the machine has drawn is true whatever the watts say it is
+        # doing about it.
+        self._accrue()
 
         if not _is_on(self.hass, self._spec.get("plug"), default=True):
             # Power pulled. A cycle in flight did not finish, it was
@@ -698,6 +762,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._state = APPLIANCE_RUNNING
         self._started_at = now
         self._energy_at_start = _number(self.hass, self._spec.get("energy_sensor"))
+        self._cost = 0.0
+        self._cost_last_kwh = self._energy_at_start
+        # With no meter there is nothing to price, and a cost of zero is a
+        # different claim from no cost at all. Only one of them is true.
+        self._cost_blind = self._energy_at_start is None
         self._longest_lull = 0.0
         self._peak_watts = 0.0
         self._quiet_since = None
@@ -773,6 +842,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._state = APPLIANCE_IDLE
         self._started_at = None
         self._energy_at_start = None
+        self._cost = 0.0
+        self._cost_last_kwh = None
+        self._cost_blind = False
         self._quiet_since = None
         self._stop_quiet_timer()
 
@@ -792,16 +864,30 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         started = self._started_at or ended
         minutes = (ended - started).total_seconds() / 60.0
 
+        # The last slice. `_evaluate` prices each reading as it arrives, but
+        # the reading that ends a cycle can be the one that arrives with it,
+        # or the quiet timer can fire with nothing new since -- so the final
+        # call is made here rather than hoped for.
+        self._accrue()
+
         energy = 0.0
         if self._energy_at_start is not None:
             now_kwh = _number(self.hass, self._spec.get("energy_sensor"))
             if now_kwh is not None and now_kwh >= self._energy_at_start:
                 energy = now_kwh - self._energy_at_start
+        cost = None if self._cost_blind else round(self._cost, 2)
 
         self._state = APPLIANCE_IDLE
         self._quiet_since = None
         self._started_at = None
         self._stop_quiet_timer()
+        # Stop pricing. Between cycles the plug still reports -- a standby
+        # watt, the door lock -- and without this the accrual would carry on
+        # running against no cycle at all, and could go blind on a tariff
+        # blip hours before the next wash ever started. Both teardown paths
+        # below pass through here, so the discarded runs get it too.
+        self._cost = 0.0
+        self._cost_last_kwh = None
 
         # A drain, a rinse-only, or somebody nudging the dial is not a load
         # of washing, and inventing one means a reminder nobody can satisfy.
@@ -823,6 +909,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "peak_watts": round(self._peak_watts),
             "longest_lull_seconds": round(self._longest_lull),
         }
+        # Absent rather than zero when it could not be priced. `unknown` and
+        # a missing key both render as nothing on the card, and a wash that
+        # cost nothing does not exist.
+        if cost is not None:
+            record["cost"] = cost
+            record["cost_text"] = _money(cost)
         # Both machines end a cycle with a full drum, and on both the door
         # empties it. The washer has a SECOND state after that one: washing
         # out of the drum still has to be hung, on a rack in another room,
@@ -916,6 +1008,25 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "finished": list(self._history),
             "finished_today": finished_today,
             "last_finished_at": self._history[0]["finished_at"] if self._history else None,
+            # What the last load cost, alongside when it finished, because
+            # the card's one-line summary states both in the same breath:
+            # "Finished 47m ago · 33p". Both read off `_history[0]` so
+            # neither can be describing a different wash from the other.
+            "last_cost": self._history[0].get("cost") if self._history else None,
+            "last_cost_text": self._history[0].get("cost_text") if self._history else None,
+            # What this cycle has cost so far. Present only while one is
+            # running and only while it can still be priced -- a live
+            # figure that silently stops moving is worse than none.
+            "cost_so_far": (
+                round(self._cost, 2)
+                if self._state == APPLIANCE_RUNNING and not self._cost_blind
+                else None
+            ),
+            "cost_so_far_text": (
+                _money(self._cost)
+                if self._state == APPLIANCE_RUNNING and not self._cost_blind
+                else None
+            ),
             # What it has done this cycle, and what it is doing now. Kept
             # after the cycle ends so the card can still show it while the
             # washing is sitting in the drum.

@@ -58,6 +58,7 @@ from .const import (
     CONF_IDLE_WATTS,
     CONF_MIN_KWH,
     CONF_MIN_MINUTES,
+    CONF_RATE_SENSOR,
     CONF_START_WATTS,
     CONF_WASHER_DOOR,
     CONF_WASHER_ENERGY,
@@ -93,6 +94,7 @@ from .appliance import (
     CleaningStatusSensor,
 )
 from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
+from .energy import EnergyDaySensor
 from .todo_done import TodoDoneTodaySensor
 
 LOGGER = logging.getLogger(__name__)
@@ -136,6 +138,10 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
         "idle_minutes": option(CONF_IDLE_MINUTES, DEFAULT_IDLE_MINUTES),
         "min_minutes": option(CONF_MIN_MINUTES, DEFAULT_MIN_MINUTES),
         "min_kwh": option(CONF_MIN_KWH, DEFAULT_MIN_KWH),
+        # One price for the house. A machine does not have its own
+        # tariff, and a second copy of this would be a second place
+        # to forget when the tariff changes.
+        "rate_sensor": option(CONF_RATE_SENSOR),
     }
 
     candidates = [
@@ -200,6 +206,7 @@ async def async_setup_entry(
         needs_you,
         SystemHealthSensor(entry),
         SecurityStatusSensor(entry),
+        EnergyDaySensor(entry),
     ]
 
     specs = _appliance_specs(entry)

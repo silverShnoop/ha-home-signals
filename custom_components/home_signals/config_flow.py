@@ -16,6 +16,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BASELINE_EXCESS_PCT,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
     CONF_DRYER_DOOR,
@@ -26,6 +27,7 @@ from .const import (
     CONF_IDLE_WATTS,
     CONF_MIN_KWH,
     CONF_MIN_MINUTES,
+    CONF_RATE_SENSOR,
     CONF_START_WATTS,
     CONF_WASHER_DOOR,
     CONF_WASHER_ENERGY,
@@ -47,10 +49,14 @@ from .const import (
     CONF_IGNORE_UNAVAILABLE,
     CONF_MAX_EVENTS,
     CONF_DONE_LISTS,
+    CONF_ENERGY_COST_SENSOR,
+    CONF_ENERGY_TODAY_COST,
+    CONF_ENERGY_TODAY_KWH,
     CONF_PEOPLE,
     CONF_PRESENCE_GRACE_MINUTES,
     DEFAULT_PRESENCE_GRACE_MINUTES,
     CONF_TASKS_SENSOR,
+    DEFAULT_BASELINE_EXCESS_PCT,
     DEFAULT_BATTERY_THRESHOLD,
     DEFAULT_SALT_BOTH_THRESHOLD,
     DEFAULT_SALT_ONE_THRESHOLD,
@@ -251,6 +257,61 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 default=defaults.get(CONF_DRYER_ENERGY, vol.UNDEFINED),
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+            # The previous complete day, whose `charges` attribute carries
+            # every half-hour of it -- Octopus publishes it as
+            # `..._previous_accumulative_cost`. One sensor is enough: the
+            # cost, the kWh, the standing charge and the shape of the day
+            # are all in there.
+            vol.Optional(
+                CONF_ENERGY_COST_SENSOR,
+                default=defaults.get(CONF_ENERGY_COST_SENSOR, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            # Today so far, which needs an Octopus Home Mini or Home Pro --
+            # without one the API has nothing for today at all. Left empty,
+            # the sensor reports the settled day against the house's own
+            # recent average and says nothing about today, which is the
+            # truth rather than a limitation being hidden.
+            vol.Optional(
+                CONF_ENERGY_TODAY_COST,
+                default=defaults.get(CONF_ENERGY_TODAY_COST, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Optional(
+                CONF_ENERGY_TODAY_KWH,
+                default=defaults.get(CONF_ENERGY_TODAY_KWH, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            # How far above its usual floor a night has to sit before it
+            # becomes a job. High enough to stay rare: the row is only worth
+            # having if seeing it means something, and a house has ordinary
+            # nights that run 10-20% over for no reason worth chasing.
+            vol.Optional(
+                CONF_BASELINE_EXCESS_PCT,
+                default=defaults.get(
+                    CONF_BASELINE_EXCESS_PCT, DEFAULT_BASELINE_EXCESS_PCT
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=10, max=200, step=5, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="%",
+                )
+            ),
+            # What a kWh costs, in money per unit -- Octopus publishes it
+            # as `..._current_rate`. Shared by both machines and by
+            # anything else that prices energy, because the price of
+            # electricity is a fact about the house and not about the
+            # washing machine. Left empty, a cycle records its kWh and no
+            # cost, and the card shows a hole where the money would be.
+            vol.Optional(
+                CONF_RATE_SENSOR,
+                default=defaults.get(CONF_RATE_SENSOR, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
             ),
             # Shared by both machines. A dryer's profile is flatter than a
             # washer's, so if one set stops fitting both, this is where it
