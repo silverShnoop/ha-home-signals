@@ -301,17 +301,20 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             return
         open_now = _is_on(self.hass, door, default=self._door_was_open)
         if open_now and not self._door_was_open:
-            # The run ends FIRST, and the order is the whole of it. A door
-            # opening on a wash that has stopped is two statements at once:
-            # "this is finished" and "and I have taken it out". Emptying
-            # the drum first loses both halves of the first one --
-            # `_finish` writes the record, queues the row to hang, and
-            # needs `_rewashing_load` to drop the row it is replacing --
-            # and then sets `drum_full` back to True on a machine somebody
-            # is standing in front of holding the washing.
+            # The run ends first, because `_finish` writes the record,
+            # queues the row to hang, and needs `_rewashing_load` to drop
+            # the row it is replacing -- all of which the lines below
+            # clear. It is told `fills_drum=False` rather than being left
+            # to set the drum full for one statement: a door opening on a
+            # stopped wash is both "this is finished" and "and I have
+            # taken it out", and there is no instant between them for
+            # anything to read.
             self._lock_released()
             # Whatever was in there is out. Nothing to put back, and the
-            # load is no longer the one this cycle is re-washing.
+            # load is no longer the one this cycle is re-washing. This
+            # line is what empties the drum when the door opens on an
+            # idle machine, which is the ordinary case and the reason it
+            # is here at all.
             self._drum_full = False
             self._rewashing = False
             self._rewashing_load = None
@@ -373,7 +376,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         watts = _number(self.hass, self._spec.get("power_sensor"))
         if watts is not None and watts >= float(self._cfg("start_watts", 8)):
             return
-        self._finish()
+        self._finish(fills_drum=False)
 
     # --- the state machine --------------------------------------------
 
@@ -741,8 +744,14 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._finish()
         self._publish()
 
-    def _put_back(self) -> None:
+    def _put_back(self, *, fills_drum: bool = True) -> None:
         """Undo what _begin claimed, for a run that was not a wash.
+
+        `fills_drum` carries the same meaning as it does on `_finish`,
+        and it has to reach here as well: a seventy-minute run thrown
+        away for drawing too little is still a run whose door has just
+        been opened, and the fullness it would put back is fullness
+        somebody is holding.
 
         The fullness and the timeline both. A run that is thrown away
         has to leave the machine looking exactly as it found it, or
@@ -750,7 +759,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         wash's strip -- which is kept precisely so somebody walking
         over can see what it did.
         """
-        if self._rewashing:
+        if self._rewashing and fills_drum:
             self._drum_full = True
         self._rewashing = False
         self._rewashing_load = None
@@ -767,8 +776,18 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._quiet_since = None
         self._stop_quiet_timer()
 
-    def _finish(self) -> None:
-        """The draw stayed down long enough. Decide whether that was a wash."""
+    def _finish(self, *, fills_drum: bool = True) -> None:
+        """The draw stayed down long enough. Decide whether that was a wash.
+
+        `fills_drum` is False when the thing that ended the run is the
+        door opening, because then the wash finishing and the washing
+        coming out are the same event. Setting the drum full and
+        clearing it a line later would also be correct, and was how
+        this worked first -- correct by the order of two statements,
+        which is a thing that survives exactly until somebody adds a
+        `_publish` between them. There is no moment to get wrong if the
+        moment never exists.
+        """
         ended = self._quiet_since or dt_util.utcnow()
         started = self._started_at or ended
         minutes = (ended - started).total_seconds() / 60.0
@@ -787,13 +806,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # A drain, a rinse-only, or somebody nudging the dial is not a load
         # of washing, and inventing one means a reminder nobody can satisfy.
         if minutes < float(self._cfg("min_minutes", 10)):
-            self._put_back()
+            self._put_back(fills_drum=fills_drum)
             return
         min_kwh = float(self._cfg("min_kwh", 0.05))
         # Only enforced where there is an energy meter to enforce it with;
         # a missing meter must not silently swallow every cycle.
         if self._energy_at_start is not None and energy < min_kwh:
-            self._put_back()
+            self._put_back(fills_drum=fills_drum)
             return
 
         record = {
@@ -823,7 +842,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._pending.append(record)
         self._history.insert(0, record)
         del self._history[MAX_HISTORY:]
-        self._drum_full = True
+        self._drum_full = fills_drum
         self._rewashing = False
         self._rewashing_load = None
         # This run WAS a wash, so its own timeline is the one to keep.

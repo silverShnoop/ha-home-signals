@@ -1135,3 +1135,86 @@ async def test_a_wrong_door_reading_does_not_cut_a_wash_in_half(machine) -> None
 
     assert m.state == APPLIANCE_RUNNING, "a wrong door reading ended the wash"
     assert m.waiting == 0, "and invented a load to hang"
+
+
+def _watch_the_drum(sensor) -> list[bool]:
+    """Record every value ASSIGNED to `drum_full`, in order.
+
+    The set-then-unset this replaced could not be caught by looking at
+    the state afterwards, or even by watching what gets published: it
+    was two synchronous statements with nothing between them, so the
+    intermediate True was real and never observable. The only way to
+    assert it does not happen is to watch the writes themselves.
+    """
+    writes: list[bool] = []
+    seen = [bool(sensor.__dict__.pop("_drum_full", False))]
+
+    class Watched(type(sensor)):
+        @property
+        def _drum_full(self) -> bool:
+            return seen[-1]
+
+        @_drum_full.setter
+        def _drum_full(self, value: object) -> None:
+            seen.append(bool(value))
+            writes.append(bool(value))
+
+    sensor.__class__ = Watched
+    return writes
+
+
+async def test_a_door_ended_wash_never_fills_the_drum_even_for_an_instant(
+    machine,
+) -> None:
+    """Emptying it a line later is the same answer and a worse mechanism.
+
+    A door opening on a stopped wash says two things at once -- this is
+    finished, and I have taken it out -- so the drum must never be full,
+    rather than being full until the next statement. Correct by the order
+    of two lines lasts until somebody puts a `_publish` between them.
+    """
+    m = machine
+    writes = _watch_the_drum(m.sensor)
+
+    await m.draw(2000, for_minutes=45)
+    await m.draw(5, for_minutes=2)
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert True not in writes, f"the drum was filled at some point: {writes}"
+    assert m.waiting == 1, "and the wash was not recorded at all"
+    assert m.attrs["drum_full"] is False
+
+
+async def test_a_run_thrown_away_at_the_door_does_not_put_the_washing_back(
+    machine,
+) -> None:
+    """The path through `_put_back`, which also has to be told.
+
+    A long run discarded for drawing too little is still a run whose
+    door has just been opened. If it were a rewash, `_put_back` would
+    restore the fullness it parked -- fullness that is now in somebody's
+    arms.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    assert m.attrs["drum_full"] is True, "the first wash did not fill it"
+
+    writes = _watch_the_drum(m.sensor)
+
+    # A second cycle on the same load -- no door between them, so it is a
+    # rewash and the fullness is parked. It draws almost nothing, so it
+    # will be thrown away when it ends.
+    await m.draw(9, for_minutes=70)
+    assert m.attrs["rewashing"] is True, "this was meant to be a rewash"
+    # Down to standby first. Above start_watts the door is disbelieved and
+    # `_finish` is never reached, which would pass this test for no reason.
+    await m.draw(5, for_minutes=1)
+    assert m.state == APPLIANCE_RUNNING, "it ended before the door could"
+
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert True not in writes, f"the parked fullness came back: {writes}"
+    assert m.attrs["drum_full"] is False
