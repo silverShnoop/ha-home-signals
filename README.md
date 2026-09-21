@@ -386,6 +386,15 @@ row missing one. A row missing a figure would be skipped by that series and
 kept by the labels, drawing every bar after it against the wrong day — and a
 chart off by one is worse than a chart one day shorter.
 
+Three series, and the pair worth drawing together is **cost and the floor**.
+Cost over kWh was the obvious pairing and is one fact drawn twice: on a flat
+tariff cost *is* kWh × 24.78p, so the line and the bars have the same shape
+and the second one says nothing. (On a tariff that varies, the gap between
+them becomes the information, and the pairing earns itself back.) The floor
+shares no axis with anything — it is a wattage, on its own scale, under bars
+made of money — and it is the series that answers a question the bars cannot:
+whether the thing underneath every day is creeping upwards.
+
 ### The week and the month, which can disagree
 
 Two trailing windows rather than one blended average:
