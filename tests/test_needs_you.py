@@ -129,3 +129,155 @@ async def test_other_rows_can_still_be_put_off(hass: HomeAssistant) -> None:
         "snoozing stopped working for everything, not just salt"
     )
     assert _salt(sensor) is not None
+
+
+# --- something was on overnight ---------------------------------------
+#
+# The row exists because the floor is the one figure no tariff change
+# touches and no price chart would ever have shown. It is also LATE -- one
+# or two days, without a live meter -- and the tests below are mostly about
+# that: the row has to name the night it is about rather than implying last
+# night, and it must not fire on a day so old it is no longer news.
+
+ENERGY = "sensor.energy_day"
+
+
+def _publish_night(
+    hass: HomeAssistant,
+    *,
+    watts: int = 420,
+    norm: int = 280,
+    excess: int = 50,
+    day: str = "2026-09-19",
+    label: str = "Sat 19 Sep",
+    stale: bool = False,
+) -> None:
+    """The day sensor's shape, as `_energy_entity` looks for it."""
+    hass.states.async_set(
+        ENERGY,
+        "3.99",
+        {
+            "for_day": day,
+            "for_date": label,
+            "stale": stale,
+            "baseline_watts": watts,
+            "baseline_norm": norm,
+            "baseline_excess_pct": excess,
+        },
+        force_update=True,
+    )
+
+
+async def _energy(hass: HomeAssistant, **kwargs) -> NeedsYouSensor:
+    _publish_night(hass, **kwargs)
+    sensor = _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+    return sensor
+
+
+def _night_row(sensor: NeedsYouSensor) -> dict | None:
+    return next(
+        (r for r in _rows(sensor) if str(r["id"]).startswith("baseline_")), None
+    )
+
+
+async def test_a_night_well_over_the_usual_floor_is_a_row(
+    hass: HomeAssistant,
+) -> None:
+    row = _night_row(await _energy(hass))
+    assert row is not None, [r["id"] for r in _rows(await _energy(hass))]
+    assert "overnight" in row["title"].lower()
+
+
+async def test_the_row_names_the_night_because_it_is_late(
+    hass: HomeAssistant,
+) -> None:
+    """The lag is shown, not hidden.
+
+    Without a live meter this arrives one or two days behind. "Something is
+    on now" is a claim the data cannot support; "something was on, on
+    Saturday" is one it can, and the difference is the whole reason the
+    detail carries the date.
+    """
+    row = _night_row(await _energy(hass))
+    assert "Sat 19 Sep" in row["detail"]
+    assert "420" in row["detail"] and "280" in row["detail"]
+
+
+async def test_an_ordinary_night_is_not_a_row(hass: HomeAssistant) -> None:
+    row = _night_row(await _energy(hass, watts=290, excess=3))
+    assert row is None
+
+
+async def test_a_night_under_the_threshold_is_not_a_row(
+    hass: HomeAssistant,
+) -> None:
+    """20% over is a house having an evening, not a job.
+
+    The threshold is what keeps the row rare, and a row that is not rare is
+    one nobody reads.
+    """
+    assert _night_row(await _energy(hass, watts=336, excess=20)) is None
+    assert _night_row(await _energy(hass, watts=420, excess=50)) is not None
+
+
+async def test_a_stale_day_is_not_news_about_last_night(
+    hass: HomeAssistant,
+) -> None:
+    """Octopus stopped delivering. A week-old night is not a job.
+
+    The sensor already drops its own state when the data goes stale; the row
+    has to drop for the same reason, or the panel spends a week asking about
+    one Saturday.
+    """
+    assert _night_row(await _energy(hass, stale=True)) is None
+
+
+async def test_no_usual_yet_means_no_row(hass: HomeAssistant) -> None:
+    """Before there are enough nights the sensor publishes no excess.
+
+    A row on the strength of a norm that does not exist yet would fire on
+    the house's first week and teach somebody to ignore it.
+    """
+    hass.states.async_set(
+        ENERGY,
+        "3.99",
+        {
+            "for_day": "2026-09-19",
+            "for_date": "Sat 19 Sep",
+            "stale": False,
+            "baseline_watts": 420,
+            "baseline_norm": None,
+            "baseline_excess_pct": None,
+        },
+        force_update=True,
+    )
+    sensor = _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+    assert _night_row(sensor) is None
+
+
+async def test_answering_for_one_night_does_not_silence_the_next(
+    hass: HomeAssistant,
+) -> None:
+    """"I know what that was" is a real answer, for that night only.
+
+    Guests, a wash left running, the oven on late. The occurrence key is
+    what makes the answer specific -- the same rule the bins row follows.
+    """
+    sensor = await _energy(hass)
+    row = _night_row(sensor)
+    assert row["action_label"] == "Dismiss"
+
+    sensor.suppress(row["id"])
+    assert _night_row(sensor) is None, "the dismissal did not take"
+
+    _publish_night(hass, day="2026-09-20", label="Sun 20 Sep")
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    again = _night_row(sensor)
+    assert again is not None, "answering for Saturday silenced Sunday too"
+    assert again["id"] == "baseline_2026-09-20"

@@ -73,8 +73,8 @@ a dashboard that is permanently red stops being read.
 
 What it reports, each optional and off unless configured: bins out (only the
 evening before, when it is actionable), overdue chores, batteries under a
-threshold one row each, water softener salt, and everything offline as a
-**single** row — twenty-seven unavailable entities is one problem, an
+threshold one row each, water softener salt, a night whose floor sat well
+above the usual one, and everything offline as a **single** row — twenty-seven unavailable entities is one problem, an
 integration being down, and twenty-seven rows would bury everything else.
 
 ### Water softener salt
@@ -94,6 +94,26 @@ a single errand whichever cylinder prompted it. Both are set in the
 integration's own options, alongside the battery threshold. With no sensors
 configured, or none of them readable, the check contributes nothing — a
 softener that cannot be read is not reported as full.
+
+### A night that was not like the others
+
+The floor is what the house draws with everybody asleep, so a night well
+above it is something that was left running. `sensor.energy_day` works out
+the excess; this turns it into a row past `baseline_excess_pct` (40% by
+default, high enough to stay rare — a house has ordinary nights that run
+10–20% over for no reason worth chasing).
+
+**The row is late, and says so.** Without a live meter the settled day
+arrives one or two days behind, so the detail names the night —
+`Sat 19 Sep · 420 W against a usual 280 W` — rather than implying last
+night. Hiding the lag would make it a worse row: *"something is on now"* is
+a claim this data cannot support, and *"something was on, on Saturday"* is
+one it can. A stale day produces no row at all, for the same reason the
+sensor drops its own state.
+
+It is dismissable and keyed to the night, because "I know what that was" is
+a real answer to it — and answering for Saturday must not silence Sunday.
+No snooze: a night is over, and there is nothing to come back to later.
 
 ### Salt is the one row you cannot put off
 
@@ -231,6 +251,40 @@ and the card congratulates somebody for a day that is running hot.
 
 The comparison is named for the day it actually used — `about Sat 19 Sep` —
 because on a two-day lag "vs yesterday" would be wrong twice a week.
+
+### Something was left on overnight
+
+`baseline_watts` on its own is a number nobody has a feel for. Against a
+`baseline_norm` — what this house usually draws asleep — it becomes the one
+thing in here anybody can act on:
+
+```
+baseline_watts        420
+baseline_norm         280
+baseline_excess_pct    50
+baseline_text         "420 W overnight against a usual 280 W"
+```
+
+Past a threshold it also becomes a `Needs you` row. Three rules keep it
+honest.
+
+**The norm is a median, not a mean.** Guests, a wash left running, an
+evening of the oven on — a mean would let one such night lift the very bar
+it should have failed against. The median leaves the bar where it was, so
+the next bad night is still caught.
+
+**A night is never in its own norm**, for the reason the cost average gives:
+included, it is partly measured against itself and the excess understates.
+
+**Five nights before there is a "usual" at all** — stricter than the cost
+average's three. A floor is the quietest number the house produces, and this
+figure's whole job is to be what an odd night fails against, so a norm one
+odd night away from being wrong is worse than no norm. Below that,
+`baseline_norm` and the excess are absent and no row can fire.
+
+And `baseline_text` only mentions the norm when there is something to say. A
+sentence reading "3% under usual" every single morning is how a figure stops
+being read.
 
 ### The average is the comparison that always works
 

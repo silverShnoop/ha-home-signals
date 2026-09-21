@@ -16,6 +16,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BASELINE_EXCESS_PCT,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
     CONF_DRYER_DOOR,
@@ -55,6 +56,7 @@ from .const import (
     CONF_PRESENCE_GRACE_MINUTES,
     DEFAULT_PRESENCE_GRACE_MINUTES,
     CONF_TASKS_SENSOR,
+    DEFAULT_BASELINE_EXCESS_PCT,
     DEFAULT_BATTERY_THRESHOLD,
     DEFAULT_SALT_BOTH_THRESHOLD,
     DEFAULT_SALT_ONE_THRESHOLD,
@@ -283,6 +285,21 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 default=defaults.get(CONF_ENERGY_TODAY_KWH, vol.UNDEFINED),
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
+            ),
+            # How far above its usual floor a night has to sit before it
+            # becomes a job. High enough to stay rare: the row is only worth
+            # having if seeing it means something, and a house has ordinary
+            # nights that run 10-20% over for no reason worth chasing.
+            vol.Optional(
+                CONF_BASELINE_EXCESS_PCT,
+                default=defaults.get(
+                    CONF_BASELINE_EXCESS_PCT, DEFAULT_BASELINE_EXCESS_PCT
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=10, max=200, step=5, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="%",
+                )
             ),
             # What a kWh costs, in money per unit -- Octopus publishes it
             # as `..._current_rate`. Shared by both machines and by

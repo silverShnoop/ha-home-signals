@@ -55,6 +55,7 @@ from .const import (
     CONF_ENERGY_TODAY_KWH,
     ENERGY_HISTORY_DAYS,
     ENERGY_MIN_DAYS_FOR_AVERAGE,
+    ENERGY_MIN_DAYS_FOR_NORM,
     ENERGY_SAME_PCT,
     ENERGY_STALE_DAYS,
 )
@@ -110,6 +111,23 @@ def _day_label(day: date) -> str:
     assembly by hand.
     """
     return f"{day:%a} {day.day} {day:%b}"
+
+
+def _median(values: list[float]) -> float | None:
+    """The middle value, which is the right average for a floor.
+
+    A mean would be moved by one odd night -- guests, a wash left running,
+    an evening of the oven on -- and the whole point of the norm is to be the
+    thing an odd night is measured AGAINST. One unusual night should not
+    quietly raise the bar it is meant to fail.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 def _pct(value: float, against: float) -> int | None:
@@ -361,8 +379,17 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 # better one, and two rows for one day would weight it twice.
                 row["cost"] = day["cost"]
                 row["kwh"] = day["kwh"]
+                row["baseline_watts"] = day["baseline_watts"]
                 return
-        self._history.insert(0, {"day": stamp, "cost": day["cost"], "kwh": day["kwh"]})
+        self._history.insert(0, {
+            "day": stamp,
+            "cost": day["cost"],
+            "kwh": day["kwh"],
+            # Kept per night, not just per day, because "what does this house
+            # draw asleep" is the question a single night cannot answer and a
+            # fortnight can.
+            "baseline_watts": day["baseline_watts"],
+        })
         self._history.sort(key=lambda row: row["day"], reverse=True)
         del self._history[ENERGY_HISTORY_DAYS:]
 
@@ -406,6 +433,29 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             round(sum(kwhs) / len(kwhs), 3) if kwhs else None,
         )
 
+    def _baseline_norm(self, excluding: str) -> int | None:
+        """What this house usually draws asleep, from the other nights.
+
+        Excludes the night being judged for the same reason the cost average
+        does: a night in its own norm is partly measured against itself, and
+        that is exactly the comparison this exists to make.
+
+        Needs more nights than the cost average does. A floor is the quietest
+        number the house produces, so a norm built from three of them is one
+        odd night away from being wrong -- and this figure's whole job is to
+        be the thing an odd night fails against.
+        """
+        watts = [
+            w
+            for row in self._history
+            if row["day"] != excluding
+            and (w := _as_float(row.get("baseline_watts"))) is not None
+        ]
+        if len(watts) < ENERGY_MIN_DAYS_FOR_NORM:
+            return None
+        norm = _median(watts)
+        return None if norm is None else round(norm)
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         day = self._day
@@ -413,10 +463,27 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             return {"days_of_history": len(self._history)}
 
         late = self._days_late(day)
-        average_cost, average_kwh = self._average(day["day"].isoformat())
+        stamp = day["day"].isoformat()
+        average_cost, average_kwh = self._average(stamp)
         vs_average = (
             _pct(day["cost"], average_cost) if average_cost is not None else None
         )
+
+        baseline_norm = self._baseline_norm(stamp)
+        baseline_excess: int | None = None
+        baseline_text: str | None = None
+        watts = day["baseline_watts"]
+        if watts is not None:
+            baseline_text = f"{watts} W overnight"
+            if baseline_norm:
+                baseline_excess = _pct(watts, baseline_norm)
+                # Only the excess is worth a sentence. A night AT the usual
+                # floor is the house working, and saying "3% under usual"
+                # every morning is how a figure stops being read.
+                if baseline_excess is not None and baseline_excess > ENERGY_SAME_PCT:
+                    baseline_text = (
+                        f"{watts} W overnight against a usual {baseline_norm} W"
+                    )
 
         out: dict[str, Any] = {
             # The date this is about, and how stale that makes it. Both,
@@ -440,6 +507,13 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             "peak_slot": day["peak_slot"],
             "peak_kwh": day["peak_kwh"],
             "slots": day["slots"],
+            # What the floor usually is, and how far this night sat above it.
+            # The pair is what turns a number nobody has a feel for into one
+            # anybody can act on: 286 W means nothing on its own, and "420 W
+            # against a usual 286" means something was left running.
+            "baseline_norm": baseline_norm,
+            "baseline_excess_pct": baseline_excess,
+            "baseline_text": baseline_text,
             # The rows behind the average. Published because they are what
             # an assistant asked "what have we been spending" actually wants,
             # and because the restore reads them back -- one copy, not two.

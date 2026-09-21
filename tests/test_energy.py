@@ -431,3 +431,105 @@ def test_the_comparison_reads_as_a_sentence() -> None:
     assert _comparison(4, "average") == "about average"
     assert _comparison(23, "average") == "23% above average"
     assert _comparison(-40, "Sat 19 Sep") == "40% under Sat 19 Sep"
+
+
+# --- what the house draws asleep, and when that is news ---------------
+#
+# The floor is the figure this whole exercise turned out to be worth doing
+# for, and a floor on its own means nothing: 286 W is a number nobody has a
+# feel for. Against a usual 286 W, a night at 420 W means something was left
+# running. So the norm is the thing being tested here.
+
+
+def night(watts: float) -> list[float]:
+    """Saturday's daytime, with the overnight floor set to `watts`.
+
+    A half-hour slot at W watts is W * 0.5 / 1000 kWh, so this drives the
+    baseline arithmetic through the same path the real charges do rather
+    than poking the attribute.
+    """
+    slot = watts * 0.5 / 1000
+    return [slot] * 12 + SATURDAY[12:]
+
+
+async def _nights(hass: HomeAssistant, freezer, watts: list[float]) -> Meter:
+    """One settled day per entry, oldest first, ending on 2026-09-19."""
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    start = 19 - len(watts) + 1
+    for offset, w in enumerate(watts):
+        publish(hass, f"2026-09-{start + offset:02d}", night(w))
+        await m.settle()
+    return m
+
+
+async def test_four_nights_are_not_a_usual(hass: HomeAssistant, freezer) -> None:
+    """A floor is the quietest number the house makes; three is not a norm.
+
+    Deliberately stricter than the cost average. This figure's whole job is
+    to be what an odd night fails against, so a norm one odd night away from
+    being wrong is worse than no norm.
+    """
+    m = await _nights(hass, freezer, [280, 280, 280, 280])
+    assert m.attrs["baseline_norm"] is None
+    assert m.attrs["baseline_excess_pct"] is None
+    # The night's own floor is still reported -- it is a fact either way.
+    assert m.attrs["baseline_watts"] == 280
+
+
+async def test_a_night_above_its_usual_floor_is_measured(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Five quiet nights, then one at half again. 50% over."""
+    m = await _nights(hass, freezer, [280, 280, 280, 280, 280, 420])
+    a = m.attrs
+    assert a["baseline_watts"] == 420
+    assert a["baseline_norm"] == 280
+    assert a["baseline_excess_pct"] == 50
+    assert a["baseline_text"] == "420 W overnight against a usual 280 W"
+
+
+async def test_an_ordinary_night_says_only_what_it_drew(
+    hass: HomeAssistant, freezer
+) -> None:
+    """At the usual floor there is nothing to compare, so it does not.
+
+    A sentence that says "3% under usual" every single morning is how a
+    figure stops being read at all.
+    """
+    m = await _nights(hass, freezer, [280, 280, 280, 280, 280, 284])
+    assert m.attrs["baseline_excess_pct"] == 1
+    assert m.attrs["baseline_text"] == "284 W overnight"
+
+
+async def test_one_wild_night_does_not_raise_the_bar(
+    hass: HomeAssistant, freezer
+) -> None:
+    """The norm is a median, and this is why.
+
+    Guests, a wash left running, an evening of the oven on -- a mean would
+    let one of those lift the very bar it should have failed against. Here
+    five nights at 280 and one at 2000 leave the usual floor at 280, so the
+    next bad night is still caught.
+    """
+    m = await _nights(hass, freezer, [280, 280, 2000, 280, 280, 420])
+    assert m.attrs["baseline_norm"] == 280, m.attrs["recent_days"]
+    assert m.attrs["baseline_excess_pct"] == 50
+
+
+async def test_a_night_is_not_in_its_own_usual(hass: HomeAssistant, freezer) -> None:
+    """Included, a night is partly measured against itself.
+
+    Six nights at 280 and a seventh at 560: in its own norm the median rises
+    and the excess understates. Excluded, it is cleanly double.
+    """
+    m = await _nights(hass, freezer, [280, 280, 280, 280, 280, 280, 560])
+    assert m.attrs["baseline_norm"] == 280
+    assert m.attrs["baseline_excess_pct"] == 100
+
+
+async def test_the_floor_is_kept_per_night(hass: HomeAssistant, freezer) -> None:
+    """The rows carry it, because one night cannot answer this and a
+    fortnight can -- and the source sensor only ever holds one day."""
+    m = await _nights(hass, freezer, [280, 300, 290])
+    watts = [row["baseline_watts"] for row in m.attrs["recent_days"]]
+    assert sorted(watts) == [280, 290, 300], m.attrs["recent_days"]

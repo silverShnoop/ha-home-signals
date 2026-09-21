@@ -52,6 +52,7 @@ from .const import (
     ATTR_SOURCE,
     ACCENT_INFO,
     ACCENT_WARN,
+    CONF_BASELINE_EXCESS_PCT,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
     CONF_PEOPLE,
@@ -65,6 +66,7 @@ from .const import (
     CONF_SECURITY_LOCKS,
     CONF_SECURITY_OPENINGS,
     CONF_TASKS_SENSOR,
+    DEFAULT_BASELINE_EXCESS_PCT,
     DEFAULT_BATTERY_THRESHOLD,
     DEFAULT_SALT_BOTH_THRESHOLD,
     DEFAULT_SALT_ONE_THRESHOLD,
@@ -407,6 +409,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         candidates.extend(self._tasks())
         candidates.extend(self._batteries())
         candidates.extend(self._salt())
+        candidates.extend(self._baseline())
         candidates.extend(self._appliances())
         candidates.extend(self._people())
         candidates.extend(self._offline())
@@ -603,6 +606,73 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             + self._appliance_entities()
             + list(self._option(CONF_PEOPLE, []) or [])
         )
+
+    def _energy_entity(self) -> str | None:
+        """The day sensor this integration publishes, found by its shape.
+
+        Looked up rather than injected, for the reasons the appliance lookup
+        gives: setup order stops mattering, and this reads the same state a
+        card reads.
+        """
+        for state in self.hass.states.async_all("sensor"):
+            attrs = state.attributes
+            if "baseline_watts" in attrs and "for_day" in attrs:
+                return state.entity_id
+        return None
+
+    def _baseline(self) -> list[dict[str, Any]]:
+        """A night whose floor sat well above the usual one.
+
+        The floor is what the house draws with everybody asleep, so a night
+        well above it is something that was left running -- and it is the one
+        signal here that no tariff change touches and no price chart would
+        ever have shown.
+
+        **It is late, and the row says so.** Without a live meter the settled
+        day arrives one or two days behind, so the detail names the night
+        rather than implying last night. Hiding that would make the row a
+        worse version of itself: "something is on now" is a claim this data
+        cannot support, and "something was on, on Saturday" is one it can.
+
+        Dismissable, and keyed to the night. "I know what that was" is a real
+        answer -- guests, a wash left running, the oven on late -- and the
+        occurrence key means answering for Saturday does not silence Sunday.
+
+        No snooze. A night is over; there is nothing to come back to later.
+        """
+        entity_id = self._energy_entity()
+        if not entity_id:
+            return []
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return []
+        attrs = state.attributes
+        # A stale day is not news about last night. The sensor already drops
+        # its own state when the data stops arriving; this drops the row for
+        # the same reason rather than reporting a week-old night as a job.
+        if attrs.get("stale"):
+            return []
+        excess = attrs.get("baseline_excess_pct")
+        watts = attrs.get("baseline_watts")
+        norm = attrs.get("baseline_norm")
+        night = attrs.get("for_day")
+        label = attrs.get("for_date")
+        if not isinstance(excess, (int, float)) or not night:
+            return []
+        threshold = float(self._option(
+            CONF_BASELINE_EXCESS_PCT, DEFAULT_BASELINE_EXCESS_PCT
+        ))
+        if excess < threshold:
+            return []
+        return [{
+            "id": f"baseline_{night}",
+            "title": "Something was on overnight",
+            "detail": f"{label} \u00b7 {watts} W against a usual {norm} W",
+            "icon": "mdi:power-plug-outline",
+            "accent": ACCENT_WARN,
+            "action_label": "Dismiss",
+            "action": _dismiss(f"baseline_{night}"),
+        }]
 
     def _appliance_entities(self) -> list[str]:
         """The cycle sensors this integration publishes, found by their id.

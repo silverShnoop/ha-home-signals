@@ -204,3 +204,23 @@ ENERGY_MIN_DAYS_FOR_AVERAGE = 3
 # band, a normal day reads as 3% down and the comparison becomes noise that
 # always says something.
 ENERGY_SAME_PCT = 5
+
+# --- Something was left on overnight ----------------------------------
+#
+# The baseline is the floor under every other figure, so a night whose floor
+# is well above the usual one is a thing that was left running. This is the
+# one signal in the house that no tariff change touches and no price chart
+# would ever have shown.
+#
+# It is deliberately LATE and says so. Without a live meter the settled day
+# arrives one or two days behind, so the row names the night it is about
+# rather than implying "now" -- see the row's detail. Once a today source
+# exists (a Home Mini, or Hildebrand's Usage Today read at six in the
+# morning) the same comparison becomes near-live with no change here.
+CONF_BASELINE_EXCESS_PCT = "baseline_excess_pct"
+DEFAULT_BASELINE_EXCESS_PCT = 40
+
+# Nights needed before there is a "usual" at all. More than the cost average
+# wants: a floor is the quietest number the house produces, so a norm built
+# from three of them is one odd night away from being wrong.
+ENERGY_MIN_DAYS_FOR_NORM = 5
