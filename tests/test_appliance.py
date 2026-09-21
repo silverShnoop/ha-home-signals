@@ -1063,3 +1063,158 @@ async def test_a_new_wash_starts_a_new_timeline(machine) -> None:
     kinds = [p["kind"] for p in m.sensor.extra_state_attributes["phases"]]
     assert "heat" not in kinds, f"the new wash inherited the old one: {kinds}"
     assert kinds == ["fill"], kinds
+
+
+async def test_two_loads_an_hour_apart_are_two_loads(machine) -> None:
+    """The morning of 2026-09-21, replayed from the recorder.
+
+    A wash ran 08:12 to 09:21. The machine then sat at 5 W -- its
+    standby, and inside the 4-8 W hysteresis band, so every reading
+    cancelled the quiet timer. At 09:23:49 the door opened for
+    twenty-one seconds: the washing came out and the next load went in.
+    At 09:26:25 the heater fired for a second programme.
+
+    What the sensor recorded was ONE run, still going two hours later,
+    with nothing to hang. Two armfuls of washing had been out of that
+    machine and neither existed as far as the house was concerned. The
+    five-minute floor never got five minutes: the longest the plug read
+    under 4 W was forty-eight seconds, while the door was open.
+
+    Twenty-one seconds is not too quick to be an unload. It was one.
+    """
+    m = machine
+
+    # --- the first programme, ending in standby rather than in silence
+    await m.draw(2000, for_minutes=45)
+    await m.draw(300, for_minutes=4)          # the extraction spin
+    await m.draw(5, for_minutes=2)            # stopped, but 5 W of standby
+
+    assert m.state == APPLIANCE_RUNNING, "a machine at 5 W has not stopped yet"
+    assert m.waiting == 0, "nothing is hung up until the door says so"
+
+    # --- twenty-one seconds, and the drum changes hands
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert m.state == APPLIANCE_IDLE, "the open door did not end the wash"
+    assert m.waiting == 1, "the first load was never recorded"
+    first = m.attrs["finished"][0]
+    assert first["duration_minutes"] >= 45, first
+    assert m.attrs["drum_full"] is False, "the washing came out with the door"
+
+    m.set(DOOR, "off")
+    await m.hass.async_block_till_done()
+
+    # --- the second programme, three minutes later
+    await m.draw(2100, for_minutes=45)
+    assert m.state == APPLIANCE_RUNNING
+    assert m.attrs["rewashing"] is False, (
+        "the door opened between them, so this is a new load, not a rewash"
+    )
+    await m.draw(0, for_minutes=6)
+
+    assert m.waiting == 2, "two armfuls of washing, two rows to hang"
+    assert len(m.attrs["finished"]) == 2, m.attrs["finished"]
+    assert m.attrs["finished"][0]["id"] != m.attrs["finished"][1]["id"]
+
+
+async def test_a_wrong_door_reading_does_not_cut_a_wash_in_half(machine) -> None:
+    """The one case the draw has to overrule the door.
+
+    A machine cannot wash with its door open, so a door that says open
+    while the drum is pulling two kilowatts is a sensor being wrong --
+    a tamper, a flat battery, a knock. Finishing there would write half
+    a wash into the history and put a row in Needs you for washing that
+    is still going round.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=40)
+
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert m.state == APPLIANCE_RUNNING, "a wrong door reading ended the wash"
+    assert m.waiting == 0, "and invented a load to hang"
+
+
+def _watch_the_drum(sensor) -> list[bool]:
+    """Record every value ASSIGNED to `drum_full`, in order.
+
+    The set-then-unset this replaced could not be caught by looking at
+    the state afterwards, or even by watching what gets published: it
+    was two synchronous statements with nothing between them, so the
+    intermediate True was real and never observable. The only way to
+    assert it does not happen is to watch the writes themselves.
+    """
+    writes: list[bool] = []
+    seen = [bool(sensor.__dict__.pop("_drum_full", False))]
+
+    class Watched(type(sensor)):
+        @property
+        def _drum_full(self) -> bool:
+            return seen[-1]
+
+        @_drum_full.setter
+        def _drum_full(self, value: object) -> None:
+            seen.append(bool(value))
+            writes.append(bool(value))
+
+    sensor.__class__ = Watched
+    return writes
+
+
+async def test_a_door_ended_wash_never_fills_the_drum_even_for_an_instant(
+    machine,
+) -> None:
+    """Emptying it a line later is the same answer and a worse mechanism.
+
+    A door opening on a stopped wash says two things at once -- this is
+    finished, and I have taken it out -- so the drum must never be full,
+    rather than being full until the next statement. Correct by the order
+    of two lines lasts until somebody puts a `_publish` between them.
+    """
+    m = machine
+    writes = _watch_the_drum(m.sensor)
+
+    await m.draw(2000, for_minutes=45)
+    await m.draw(5, for_minutes=2)
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert True not in writes, f"the drum was filled at some point: {writes}"
+    assert m.waiting == 1, "and the wash was not recorded at all"
+    assert m.attrs["drum_full"] is False
+
+
+async def test_a_run_thrown_away_at_the_door_does_not_put_the_washing_back(
+    machine,
+) -> None:
+    """The path through `_put_back`, which also has to be told.
+
+    A long run discarded for drawing too little is still a run whose
+    door has just been opened. If it were a rewash, `_put_back` would
+    restore the fullness it parked -- fullness that is now in somebody's
+    arms.
+    """
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    assert m.attrs["drum_full"] is True, "the first wash did not fill it"
+
+    writes = _watch_the_drum(m.sensor)
+
+    # A second cycle on the same load -- no door between them, so it is a
+    # rewash and the fullness is parked. It draws almost nothing, so it
+    # will be thrown away when it ends.
+    await m.draw(9, for_minutes=70)
+    assert m.attrs["rewashing"] is True, "this was meant to be a rewash"
+    # Down to standby first. Above start_watts the door is disbelieved and
+    # `_finish` is never reached, which would pass this test for no reason.
+    await m.draw(5, for_minutes=1)
+    assert m.state == APPLIANCE_RUNNING, "it ended before the door could"
+
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert True not in writes, f"the parked fullness came back: {writes}"
+    assert m.attrs["drum_full"] is False
