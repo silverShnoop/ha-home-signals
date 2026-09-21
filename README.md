@@ -67,14 +67,14 @@ clears when you do it. On a good day it is zero and the band disappears —
 a dashboard that is permanently red stops being read.
 
 - **State** — how many things need doing.
-- **`items`** — the rows, each with `id`, `title`, `detail`, `icon`, `accent`
+- **`items`** — the rows, each with `id`, `title`, `detail`, `icon`, `level`
   and `action_label`. A Spectra `list` renders these directly, so the shape
   is a contract and not free to drift.
 
 What it reports, each optional and off unless configured: bins out (only the
 evening before, when it is actionable), overdue chores, batteries under a
-threshold one row each, water softener salt, a night whose floor sat well
-above the usual one, and everything offline as a **single** row — twenty-seven unavailable entities is one problem, an
+threshold one row each, water softener salt, and everything offline as a
+**single** row — twenty-seven unavailable entities is one problem, an
 integration being down, and twenty-seven rows would bury everything else.
 
 ### Water softener salt
@@ -90,11 +90,11 @@ thresholds.
   sharper warning, answerable with the bag already in the garage.
 
 Either rule produces **one** row, never one per side: filling the machine is
-a single errand whichever cylinder prompted it — and the row is **ochre**
-whichever rule raised it. Colouring the two rules differently made the
+a single errand whichever cylinder prompted it — and the row is **attention**
+whichever rule raised it. Levelling the two rules differently made the
 colour report the shopping (a bag to buy, or a bag already in the garage)
 rather than the urgency, and spent the panel's loudest colour on a chore.
-Terracotta here is for water on the floor and doors left unlocked. Both are set in the
+Critical here is for water on the floor and doors left unlocked. Both are set in the
 integration's own options, alongside the battery threshold. With no sensors
 configured, or none of them readable, the check contributes nothing — a
 softener that cannot be read is not reported as full.
@@ -148,23 +148,52 @@ that memory lives. Dismissals survive a restart, and they are keyed to the
 **occurrence**: dismissing `bin_2026-09-16` clears tonight's bins and lets
 next week's come back.
 
-## Yellow is a promise
+## The three levels
 
-A card may state any fact it likes. But **ochre — the warning role — is
-a promise that something wants doing**, and on this panel the thing that
-wants doing lives in `Needs you` and nowhere else. So every yellow thing
-must have a row behind it, or the colour is a lie: a job that exists
-only on the panel, that nobody can clear from a phone, and that no
-amount of doing the thing will make go away.
+A card may state any fact it likes. But a **level** is a promise that
+something wants doing, and on this panel the thing that wants doing lives
+in `Needs you` and nowhere else.
 
-That rule is why `_people` exists — the card draws an unlocatable person
-in ochre, so the row has to be real — and why `system_health` publishes
-an `accent`, so a tab tile wears the colour of what is actually there
-instead of a fixed one.
+| Level | The promise it makes |
+| --- | --- |
+| `attention` | needs doing today or tomorrow. Real, but it keeps. |
+| `waiting` | something is paused or degrading until a person acts. |
+| `critical` | damage or risk is accruing now. |
 
-It cuts the other way too. An open appliance door used to be drawn in
-ochre and has no row and never should: a machine spends half its life
-with the door open. That chip is neutral now.
+The name is the test a new row has to pass. Before there were three, ten
+of the twelve rows were the same "warning" whatever they meant, and the
+two that were not spent the loudest colour in the house on a chore and on
+thirty-one entities that had gone quiet.
+
+**Every levelled thing must have a row behind it**, or the colour is a
+lie: a job that exists only on the panel, that nobody can clear from a
+phone, and that no amount of doing the thing will make go away. That rule
+is why `_people` exists — the card draws an unlocatable person at a level,
+so the row has to be real — and why `system_health` publishes a `level`,
+so a tab tile wears the level of what is actually there instead of a fixed
+colour.
+
+**It cuts the other way too.** A thing that needs no doing takes no level.
+An open appliance door used to be drawn in ochre and has no row and never
+should: a machine spends half its life with the door open. That chip is
+neutral now. So are pending updates, which is why `system_health` gives
+that row a decorative accent and no level at all — and why
+`_worst()` skips unlevelled rows rather than ranking them last, so a card
+full of information leaves the tile uncoloured.
+
+**A level is not an accent.** An accent is decorative: it says which tab a
+card belongs to. The two used to be the same six numbers, which is how a
+row came to claim an alarm by naming a hue. A Needs-you row publishes
+`level` and never `accent`, and `tests/test_levels.py` asserts both halves
+over every state the washer can be in.
+
+### What left when the levels arrived
+
+**The overnight-baseline row.** "Something was on overnight" reported a
+night that had already happened, with no action beyond Dismiss — which is
+the one thing a row may not be: it did not need doing. The figures are
+still published on `sensor.energy_day`, where the Electricity card reads
+them and always did. What left is the claim that they were a job.
 
 ## `sensor.system_health`
 
@@ -173,8 +202,14 @@ status, so it stays true for as long as it is true and is never dismissable.
 
 - **State** — how many kinds of problem there are.
 - **`items`** — rows for a card.
+- **`level`** — the worst level among those rows, or `null` when none of
+  them carries one, so a tab tile can wear what is actually there instead
+  of a fixed colour.
 - **`low_batteries`, `offline`, `updates_pending`** — the raw lists, with
-  entity ids and areas, plus a count of each.
+  entity ids and areas, plus a count of each. A battery's charge is
+  `percent`, not `level`: `level` now names one of the three job levels,
+  and a dict published to a card with a `level` of `41.0` is a trap set
+  for whoever first renders `low_batteries` as rows.
 
 The raw lists are the point. An agent asking "what is offline?" wants entity
 ids, not a sentence assembled for a card — and an agent never looks at a
