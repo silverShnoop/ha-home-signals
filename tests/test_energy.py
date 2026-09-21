@@ -774,3 +774,116 @@ async def test_no_window_means_no_money_text(hass: HomeAssistant, freezer) -> No
     a = m.attrs
     assert a["week_cost"] is None
     assert a["week_cost_text"] is None
+
+
+# --- the floor in money, and the day split around it -----------------
+#
+# A floor in watts is not a fact anybody can act on. What it costs, and how
+# much of the day was NOT it, are -- the floor is the part you change by
+# finding something and unplugging it, the rest is the part you changed by
+# living in the house.
+
+
+async def test_the_day_splits_into_floor_rest_and_standing(meter: Meter) -> None:
+    """And the three add up to the day's total, to the penny.
+
+    A table whose rows do not sum to the figure above them is a table
+    nobody trusts -- so `rest` is the remainder rather than a second
+    multiplication, and the rounding penny lands there rather than
+    vanishing.
+    """
+    a = meter.attrs
+    assert a["floor_kwh"] == pytest.approx(6.9)
+    assert a["rest_kwh"] == pytest.approx(7.3)
+    assert a["floor_cost"] == pytest.approx(1.70)
+    assert a["rest_cost"] == pytest.approx(1.81)
+
+    total = a["floor_cost"] + a["rest_cost"] + a["standing_p"] / 100
+    assert total == pytest.approx(meter.state), (
+        f"{a['floor_cost']} + {a['rest_cost']} + {a['standing_p']}p "
+        f"!= {meter.state}"
+    )
+
+
+async def test_the_floor_is_priced_at_the_days_own_rate(meter: Meter) -> None:
+    """`usage / kwh`, not whatever the tariff says now.
+
+    On a flat tariff they are the same number. On a variable one the day's
+    own average is the only rate that can divide up the day's own money.
+    """
+    a = meter.attrs
+    implied = a["floor_cost"] / a["floor_kwh"]
+    assert implied == pytest.approx(RATE, abs=0.005)
+
+
+async def test_the_floor_says_what_a_year_of_it_costs(meter: Meter) -> None:
+    """The figure that makes somebody actually go and look for the cause.
+
+    £1.70 a day is ignorable. £621 a year is not, and it is the same fact.
+    """
+    assert meter.attrs["floor_cost_year"] == 621
+
+
+async def test_a_floor_bigger_than_its_day_publishes_no_split(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A partial day from Octopus, where the parts would exceed the whole.
+
+    A perfectly flat day is the boundary: every slot equal means the floor
+    projected over twenty-four hours is exactly the day, and there is no
+    "rest" to speak of. Anything at or past that is not a day this can
+    divide up, so it does not pretend to.
+    """
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-09-19", [0.1] * 48)
+    await m.settle()
+
+    a = m.attrs
+    assert a["baseline_watts"] == 200
+    assert "floor_kwh" not in a
+    assert "rest_cost_text" not in a
+
+
+# --- against a night somebody remembers ------------------------------
+
+
+async def test_the_floor_is_compared_to_the_night_before(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Not against the median -- nobody remembers their median.
+
+    A median is the right thing to fire a Needs-you row off and the wrong
+    thing to hand a person. "Twenty watts up on Friday" is a sentence about
+    a night they were there for.
+    """
+    m = await _nights(hass, freezer, [280, 300])
+    a = m.attrs
+    assert a["prev_baseline_watts"] == 280
+    assert a["baseline_vs_prev_watts"] == 20
+    assert a["baseline_vs_prev_text"] == "20 W up on Fri"
+
+
+async def test_a_floor_that_fell_says_so(hass: HomeAssistant, freezer) -> None:
+    m = await _nights(hass, freezer, [300, 280])
+    assert m.attrs["baseline_vs_prev_text"] == "20 W down on Fri"
+
+
+async def test_a_floor_that_barely_moved_is_level(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Two watts is a meter, not a change.
+
+    Without a band this reads "1 W up on Friday" every single morning,
+    which is the same failure the average's band exists to prevent.
+    """
+    m = await _nights(hass, freezer, [280, 281])
+    assert m.attrs["baseline_vs_prev_text"] == "level with Fri"
+
+
+async def test_one_night_has_nothing_to_compare_against(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _nights(hass, freezer, [280])
+    a = m.attrs
+    assert "baseline_vs_prev_text" not in a
+    assert a["baseline_watts"] == 280, "the night itself is still reported"

@@ -534,6 +534,87 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             out.append(f"{parsed:%a}"[0] if parsed else "")
         return out
 
+    def _split(self, day: dict[str, Any]) -> dict[str, Any]:
+        """The day as floor, everything else, and the standing charge.
+
+        The floor in watts is not a fact anybody can act on. What it costs,
+        and how much of the day was NOT it, are -- because the floor is the
+        part you change by finding something and unplugging it, and the rest
+        is the part you changed by living in the house today.
+
+        Priced at the day's OWN average rate (`usage / kwh`) rather than at
+        whatever the tariff says now. On a flat tariff they are the same
+        number; on a variable one the day's own rate is the only one that
+        can divide up the day's own money.
+
+        The three add up to the day's total, deliberately: a table whose
+        rows do not sum to the figure above them is a table nobody trusts.
+        So `rest` is the remainder rather than a second multiplication, and
+        any rounding penny lands there rather than going missing.
+
+        Absent when the floor projects to more than the day actually used.
+        That means Octopus delivered a partial day, and a split whose parts
+        exceed the whole is fiction.
+        """
+        watts = day["baseline_watts"]
+        kwh = day["kwh"]
+        usage = day["usage"]
+        if watts is None or not kwh or usage is None:
+            return {}
+        floor_kwh = watts * 24 / 1000
+        if floor_kwh >= kwh:
+            return {}
+        rate = usage / kwh
+        floor_cost = round(floor_kwh * rate, 2)
+        return {
+            "floor_kwh": round(floor_kwh, 1),
+            "floor_cost": floor_cost,
+            "floor_cost_text": money(floor_cost),
+            # What a floor held all year costs, which is the figure that
+            # makes anybody go and look for the thing causing it.
+            "floor_cost_year": round(floor_kwh * rate * 365),
+            "rest_kwh": round(kwh - floor_kwh, 1),
+            "rest_cost": round(usage - floor_cost, 2),
+            "rest_cost_text": money(round(usage - floor_cost, 2)),
+        }
+
+    def _vs_last_night(self, day: dict[str, Any]) -> dict[str, Any]:
+        """The floor against the night before the one being reported.
+
+        Not against the median: a median is the right thing to fire a row
+        off and the wrong thing to hand a person, because nobody remembers
+        their median. "Four watts up on Friday" is a sentence about a night
+        you were there for.
+
+        The night before the REPORTED one, which on a two-day lag is not
+        last night -- so it is named rather than implied.
+        """
+        others = [
+            row
+            for row in sorted(self._history, key=lambda r: r["day"], reverse=True)
+            if row["day"] < day["day"].isoformat()
+            and _as_float(row.get("baseline_watts")) is not None
+        ]
+        watts = day["baseline_watts"]
+        if not others or watts is None:
+            return {}
+        prev = _as_float(others[0]["baseline_watts"])
+        parsed = dt_util.parse_datetime(f"{others[0]['day']}T00:00:00")
+        label = f"{parsed:%a}" if parsed else "the night before"
+        delta = round(watts - prev)
+        if abs(delta) <= 2:
+            text = f"level with {label}"
+        elif delta > 0:
+            text = f"{delta} W up on {label}"
+        else:
+            text = f"{abs(delta)} W down on {label}"
+        return {
+            "prev_night": others[0]["day"],
+            "prev_baseline_watts": round(prev),
+            "baseline_vs_prev_watts": delta,
+            "baseline_vs_prev_text": text,
+        }
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         day = self._day
@@ -630,6 +711,8 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             "baseline_trend_text": _comparison(
                 self._baseline_trend(), "last week"
             ),
+            **self._split(day),
+            **self._vs_last_night(day),
             # Plain arrays, oldest first, for a chart to read straight off.
             # Shaped here rather than in the card for the reason nothing in
             # this house is shaped in a card.

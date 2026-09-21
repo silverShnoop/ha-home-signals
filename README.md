@@ -291,6 +291,45 @@ And `baseline_text` only mentions the norm when there is something to say. A
 sentence reading "3% under usual" every single morning is how a figure stops
 being read.
 
+#### The floor in money, and the day split around it
+
+A floor in watts is not a fact anybody can act on. What it *costs* is:
+
+```
+floor_kwh   6.9    floor_cost_text  "£1.70"   floor_cost_year  621
+rest_kwh    7.3    rest_cost_text   "£1.81"
+standing_p   48
+```
+
+The three sum to the day's total, to the penny. That is deliberate — a
+table whose rows do not add up to the figure above them is a table nobody
+trusts — so `rest` is the **remainder** rather than a second
+multiplication, and any rounding penny lands there rather than going
+missing.
+
+Priced at the day's own average rate (`usage / kwh`) rather than at
+whatever the tariff says now. On a flat tariff they are the same number; on
+a variable one the day's own rate is the only one that can divide up the
+day's own money.
+
+The split is **absent when the floor projects to more than the day used** —
+a perfectly flat day is the boundary. That means Octopus delivered a
+partial day, and a split whose parts exceed the whole is fiction.
+
+`floor_cost_year` exists because £1.70 a day is ignorable and £621 a year
+is not, and they are the same fact.
+
+#### Against a night somebody remembers
+
+`baseline_vs_prev_text` compares the floor to **the night before the one
+being reported** — `20 W up on Fri` — with a two-watt band so it does not
+read "1 W up" every morning.
+
+Not against the median. A median is the right thing to fire a row off and
+the wrong thing to hand a person, because nobody remembers their median.
+And on a two-day lag the previous night is not last night, so it is named
+rather than implied.
+
 #### A spike and a creep are different questions
 
 `baseline_excess_pct` measures the night against a **trailing fortnight**, so
