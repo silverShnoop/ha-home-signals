@@ -90,7 +90,11 @@ thresholds.
   sharper warning, answerable with the bag already in the garage.
 
 Either rule produces **one** row, never one per side: filling the machine is
-a single errand whichever cylinder prompted it. Both are set in the
+a single errand whichever cylinder prompted it — and the row is **ochre**
+whichever rule raised it. Colouring the two rules differently made the
+colour report the shopping (a bag to buy, or a bag already in the garage)
+rather than the urgency, and spent the panel's loudest colour on a chore.
+Terracotta here is for water on the floor and doors left unlocked. Both are set in the
 integration's own options, alongside the battery threshold. With no sensors
 configured, or none of them readable, the check contributes nothing — a
 softener that cannot be read is not reported as full.
