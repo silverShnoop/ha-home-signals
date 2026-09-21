@@ -180,13 +180,24 @@ def _publish_night(
     label: str = "Sat 19 Sep",
     stale: bool = False,
 ) -> None:
-    """The day sensor's shape, as `_energy_entity` looks for it."""
+    """The day sensor's shape, as `_energy_entity` looks for it.
+
+    `for_day` and `days_late` are the signature, so both are here whatever
+    else is: they are the two keys the real sensor publishes in either
+    state, which is the point of matching on them.
+
+    A stale night keeps its baseline figures on purpose. The real sensor
+    drops them, so this is more than the truth -- and that is what makes
+    the stale test worth having: the row must be refused because the day is
+    stale, not merely because there was nothing to read.
+    """
     hass.states.async_set(
         ENERGY,
         "3.99",
         {
             "for_day": day,
             "for_date": label,
+            "days_late": 7 if stale else 2,
             "stale": stale,
             "baseline_watts": watts,
             "baseline_norm": norm,
@@ -274,6 +285,10 @@ async def test_no_usual_yet_means_no_row(hass: HomeAssistant) -> None:
         {
             "for_day": "2026-09-19",
             "for_date": "Sat 19 Sep",
+            # The signature, so the sensor is found and the row is refused
+            # for the reason this test is about rather than because nothing
+            # was looking at it.
+            "days_late": 2,
             "stale": False,
             "baseline_watts": 420,
             "baseline_norm": None,
