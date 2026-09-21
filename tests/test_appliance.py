@@ -20,7 +20,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
-from custom_components.home_signals.appliance import ApplianceCycleSensor, _money
+from custom_components.home_signals.appliance import ApplianceCycleSensor
+from custom_components.home_signals.money import money
 from custom_components.home_signals.const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
@@ -1431,9 +1432,9 @@ def test_money_is_said_the_way_people_say_it() -> None:
     it as "100p" would be the one string that is technically right and
     obviously wrong.
     """
-    assert _money(0.0) == "0p"
-    assert _money(0.08) == "8p"
-    assert _money(0.335) == "34p"
-    assert _money(0.996) == "£1.00"
-    assert _money(1.2) == "£1.20"
-    assert _money(12.5) == "£12.50"
+    assert money(0.0) == "0p"
+    assert money(0.08) == "8p"
+    assert money(0.335) == "34p"
+    assert money(0.996) == "£1.00"
+    assert money(1.2) == "£1.20"
+    assert money(12.5) == "£12.50"

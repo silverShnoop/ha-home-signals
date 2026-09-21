@@ -68,6 +68,7 @@ from .const import (
     PHASE_SPIN,
     PHASE_TUMBLE,
 )
+from .money import money as _money
 
 LOGGER = logging.getLogger(__name__)
 
@@ -100,25 +101,6 @@ def _number(hass: HomeAssistant, entity_id: str | None) -> float | None:
         return float(state.state)
     except (TypeError, ValueError):
         return None
-
-
-def _money(pounds: float) -> str:
-    """A cost the way somebody says it out loud: `33p`, or `£1.20`.
-
-    Assembled here rather than in the card because the switch between the
-    two is a rule about the number, and the card's value language has no
-    room for one -- a `suffix` cannot change its mind at a pound.
-
-    It sits *beside* the number rather than replacing it, which is the same
-    split `system_health` already makes between its rendered rows and its
-    raw lists: an agent asked what the wash cost wants `0.33`, and a panel
-    read from three metres away wants `33p`. One of them is derived from
-    the other on this line, so they cannot drift.
-    """
-    pence = round(pounds * 100)
-    if pence < 100:
-        return f"{pence}p"
-    return f"£{pence / 100:.2f}"
 
 
 def _is_on(hass: HomeAssistant, entity_id: str | None, default: bool) -> bool:

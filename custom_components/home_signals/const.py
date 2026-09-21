@@ -162,3 +162,45 @@ SERVICE_RESET = "reset"
 ATTR_ITEM_ID = "item_id"
 ATTR_HOURS = "hours"
 
+
+# --- What the day cost ------------------------------------------------
+#
+# Octopus publishes the previous complete day as one sensor whose `charges`
+# attribute carries every half-hour of it. That array is reduced once, here,
+# rather than by a template per tile.
+#
+# Two facts about the data decide the shape of everything downstream:
+#
+# It is not "yesterday". The reads land when Octopus gets them -- one day
+# behind, sometimes two -- so the sensor reports the date it is actually
+# describing and how late that is, and never the word.
+#
+# And there is no "now". A live house-wide figure needs an Octopus Home Mini
+# or Home Pro; without one the API has nothing for today at all. So today is
+# an optional pair of inputs rather than something this computes: point them
+# at the Home Mini's accumulative sensors and today appears, leave them empty
+# and it does not.
+CONF_ENERGY_COST_SENSOR = "energy_cost_sensor"
+CONF_ENERGY_TODAY_COST = "energy_today_cost"
+CONF_ENERGY_TODAY_KWH = "energy_today_kwh"
+
+# The hours the house is asleep, for the baseline. Whatever it is drawing
+# between midnight and six is the floor under every other figure, and it is
+# the one number in this whole integration that no tariff change touches.
+BASELINE_UNTIL_HOUR = 6
+
+# Past this, the reported day is stale and the sensor goes quiet rather than
+# showing Saturday's total on Thursday. A card that has stopped being updated
+# looks exactly like a card that is working, which is the failure worth
+# designing against -- and the panel already knows how to render nothing.
+ENERGY_STALE_DAYS = 3
+
+# Days of settled history kept for the rolling average, and the fewest that
+# may be called one. A mean of two days is not an average, it is two days.
+ENERGY_HISTORY_DAYS = 14
+ENERGY_MIN_DAYS_FOR_AVERAGE = 3
+
+# Within this, the day is "about the same" rather than up or down. Without a
+# band, a normal day reads as 3% down and the comparison becomes noise that
+# always says something.
+ENERGY_SAME_PCT = 5

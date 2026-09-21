@@ -94,6 +94,7 @@ from .appliance import (
     CleaningStatusSensor,
 )
 from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
+from .energy import EnergyDaySensor
 from .todo_done import TodoDoneTodaySensor
 
 LOGGER = logging.getLogger(__name__)
@@ -205,6 +206,7 @@ async def async_setup_entry(
         needs_you,
         SystemHealthSensor(entry),
         SecurityStatusSensor(entry),
+        EnergyDaySensor(entry),
     ]
 
     specs = _appliance_specs(entry)

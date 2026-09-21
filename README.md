@@ -162,6 +162,100 @@ and `automation` domains, are excluded from the offline count. They go
 unavailable constantly and nobody acts on it. Anything else noisy can be
 listed under "Never report these as offline".
 
+## `sensor.energy_day`
+
+What the house's electricity cost, reduced once. Octopus publishes the
+previous complete day as a single sensor whose `charges` attribute carries
+all forty-eight half-hours of it; everything a card or an assistant wants
+about that day is already in there, and reducing it here rather than in a
+card is the difference between one Python function and a template per tile.
+
+- **State** — the cost of the day being reported. `device_class: monetary`.
+- **`for_day`, `for_date`, `days_late`, `stale`** — which day that is.
+- **`kwh`, `usage`, `standing_p`, `peak_slot`, `peak_kwh`, `slots`**.
+- **`baseline_watts`, `baseline_share`** — what the house draws asleep.
+- **`recent_days`, `average_cost`, `average_kwh`, `vs_average_pct`,
+  `vs_average_text`** — the comparison that works without a live meter.
+- **`today_cost`, `today_kwh`, `same_time_cost`, `today_vs_pct`,
+  `today_vs_text`** — only where there is a live meter to read.
+
+### It is not "yesterday", and must never say so
+
+The source sensor is called `previous_accumulative_cost` and the obvious
+reading is yesterday. The reads land when Octopus gets them: one day behind,
+and quite often two — the first time this was looked at, on a Monday
+lunchtime, the freshest complete day was **Saturday**.
+
+So nothing here says the word. It reports the date it is actually
+describing, taken off the charges themselves, and publishes `days_late`
+beside it. Past `ENERGY_STALE_DAYS` the state goes to `unknown` and the cell
+disappears, because a figure that has stopped being updated looks exactly
+like one that is current — and that is the failure worth designing against,
+not the missing data.
+
+### What the house draws asleep
+
+`baseline_watts` is the mean of the midnight-to-six slots, and
+`baseline_share` is what that would be as a share of the whole day.
+
+It is the figure this turned out to be worth doing for. On the first day
+read, the house drew a steady **286 W** overnight and never dropped below
+234 W — 6.86 kWh held over a day, **48% of everything it used**, about £1.70
+a day. No tariff change touches that number and no price chart would ever
+have shown it; it falls out of the half-hours as a by-product.
+
+### There is no "now", and that is not something shaping can fix
+
+A live house-wide figure needs an **Octopus Home Mini** (or a Home Pro).
+Without one the API has nothing for today at all — the meter records
+half-hourly, but the consumption endpoint only serves days Octopus has
+already settled. Two smart plugs can say what the washing machine is doing;
+nothing in the house can say what the house is doing.
+
+So today is an optional pair of *inputs* rather than something this
+computes. Point `energy_today_cost` and `energy_today_kwh` at the Home
+Mini's accumulative sensors and today appears; leave them empty and the
+`today_*` attributes are **absent** rather than null, so a card renders a
+hole and an assistant can tell "not measured" from "measured as nothing".
+
+### Today against a whole yesterday is a trap
+
+At nine in the morning, *"today £1.20, yesterday £3.99"* reads as a good day
+and means nothing whatsoever. Every partial day beats every complete one.
+
+So today is compared against the settled day **up to the same time of day**,
+which is only possible because the half-hours are here to be cut. On the
+measured Saturday: £3.99 all in, but £1.68 by noon. A today sitting at £1.90
+is 13% **above** that — while against the whole day it reads as 52% under,
+and the card congratulates somebody for a day that is running hot.
+
+The comparison is named for the day it actually used — `about Sat 19 Sep` —
+because on a two-day lag "vs yesterday" would be wrong twice a week.
+
+### The average is the comparison that always works
+
+Without a Home Mini there is no today, but "is this day normal?" is still
+answerable: the settled day against the house's own recent average.
+
+`recent_days` is a rolling fortnight, kept across a restart. It is the one
+thing here that cannot be recomputed — the source sensor only ever holds a
+single day, so the average has to be accumulated as the days go past, and
+losing it on every restart would lose the only comparison available, every
+time Home Assistant updates. It is restored from the published attribute
+rather than through `ExtraStoredData`, the same way `pending` and `finished`
+come back on the appliances: the rows are worth publishing anyway, so there
+is no second copy to keep in step.
+
+Two rules keep it honest. **A day is never in its own average** — included,
+it is measured partly against itself, and four days of £1 beside one of £2
+puts the average at £1.20 and calls the spike 67% up when it is double. And
+**fewer than `ENERGY_MIN_DAYS_FOR_AVERAGE` days is not an average**, it is
+some days; below that the comparison is absent rather than invented.
+
+There is also a band, `ENERGY_SAME_PCT`. Without it a perfectly ordinary day
+reads as "3% down", and a comparison that always has something to say is one
+nobody reads.
+
 ## `sensor.washing_machine_cycle` (and the tumble dryer)
 
 Whether an appliance is running, worked out from nothing but the watts its
@@ -512,6 +606,22 @@ actions are actions.
 Install through HACS, restart once so Home Assistant picks up the new
 component, then add **Home Signals** from Settings → Devices & Services and
 choose the entities to watch, point Needs you at your bin and chore sensors, and pick the locks and door contacts the security light should hold to account. Everything is editable afterwards via Configure.
+
+### What to point at Octopus
+
+Four of the settings expect a tariff integration, and nothing here knows it
+is Octopus — any sensor of the right shape will do, which is why they are
+configured rather than found.
+
+| Setting | Octopus entity | Without it |
+| --- | --- | --- |
+| `rate_sensor` | `..._current_rate` | A cycle records its kWh and no cost |
+| `energy_cost_sensor` | `..._previous_accumulative_cost` | No `sensor.energy_day` at all |
+| `energy_today_cost` | `..._current_accumulative_cost` | No today; the average still works |
+| `energy_today_kwh` | `..._current_accumulative_consumption` | As above |
+
+The last two need an **Octopus Home Mini** or Home Pro. The first two work
+on any account.
 
 ### A note on choosing motion sensors
 
