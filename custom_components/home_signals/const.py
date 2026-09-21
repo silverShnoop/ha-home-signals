@@ -92,6 +92,15 @@ CONF_DRYER_PLUG = "dryer_plug"
 CONF_DRYER_DOOR = "dryer_door"
 CONF_DRYER_ENERGY = "dryer_energy"
 
+# What a kWh costs, right now. One sensor for the house rather than one per
+# machine: the price of electricity is not a property of the washing machine,
+# and two copies of it would be two things to point at a new tariff.
+#
+# Octopus publishes it as `sensor.octopus_energy_electricity_<meter>_current_rate`
+# in GBP/kWh, but nothing here knows that -- any sensor reading money per unit
+# will do, which is the whole reason it is configured rather than found.
+CONF_RATE_SENSOR = "rate_sensor"
+
 # Enter fast, leave slow. Crossing START is decisive and instant; dropping
 # below IDLE only counts once it has held for IDLE_MINUTES, because the gaps
 # inside a wash are minutes long and are not the end of anything.
@@ -153,3 +162,86 @@ SERVICE_RESET = "reset"
 ATTR_ITEM_ID = "item_id"
 ATTR_HOURS = "hours"
 
+
+# --- What the day cost ------------------------------------------------
+#
+# Octopus publishes the previous complete day as one sensor whose `charges`
+# attribute carries every half-hour of it. That array is reduced once, here,
+# rather than by a template per tile.
+#
+# Two facts about the data decide the shape of everything downstream:
+#
+# It is not "yesterday". The reads land when Octopus gets them -- one day
+# behind, sometimes two -- so the sensor reports the date it is actually
+# describing and how late that is, and never the word.
+#
+# And there is no "now". A live house-wide figure needs an Octopus Home Mini
+# or Home Pro; without one the API has nothing for today at all. So today is
+# an optional pair of inputs rather than something this computes: point them
+# at the Home Mini's accumulative sensors and today appears, leave them empty
+# and it does not.
+CONF_ENERGY_COST_SENSOR = "energy_cost_sensor"
+CONF_ENERGY_TODAY_COST = "energy_today_cost"
+CONF_ENERGY_TODAY_KWH = "energy_today_kwh"
+
+# The hours the house is asleep, for the baseline. Whatever it is drawing
+# between midnight and six is the floor under every other figure, and it is
+# the one number in this whole integration that no tariff change touches.
+BASELINE_UNTIL_HOUR = 6
+
+# Past this, the reported day is stale and the sensor goes quiet rather than
+# showing Saturday's total on Thursday. A card that has stopped being updated
+# looks exactly like a card that is working, which is the failure worth
+# designing against -- and the panel already knows how to render nothing.
+ENERGY_STALE_DAYS = 3
+
+# Days of settled history kept, and the fewest that may be called an average.
+# A mean of two days is not an average, it is two days.
+#
+# Five weeks rather than two, so a month window has a month to average over
+# and still has room for the days Octopus delivers late or not at all.
+ENERGY_HISTORY_DAYS = 35
+ENERGY_MIN_DAYS_FOR_AVERAGE = 3
+
+# The two windows a person actually compares a day against: "is this a normal
+# week for us" and "is this a normal month". Both are trailing and both
+# exclude the day being judged -- see _window.
+ENERGY_WEEK_DAYS = 7
+ENERGY_MONTH_DAYS = 30
+
+# How many days the card's chart draws. Shorter than the history on purpose:
+# thirty-five bars across a card read from a doorway is a texture, not a
+# shape, and the history exists to be averaged rather than drawn.
+ENERGY_SERIES_DAYS = 14
+
+# The floor's norm looks at the trailing fortnight, not the whole history.
+# A norm over five weeks would absorb a slow creep and keep reporting it as
+# normal; over a fortnight it tracks the drift, so only a real spike fires
+# the row. The creep itself is a different question, answered by comparing
+# the last week of nights against the week before -- see `baseline_trend_pct`.
+ENERGY_NORM_DAYS = 14
+
+# Within this, the day is "about the same" rather than up or down. Without a
+# band, a normal day reads as 3% down and the comparison becomes noise that
+# always says something.
+ENERGY_SAME_PCT = 5
+
+# --- Something was left on overnight ----------------------------------
+#
+# The baseline is the floor under every other figure, so a night whose floor
+# is well above the usual one is a thing that was left running. This is the
+# one signal in the house that no tariff change touches and no price chart
+# would ever have shown.
+#
+# It is deliberately LATE and says so. Without a live meter the settled day
+# arrives one or two days behind, so the row names the night it is about
+# rather than implying "now" -- see the row's detail. Once a today source
+# exists (a Home Mini, or Hildebrand's Usage Today read at six in the
+# morning) the same comparison becomes near-live with no change here.
+CONF_BASELINE_EXCESS_PCT = "baseline_excess_pct"
+DEFAULT_BASELINE_EXCESS_PCT = 40
+
+# Nights needed before there is a "usual" at all. More than the cost average
+# wants: a floor is the quietest number the house produces, so a norm built
+# from three of them is one odd night away from being wrong.
+ENERGY_MIN_DAYS_FOR_NORM = 5
