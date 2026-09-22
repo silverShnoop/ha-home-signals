@@ -233,6 +233,8 @@ card is the difference between one Python function and a template per tile.
 - **`for_day`, `for_date`, `days_late`, `stale`** — which day that is.
 - **`kwh`, `usage`, `standing_p`, `standing_cost_year`, `peak_slot`,
   `peak_kwh`, `slots`**.
+- **`block_names`, `block_hours`, `block_kwh`, `block_cost`, `block_days`** —
+  the day in four six-hour blocks, and the last seven days of them.
 - **`baseline_watts`, `baseline_share`** — what the house draws asleep.
 - **`week_*`, `month_*`, `vs_week_*`, `vs_month_*`** — the day against its
   own two windows; the comparison that works without a live meter.
@@ -410,6 +412,56 @@ of nights against the median of the week before. Seven nights at 280 W
 followed by seven at 340 W is a 21% trend and *not* a spike, and the pair of
 figures is what tells those apart. It needs a fortnight of nights before it
 says anything.
+
+#### Where the power went, and roughly when
+
+A day's total says nothing about the day. Two days at the same total can be
+a morning of laundry and an evening of the oven, and only one of those is
+something anybody would change. So the day is also cut into four even
+six-hour blocks:
+
+```
+block_names  ["Overnight", "Morning", "Afternoon", "Evening"]
+block_kwh    [1.72, 5.08, 4.29, 3.08]
+block_cost   [0.43, 1.26, 1.06, 0.76]
+```
+
+Even sixes rather than the hours a person would name — "morning" is not six
+o'clock to everybody — because the four are meant to be **compared**, and
+blocks of different length cannot be.
+
+They **sum to the day's own usage**, by construction: they are the same
+half-hours counted once each. Nothing is projected or apportioned, which is
+the difference between these and `baseline_watts` — that takes the overnight
+*rate* and asks what a whole day of it would cost. Both are true; only one
+of them adds up, and only the one that adds up can be stacked.
+
+`block_days` carries the last seven days the same way, oldest first, each
+with its own totals already rendered. Seven rather than fourteen: every
+column carries four segments and two lines of figures beneath it, and a
+fortnight of those is a texture rather than a week you can read.
+
+#### Recovering the days nobody was writing down
+
+The source sensor holds one day at a time, so a week of blocks would
+normally take a week to arrive — and every figure added here would start
+empty on the day it shipped.
+
+But Home Assistant has been recording that sensor's states all along,
+attributes and all, and its attributes **are** the forty-eight half-hours.
+So on startup the last `ENERGY_BACKFILL_DAYS` of its own history are read
+back and put through the *same parser* that reads it live. A second reader
+for old days would be a second thing to keep right.
+
+Deliberately the sensor's own history rather than the statistics Octopus
+also publishes: those would have to be addressed by a statistic id this
+integration would have to know how to construct, and nothing here knows it
+is talking to Octopus. This reads the entity it was already configured with.
+
+It is best effort and runs off the startup path. No recorder, an excluded
+entity, a purge that has already been past — each means fewer columns, which
+the card already draws correctly, and none of them is worth a slow or broken
+startup.
 
 #### The arrays are shaped here, not in the card
 

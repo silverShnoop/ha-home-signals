@@ -50,6 +50,10 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     BASELINE_UNTIL_HOUR,
+    BLOCK_HOURS,
+    BLOCK_NAMES,
+    ENERGY_BACKFILL_DAYS,
+    ENERGY_BLOCK_DAYS,
     CONF_ENERGY_COST_SENSOR,
     CONF_ENERGY_TODAY_COST,
     CONF_ENERGY_TODAY_KWH,
@@ -256,6 +260,76 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
     def _async_started(self, _hass: HomeAssistant) -> None:
         self._recompute()
         self.async_write_ha_state()
+        # Off the startup path on purpose: reading a week of one entity's
+        # recorded states is a database round trip, and nothing on the panel
+        # should wait on it. The card renders whatever days it has and grows
+        # a moment later.
+        self.hass.async_create_task(self._async_backfill())
+
+    async def _async_backfill(self) -> None:
+        """Recover the days that went past before anybody was writing them down.
+
+        The source sensor holds a single day, so history here is normally
+        accumulated one day at a time and a week of blocks takes a week to
+        arrive. But Home Assistant has been recording that sensor's own
+        states all along, attributes and all -- and its attributes are the
+        forty-eight half-hours. So the past is recoverable by reading the
+        same sensor's earlier states and putting them through the same
+        parser that reads it now.
+
+        Deliberately the sensor's own history rather than the statistics
+        Octopus also publishes: those would have to be addressed by a
+        statistic id this integration would have to know how to construct,
+        and nothing here knows it is talking to Octopus. This reads the
+        entity it was already configured with.
+
+        Best effort throughout. No recorder, an excluded entity, a purge
+        that has already been past -- all of them mean fewer columns, which
+        the card already renders correctly, and none of them is worth a
+        broken startup.
+        """
+        source = self._option(CONF_ENERGY_COST_SENSOR)
+        if not source:
+            return
+        try:
+            from homeassistant.components.recorder import get_instance, history
+        except ImportError:  # pragma: no cover - recorder is optional
+            LOGGER.debug("No recorder; skipping the backfill")
+            return
+
+        start = dt_util.now() - timedelta(days=ENERGY_BACKFILL_DAYS)
+        try:
+            states = await get_instance(self.hass).async_add_executor_job(
+                lambda: history.state_changes_during_period(
+                    self.hass, start, dt_util.now(), source, include_start_time_state=True
+                )
+            )
+        except Exception:  # noqa: BLE001 - see the docstring; never fatal
+            LOGGER.debug("Could not read %s's history for a backfill", source,
+                         exc_info=True)
+            return
+
+        found = 0
+        for state in states.get(source, []):
+            day = self._day_from(state.attributes)
+            if day is None:
+                continue
+            stamp = day["day"].isoformat()
+            known = next((r for r in self._history if r["day"] == stamp), None)
+            # A day already carrying blocks is left alone: it was read live,
+            # from the same attributes, and re-reading it changes nothing.
+            if known is not None and isinstance(known.get("block_cost"), list):
+                continue
+            self._remember(day)
+            found += 1
+
+        if found:
+            LOGGER.info(
+                "Recovered %s earlier day(s) of half-hours from the recorder", found
+            )
+            self.async_write_ha_state()
+
+    @callback
 
     @callback
     def _async_changed(self, _event: Event[EventStateChangedData]) -> None:
@@ -269,21 +343,22 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
 
     # --- reading the day ----------------------------------------------
 
-    def _slots(self) -> list[tuple[datetime, float, float]] | None:
+    def _slots_from(
+        self, attrs: Any
+    ) -> list[tuple[datetime, float, float]] | None:
         """The day's half-hours as `(local start, kWh, cost)`, in clock order.
+
+        Takes the attributes rather than reading the state itself, so a day
+        recovered from the recorder goes through exactly the same parse as a
+        day arriving live -- see `_async_backfill`. A second reader for old
+        days would be a second thing to keep right.
 
         Anything malformed is skipped rather than raised on. Octopus owns the
         shape of its own sensor and is free to change it; a house whose panel
         goes quiet when that happens is behaving correctly, and one that
         throws on every state change is not.
         """
-        source = self._option(CONF_ENERGY_COST_SENSOR)
-        if not source:
-            return None
-        state = self.hass.states.get(source)
-        if state is None or state.state in _NOT_A_READING:
-            return None
-        charges = state.attributes.get("charges")
+        charges = attrs.get("charges") if hasattr(attrs, "get") else None
         if not isinstance(charges, list):
             return None
         slots: list[tuple[datetime, float, float]] = []
@@ -309,13 +384,19 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
 
     def _read_day(self) -> dict[str, Any] | None:
         """Reduce the settled day to the handful of figures anybody wants."""
-        slots = self._slots()
+        state = self.hass.states.get(self._option(CONF_ENERGY_COST_SENSOR))
+        if state is None or state.state in _NOT_A_READING:
+            return None
+        return self._day_from(state.attributes)
+
+    def _day_from(self, attrs: Any) -> dict[str, Any] | None:
+        """The same reduction, over any copy of those attributes.
+
+        What the backfill puts old days through -- see `_async_backfill`.
+        """
+        slots = self._slots_from(attrs)
         if slots is None:
             return None
-        state = self.hass.states.get(self._option(CONF_ENERGY_COST_SENSOR))
-        if state is None:
-            return None
-        attrs = state.attributes
 
         day = slots[0][0].date()
         kwh = sum(row[1] for row in slots)
@@ -339,6 +420,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
 
         peak = max(slots, key=lambda row: row[1])
         same_kwh, same_cost = self._same_time(slots)
+        block_kwh, block_cost = self._blocks(slots)
 
         return {
             "day": day,
@@ -355,6 +437,8 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             "standing_p": None if standing is None else round(standing * 100),
             "baseline_watts": baseline_watts,
             "baseline_share": baseline_share,
+            "block_kwh": block_kwh,
+            "block_cost": block_cost,
             "peak_slot": f"{peak[0]:%H:%M}",
             "peak_kwh": round(peak[1], 3),
             # Forty-eight on an ordinary day; forty-six or fifty when the
@@ -363,6 +447,33 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # looks low.
             "slots": len(slots),
         }
+
+    def _blocks(
+        self, slots: list[tuple[datetime, float, float]]
+    ) -> tuple[list[float], list[float]]:
+        """The day as four six-hour blocks: kWh and cost, in clock order.
+
+        The reason this is worth having at all is that a day's total says
+        nothing about the day. Two days at the same total can be a morning
+        of laundry and an evening of the oven, and only one of those is a
+        thing anybody would change.
+
+        Blocks sum to the day's own usage by construction, because they are
+        the same slots counted once each -- which is what makes a stacked
+        column honest. Nothing is projected or apportioned here; that is the
+        difference between this and `baseline_watts`, which takes the
+        overnight RATE and asks what a day of it would be.
+        """
+        kwh = [0.0] * len(BLOCK_NAMES)
+        cost = [0.0] * len(BLOCK_NAMES)
+        for start, slot_kwh, slot_cost in slots:
+            index = min(start.hour // BLOCK_HOURS, len(BLOCK_NAMES) - 1)
+            kwh[index] += slot_kwh
+            cost[index] += slot_cost
+        return (
+            [round(v, 3) for v in kwh],
+            [round(v, 2) for v in cost],
+        )
 
     def _same_time(
         self, slots: list[tuple[datetime, float, float]]
@@ -394,6 +505,8 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 row["cost"] = day["cost"]
                 row["kwh"] = day["kwh"]
                 row["baseline_watts"] = day["baseline_watts"]
+                row["block_kwh"] = day["block_kwh"]
+                row["block_cost"] = day["block_cost"]
                 return
         self._history.insert(0, {
             "day": stamp,
@@ -403,6 +516,11 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # draw asleep" is the question a single night cannot answer and a
             # fortnight can.
             "baseline_watts": day["baseline_watts"],
+            # The four blocks, kept per day for the same reason the floor
+            # is: the source holds one day, so a week of them can only be
+            # had by writing each one down as it goes past.
+            "block_kwh": day["block_kwh"],
+            "block_cost": day["block_cost"],
         })
         self._history.sort(key=lambda row: row["day"], reverse=True)
         del self._history[ENERGY_HISTORY_DAYS:]
@@ -532,6 +650,42 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         ]:
             parsed = dt_util.parse_datetime(f"{row['day']}T00:00:00")
             out.append(f"{parsed:%a}"[0] if parsed else "")
+        return out
+
+    def _block_days(self) -> list[dict[str, Any]]:
+        """The last few days as four blocks each, oldest first.
+
+        Shaped here rather than in the card, like every other array this
+        publishes: the card draws a column per entry and prints the two
+        totals underneath, and knows nothing about what a block is.
+
+        Days without blocks are dropped rather than zero-filled. A column of
+        four empty segments under a real date reads as a day the house used
+        nothing, which is never true -- and those rows only exist from
+        before this figure did, or from a day the backfill could not reach.
+        """
+        rows = [
+            row
+            for row in sorted(self._history, key=lambda r: r["day"])
+            if isinstance(row.get("block_cost"), list)
+            and isinstance(row.get("block_kwh"), list)
+            and len(row["block_cost"]) == len(BLOCK_NAMES)
+        ][-ENERGY_BLOCK_DAYS:]
+        out = []
+        for row in rows:
+            cost = [_as_float(v) or 0.0 for v in row["block_cost"]]
+            kwh = [_as_float(v) or 0.0 for v in row["block_kwh"]]
+            parsed = dt_util.parse_datetime(f"{row['day']}T00:00:00")
+            total = round(sum(cost), 2)
+            out.append({
+                "day": row["day"],
+                "label": f"{parsed:%a}" if parsed else "",
+                "cost": [round(v, 2) for v in cost],
+                "kwh": [round(v, 3) for v in kwh],
+                "total_cost": total,
+                "total_cost_text": money(total),
+                "total_kwh": round(sum(kwh), 1),
+            })
         return out
 
     def _split(self, day: dict[str, Any]) -> dict[str, Any]:
@@ -784,6 +938,14 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # Plain arrays, oldest first, for a chart to read straight off.
             # Shaped here rather than in the card for the reason nothing in
             # this house is shaped in a card.
+            # Where the power went and roughly when: a column per day, four
+            # blocks each. The names ride along so the card does not have to
+            # know that a block is six hours.
+            "block_names": list(BLOCK_NAMES),
+            "block_hours": BLOCK_HOURS,
+            "block_kwh": day["block_kwh"],
+            "block_cost": day["block_cost"],
+            "block_days": self._block_days(),
             "cost_series": self._series("cost", 2),
             "kwh_series": self._series("kwh", 3),
             "baseline_series": self._series("baseline_watts", 0),
