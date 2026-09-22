@@ -73,9 +73,10 @@ a dashboard that is permanently red stops being read.
 
 What it reports, each optional and off unless configured: bins out (only the
 evening before, when it is actionable), overdue chores, batteries under a
-threshold one row each, water softener salt, and everything offline as a
-**single** row — twenty-seven unavailable entities is one problem, an
-integration being down, and twenty-seven rows would bury everything else.
+threshold one row each, water softener salt, three things a heating zone
+can ask for (see below), and everything offline as a **single** row —
+twenty-seven unavailable entities is one problem, an integration being
+down, and twenty-seven rows would bury everything else.
 
 ### Water softener salt
 
@@ -220,6 +221,133 @@ Entities in an entity category, and the `update`, `button`, `scene`, `script`
 and `automation` domains, are excluded from the offline count. They go
 unavailable constantly and nobody acts on it. Anything else noisy can be
 listed under "Never report these as offline".
+
+## `sensor.house_climate`
+
+Every room at once, for the one card that compares them.
+
+The per-room climate cards are controls: one room, its dial, its schedule.
+Comparing six of them means holding six numbers in your head. This answers
+the other question — which room is the odd one — and it is a different card
+because it is a different question.
+
+- **State** — how many rooms are being reported. Not a temperature: there is
+  no one number for a house, and the mean of ten rooms is a figure true of
+  none of them. A count also tells a card that ten zones are configured and
+  none can be read, which is a different silence from an empty
+  configuration.
+- **`rooms`** — the rows, each in the Spectra `list` contract: `name`,
+  `value` (`21.0° · 52%`), `sub` (`Target 20.0° · heating 40%`) and a `bar`.
+  Plus the raw `temperature`, `humidity`, `target`, `dew_point`, `heating`,
+  `window_open` and `manual`, because an agent asking how warm the study is
+  wants a number, not a sentence assembled for a card.
+- **`scale`, `coldest`, `warmest`, `spread`, `heating_count`,
+  `windows_open`, `manual`** — the house in one line.
+- **`outdoor`, `ventilation`** — only where there are outdoor sensors.
+
+### One source, and it is the one that controls the heating
+
+This house has a second thermometer in three of its ten rooms, and the two
+disagree: 3.7° in the kitchen, 1.8° in the toilet. Same sign, different
+size, which is not an offset anything can correct for generically.
+
+So the reading is the zone's own. A room is at its target when the thing
+holding the valve open thinks it is, and any other thermometer is describing
+a room the heating is not listening to. Averaging the two would publish a
+temperature no device in the room has ever read, and the number a card
+showed could not be traced back to anything.
+
+### Sorted by shortfall, not by temperature
+
+A 17° hall nobody heats is not a problem. A 17° study asked for 21° is. The
+comparison is read to find the room that is wrong, so the room that is wrong
+sorts to the top — and rooms that are off have nothing to be short of, so
+they sort after the rest by their own temperature.
+
+An off zone reports **no target**. Tado's off is a frost setting of 5°, and
+reporting it as a target would put every off room at the bottom of the list
+as if somebody had asked for it.
+
+### The scale is fixed, and it is not a heat map
+
+Every room is drawn against the same two ends, set in the options rather
+than fitted to the day's own spread. A scale that moves with the data puts
+the coldest room in the same place on the bar every morning whatever it
+reads, and makes this morning's card and last week's two different pictures.
+Rooms outside the scale clamp, which is honest because the row states the
+number as well.
+
+There is no warm-to-cool colour ramp, and there cannot be: yellow, orange
+and red are the three levels, and a red bar on a warm room would be a card
+claiming an alarm by naming a hue. Position on a shared scale carries the
+comparison instead — which survives a kitchen at an angle better than a hue
+step does anyway.
+
+### Dew point, and the one question relative humidity answers backwards
+
+`dew_point` is the number behind every damp problem in a house: a wall
+colder than it grows mould. It is also the only way to compare a warm humid
+room with a cold one, because 60% at 21° and 60% at 15° are five degrees of
+dew apart.
+
+With outdoor sensors configured, `ventilation` answers the question people
+get wrong: **would opening a window dry the house out, or wet it?** Asked of
+the dampest room, because that is the window somebody would actually open,
+and answered in grams of water per cubic metre — 70% outside at 8° holds
+less water than 55% inside at 21°, so the window dries. Read the two
+percentages alone and you would shut it.
+
+No outdoor sensors, no answer. A forecast for the region is a different
+place, and a ventilation sentence about a measurement nobody took is worse
+than a hole.
+
+### Nothing here carries a level
+
+A cold room, an open window, a zone held on manual: all true, none of them a
+promise that something wants doing. They are facts, they live in a room's
+own line, and the card that draws them stays uncoloured.
+
+Three of them become jobs, and those are `Needs you` rows built in
+`derived.py` with every other job in the house:
+
+| Row | Level | Why |
+| --- | --- | --- |
+| Heating an open window | `waiting` | the gas is going out of it now, and will until somebody shuts it |
+| Still on manual after a day | `attention` | the schedule has stopped running; nothing is being damaged and it keeps |
+| Radiator may be stuck | `waiting` | calling for heat without moving the room — air, a seized pin, a valve reporting an open it has not |
+
+An open window **on its own** is not a row. A window is open for good
+reasons half the year, and a row for every one of them is a list nobody
+reads. It is only a job when the heating is running into it.
+
+An open window also **excuses** the stuck radiator rather than raising a
+second row: the room has an obvious reason not to be warming, and two rows
+for one cold room is how a list stops being read.
+
+The override row's action is `climate.set_hvac_mode` to `auto` — the same
+press as the schedule button on the room's own card, which is correct and
+not a coincidence: a zone is driven by its schedule or held by an overlay,
+and off is itself an overlay.
+
+### The companions are found by what they are, not what they are called
+
+A zone's window contact, override flag and heating percentage sit on the
+same device, and they are found through the registry: the binary sensor with
+the `window` device class, the one whose unique id is the zone's overlay,
+and the only percentage on the device that is not a humidity or a battery.
+
+`sensor.<zone>_heating` is true of this house today and is not a promise
+anything made — an entity renamed in the UI keeps its unique id and loses
+its suffix, and a room whose id was taken by a bulb never had the suffix at
+all. A name is also translated, and "Overlay" is a word Tado chose in one
+language.
+
+### The stuck-radiator run is not restored
+
+A radiator's run is held in memory, so after a restart the timer starts
+again and a radiator stuck since before the reboot is reported late. That is
+the right way round: the alternative is claiming a radiator was stuck
+through an outage nobody was watching.
 
 ## `sensor.energy_day`
 

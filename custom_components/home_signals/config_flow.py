@@ -17,6 +17,19 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_BASELINE_EXCESS_PCT,
+    CONF_CLIMATE_MANUAL_HOURS,
+    CONF_CLIMATE_SCALE_MAX,
+    CONF_CLIMATE_SCALE_MIN,
+    CONF_CLIMATE_STUCK_MINUTES,
+    CONF_CLIMATE_STUCK_RISE,
+    CONF_CLIMATE_ZONES,
+    CONF_OUTDOOR_HUMIDITY,
+    CONF_OUTDOOR_TEMP,
+    DEFAULT_CLIMATE_MANUAL_HOURS,
+    DEFAULT_CLIMATE_SCALE_MAX,
+    DEFAULT_CLIMATE_SCALE_MIN,
+    DEFAULT_CLIMATE_STUCK_MINUTES,
+    DEFAULT_CLIMATE_STUCK_RISE,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
     CONF_DRYER_DOOR,
@@ -299,6 +312,103 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 selector.NumberSelectorConfig(
                     min=10, max=200, step=5, mode=selector.NumberSelectorMode.BOX,
                     unit_of_measurement="%",
+                )
+            ),
+            # --- Climate -------------------------------------------
+            #
+            # The heating zones, and only the heating zones. A room's
+            # temperature is read off the thing that controls it rather
+            # than off whatever else happens to be in the room, so this
+            # takes climate entities and there is no second source to
+            # configure. Leave it empty and House climate reports nothing
+            # and raises no rows.
+            vol.Optional(
+                CONF_CLIMATE_ZONES, default=defaults.get(CONF_CLIMATE_ZONES, [])
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="climate", multiple=True)
+            ),
+            # The two ends of the bar every room is drawn against. Fixed
+            # rather than fitted to the day, so this morning's card and
+            # last week's are the same picture.
+            vol.Optional(
+                CONF_CLIMATE_SCALE_MIN,
+                default=defaults.get(
+                    CONF_CLIMATE_SCALE_MIN, DEFAULT_CLIMATE_SCALE_MIN
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=25, step=1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="°C",
+                )
+            ),
+            vol.Optional(
+                CONF_CLIMATE_SCALE_MAX,
+                default=defaults.get(
+                    CONF_CLIMATE_SCALE_MAX, DEFAULT_CLIMATE_SCALE_MAX
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=15, max=40, step=1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="°C",
+                )
+            ),
+            # How long a radiator may call for heat without the room
+            # moving, and how little movement counts. Not "did the room get
+            # warm" -- whether it moved at all.
+            vol.Optional(
+                CONF_CLIMATE_STUCK_MINUTES,
+                default=defaults.get(
+                    CONF_CLIMATE_STUCK_MINUTES, DEFAULT_CLIMATE_STUCK_MINUTES
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=10, max=180, step=5, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="min",
+                )
+            ),
+            vol.Optional(
+                CONF_CLIMATE_STUCK_RISE,
+                default=defaults.get(
+                    CONF_CLIMATE_STUCK_RISE, DEFAULT_CLIMATE_STUCK_RISE
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0.1, max=2, step=0.1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="°C",
+                )
+            ),
+            # How long an override has to have been held before it counts
+            # as a schedule that has stopped running rather than an
+            # afternoon somebody meant.
+            vol.Optional(
+                CONF_CLIMATE_MANUAL_HOURS,
+                default=defaults.get(
+                    CONF_CLIMATE_MANUAL_HOURS, DEFAULT_CLIMATE_MANUAL_HOURS
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1, max=168, step=1, mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="h",
+                )
+            ),
+            # Outside, measured here. Optional: without it the rooms are
+            # unchanged and the ventilation answer is absent rather than
+            # estimated from a forecast for the region, which is a
+            # different place.
+            vol.Optional(
+                CONF_OUTDOOR_TEMP,
+                default=defaults.get(CONF_OUTDOOR_TEMP, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class="temperature"
+                )
+            ),
+            vol.Optional(
+                CONF_OUTDOOR_HUMIDITY,
+                default=defaults.get(CONF_OUTDOOR_HUMIDITY, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class="humidity"
                 )
             ),
             # What a kWh costs, in money per unit -- Octopus publishes it

@@ -56,6 +56,13 @@ from .const import (
     LEVEL_WAITING,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
+    CONF_CLIMATE_MANUAL_HOURS,
+    CONF_CLIMATE_STUCK_MINUTES,
+    CONF_CLIMATE_STUCK_RISE,
+    CONF_CLIMATE_ZONES,
+    DEFAULT_CLIMATE_MANUAL_HOURS,
+    DEFAULT_CLIMATE_STUCK_MINUTES,
+    DEFAULT_CLIMATE_STUCK_RISE,
     CONF_PEOPLE,
     CONF_PRESENCE_GRACE_MINUTES,
     DEFAULT_PRESENCE_GRACE_MINUTES,
@@ -80,6 +87,7 @@ from .const import (
     SOURCE_UI,
     SERVICE_SNOOZE,
 )
+from .rooms import read_zones, zone_companions
 
 LOGGER = logging.getLogger(__name__)
 
@@ -180,6 +188,36 @@ def _snooze(item_id: str, hours: int = 8) -> dict[str, Any]:
     """
     return {"service": f"{DOMAIN}.{SERVICE_SNOOZE}",
             "data": {ATTR_ITEM_ID: item_id, ATTR_HOURS: hours}}
+
+
+def _open_for(since: datetime) -> str:
+    """`Open 12m` — how long, not when.
+
+    A window is judged by how long it has been open; the clock time it
+    happened at is something you would have to do arithmetic on.
+    """
+    minutes = int((dt_util.utcnow() - since).total_seconds() // 60)
+    if minutes < 60:
+        return f"Open {max(minutes, 1)}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"Open {hours}h {minutes % 60:02d}m"
+    return f"Open {hours // 24}d {hours % 24}h"
+
+
+def _since_text(when: datetime) -> str:
+    """`Tuesday`, or `14:20` for something that happened today.
+
+    A weekday is what somebody can check against their own memory; "6 days
+    ago" is a number they would have to convert back into one.
+    """
+    local = dt_util.as_local(when)
+    now = dt_util.now()
+    if local.date() == now.date():
+        return f"{local:%H:%M}"
+    if (now - local) < timedelta(days=7):
+        return f"{local:%A}"
+    return f"{local:%a} {local.day} {local:%b}"
 
 
 class _Derived(SensorEntity):
@@ -330,6 +368,30 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # start again at every reboot and a tracker quiet since breakfast
         # would never get past it.
         self._dark_since: dict[str, datetime] = {}
+        # zone -> when it started calling for heat, and what the room read
+        # then. Held in memory rather than restored: after a restart the
+        # run starts again, which understates a radiator that has been
+        # stuck since before the reboot. That is the right way round --
+        # the alternative is claiming a radiator was stuck through an
+        # outage nobody was watching.
+        self._heating_runs: dict[str, tuple[datetime, float]] = {}
+
+    def _watched(self) -> list[str]:
+        """The base list, plus everything the climate rows read.
+
+        A window opening is the one job in here somebody may be standing
+        in front of when it happens, and waiting out a five-minute timer
+        for the row to appear would teach them the row is unreliable.
+        """
+        watched = set(super()._watched())
+        for zone in self._option(CONF_CLIMATE_ZONES, []) or []:
+            watched.add(zone)
+            watched.update(
+                entity_id
+                for entity_id in zone_companions(self.hass, zone).values()
+                if entity_id
+            )
+        return sorted(watched)
 
     async def async_added_to_hass(self) -> None:
         """Restore suppressions, then recompute so a restart does not un-dismiss.
@@ -416,6 +478,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # Electricity card reads them -- what leaves is the claim that
         # they were a job.
         candidates.extend(self._appliances())
+        candidates.extend(self._climate())
         candidates.extend(self._people())
         candidates.extend(self._offline())
 
@@ -655,6 +718,176 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             if state.attributes.get("slug") and "pending_count" in state.attributes:
                 found.append(state.entity_id)
         return found
+
+    def _climate(self) -> list[dict[str, Any]]:
+        """The three things a heating zone can ask a person for.
+
+        Everything else the zones report is a fact and lives on the House
+        climate card: how warm each room is, what it was asked for, which
+        windows are open. A cold room is not a job — somebody would have to
+        be asked to do something about it, and turning the heating up is not
+        something this gets to decide.
+
+        What is here are the three states where the house is spending gas or
+        has stopped listening to its own schedule, and only a person can end
+        it.
+        """
+        zones = self._option(CONF_CLIMATE_ZONES, []) or []
+        if not zones:
+            return []
+
+        stuck_minutes = float(
+            self._option(CONF_CLIMATE_STUCK_MINUTES, DEFAULT_CLIMATE_STUCK_MINUTES)
+        )
+        stuck_rise = float(
+            self._option(CONF_CLIMATE_STUCK_RISE, DEFAULT_CLIMATE_STUCK_RISE)
+        )
+        manual_hours = float(
+            self._option(CONF_CLIMATE_MANUAL_HOURS, DEFAULT_CLIMATE_MANUAL_HOURS)
+        )
+
+        now = dt_util.utcnow()
+        rows: list[dict[str, Any]] = []
+        live: set[str] = set()
+
+        for reading in read_zones(self.hass, zones):
+            zone = reading["entity_id"]
+            name = reading["name"]
+            live.add(zone)
+
+            rows.extend(self._window_row(reading, name))
+            rows.extend(self._manual_row(reading, name, now, manual_hours))
+            rows.extend(
+                self._stuck_row(reading, name, now, stuck_minutes, stuck_rise)
+            )
+
+        # A zone that has gone unreadable keeps no run. Its radiator may well
+        # still be calling, but the timer would then be measuring an
+        # integration outage rather than a radiator.
+        for gone in [zone for zone in self._heating_runs if zone not in live]:
+            del self._heating_runs[gone]
+        return rows
+
+    def _window_row(self, reading: dict[str, Any], name: str) -> list[dict[str, Any]]:
+        """Heating into an open window.
+
+        WAITING, not attention: the gas is going out of the window now, and
+        it goes on doing so until somebody shuts it. An open window on its
+        own is neither — a window is open for good reasons half the year,
+        and a row for every one of them is a list nobody reads.
+
+        The snooze is an hour and is labelled for the case it exists for:
+        airing a room deliberately with the heating on is a thing people do,
+        and the row should go away for as long as that takes rather than
+        being dismissed for good.
+        """
+        if not (reading["window_open"] and reading["calling"]):
+            return []
+        opened = reading["window_since"]
+        item_id = f"climate_window_{reading['entity_id']}_{opened.isoformat()}"
+        return [{
+            "id": item_id,
+            "title": f"{name} is heating an open window",
+            "detail": _open_for(opened),
+            "icon": "mdi:window-open-variant",
+            "level": LEVEL_WAITING,
+            "action_label": "Airing",
+            "action": _snooze(item_id, 1),
+        }]
+
+    def _manual_row(
+        self, reading: dict[str, Any], name: str, now: datetime, hours: float
+    ) -> list[dict[str, Any]]:
+        """A schedule that has stopped running.
+
+        Tado holds an override until somebody ends it, so a zone set by hand
+        one evening is still set by hand a fortnight later — heating an empty
+        room every afternoon, or not heating an occupied one, without ever
+        saying so.
+
+        ATTENTION rather than waiting: nothing is being damaged and it will
+        keep until tomorrow. The action is the one on the room's own card,
+        so pressing either does the same thing.
+        """
+        since = reading["manual_since"]
+        if since is None or (now - since) < timedelta(hours=hours):
+            return []
+        item_id = f"climate_manual_{reading['entity_id']}_{since.isoformat()}"
+        target = reading["target"]
+        held = "off" if reading["off"] else (
+            f"{target:.1f}°" if target is not None else "by hand"
+        )
+        return [{
+            "id": item_id,
+            "title": f"{name} is still on manual",
+            "detail": f"Held at {held} since {_since_text(since)}",
+            "icon": "mdi:sun-clock-outline",
+            "level": LEVEL_ATTENTION,
+            "action_label": "Resume",
+            # The zone's schedule, handed back. Tado's own vocabulary: a
+            # zone is driven by its schedule or held by an overlay, and off
+            # is itself an overlay -- so this is the same press as the
+            # schedule button on the room's card, which is correct and not
+            # a coincidence.
+            "action": {
+                "service": "climate.set_hvac_mode",
+                "target": {"entity_id": reading["entity_id"]},
+                "data": {"hvac_mode": "auto"},
+            },
+        }]
+
+    def _stuck_row(
+        self,
+        reading: dict[str, Any],
+        name: str,
+        now: datetime,
+        minutes: float,
+        rise: float,
+    ) -> list[dict[str, Any]]:
+        """A radiator that has been calling for heat without moving the room.
+
+        Air in the radiator, a seized pin, a valve that reports open and is
+        not: all three burn gas and none of them appears anywhere in Home
+        Assistant. The only evidence is the one thing nobody watches for
+        half an hour — that the room did not change.
+
+        An open window is excused rather than reported twice. A room with a
+        window open has an obvious reason not to be warming, it already has
+        a row of its own, and two rows for one cold room is how a list stops
+        being read.
+        """
+        zone = reading["entity_id"]
+        temperature = reading["temperature"]
+
+        if not reading["calling"] or temperature is None:
+            self._heating_runs.pop(zone, None)
+            return []
+
+        started, was = self._heating_runs.setdefault(zone, (now, temperature))
+        if reading["window_open"]:
+            return []
+        if (now - started) < timedelta(minutes=minutes):
+            return []
+        if (temperature - was) >= rise:
+            return []
+
+        item_id = f"climate_stuck_{zone}_{started.isoformat()}"
+        for_long = int((now - started).total_seconds() // 60)
+        return [{
+            "id": item_id,
+            "title": f"{name} radiator may be stuck",
+            "detail": (
+                f"Heating {for_long}m, still {temperature:.1f}° — "
+                f"it was {was:.1f}° when it started"
+            ),
+            "icon": "mdi:radiator-disabled",
+            "level": LEVEL_WAITING,
+            "action_label": "Noted",
+            # Dismissed rather than snoozed, and keyed to this run: bleeding
+            # a radiator is not something anybody does in the next hour, and
+            # the next time it sticks is a new run with a new id.
+            "action": _dismiss(item_id),
+        }]
 
     def _appliances(self) -> list[dict[str, Any]]:
         """Water on the floor, a machine left dead, a full drum, washing to hang.

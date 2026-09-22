@@ -273,3 +273,54 @@ DEFAULT_BASELINE_EXCESS_PCT = 40
 # wants: a floor is the quietest number the house produces, so a norm built
 # from three of them is one odd night away from being wrong.
 ENERGY_MIN_DAYS_FOR_NORM = 5
+
+# --- Climate ----------------------------------------------------------
+#
+# One source, and it is the one that controls the heating. Where two
+# thermometers in the same room disagree — and in this house they disagree
+# by different amounts in different rooms — the reading that matters is the
+# one the loop acts on, because that is the number the radiator obeys. A
+# mean of two sensors with unequal, unknown offsets is a figure nobody can
+# trace back to anything.
+CONF_CLIMATE_ZONES = "climate_zones"
+
+# The bar every room is drawn against. Fixed rather than fitted to the day's
+# own spread: a scale that moves with the data makes the coldest room look
+# identical every morning and two screenshots impossible to compare. Rooms
+# outside it clamp, which is honest because the row states the number too.
+CONF_CLIMATE_SCALE_MIN = "climate_scale_min"
+CONF_CLIMATE_SCALE_MAX = "climate_scale_max"
+
+DEFAULT_CLIMATE_SCALE_MIN = 15
+DEFAULT_CLIMATE_SCALE_MAX = 25
+
+# A radiator calling for heat this long without the room moving is not
+# heating the room. Air in the radiator, a valve that has seized shut, or a
+# pin stuck down — all of them burn gas and none of them says so anywhere.
+#
+# The rise is deliberately small. This is not asking whether the room got
+# warm; it is asking whether it moved at all.
+CONF_CLIMATE_STUCK_MINUTES = "climate_stuck_minutes"
+CONF_CLIMATE_STUCK_RISE = "climate_stuck_rise"
+
+DEFAULT_CLIMATE_STUCK_MINUTES = 30
+DEFAULT_CLIMATE_STUCK_RISE = 0.2
+
+# Tado holds a manual override until somebody ends it. An override set
+# without a timer is not a setting, it is a schedule that has stopped
+# running, and a day is long enough to be sure it was not a deliberate
+# afternoon.
+CONF_CLIMATE_MANUAL_HOURS = "climate_manual_hours"
+
+DEFAULT_CLIMATE_MANUAL_HOURS = 24
+
+# Outside, measured here rather than forecast for the region. Optional: with
+# no sensors the indoor rows are unchanged and the ventilation answer is
+# absent rather than guessed.
+CONF_OUTDOOR_TEMP = "outdoor_temperature"
+CONF_OUTDOOR_HUMIDITY = "outdoor_humidity"
+
+# Below this difference in absolute humidity, opening a window moves no
+# meaningful amount of water either way, and the honest answer is "it makes
+# no odds" rather than a direction. Grams per cubic metre.
+VENTILATION_BAND = 0.5
