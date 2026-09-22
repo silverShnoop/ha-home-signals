@@ -976,11 +976,32 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         powered = _is_on(self.hass, self._spec.get("plug"), default=True)
 
         today = dt_util.now().date()
+        hanging_ids = {p["id"] for p in self._pending if p.get("id")}
+
+        def _ran_today(record: dict[str, Any]) -> bool:
+            parsed = dt_util.parse_datetime(record.get("finished_at", ""))
+            return bool(parsed) and dt_util.as_local(parsed).date() == today
+
+        # A load that is still waiting to be hung outlives its day.
+        #
+        # "Finished today" is a list of facts, and midnight is a fact about
+        # the clock rather than about the washing: a wash that ended at
+        # 23:40 and is still on the floor at 00:10 has not stopped needing
+        # hanging because the date rolled over. Dropping it would leave the
+        # card saying "1 to hang" with nothing in the list underneath it
+        # naming which load, which is the one question the list answers.
+        #
+        # It leaves the moment it is hung, not the moment the day ends --
+        # so an old load disappears from the list the instant the job is
+        # done, and never sits there as yesterday's leftovers.
+        #
+        # `hanging` travels with each entry because the card cannot work it
+        # out: `pending` is a separate attribute and a row on the card has
+        # no way to ask whether its own id is in it.
         finished_today = [
-            h
+            {**h, "hanging": h.get("id") in hanging_ids}
             for h in self._history
-            if (parsed := dt_util.parse_datetime(h.get("finished_at", "")))
-            and dt_util.as_local(parsed).date() == today
+            if _ran_today(h) or h.get("id") in hanging_ids
         ]
 
         return {
