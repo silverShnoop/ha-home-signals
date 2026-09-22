@@ -29,6 +29,9 @@ from custom_components.home_signals.const import (
     CLEANING_AMBER,
     CLEANING_GREEN,
     CLEANING_RED,
+    LEVEL_ATTENTION,
+    LEVEL_CRITICAL,
+    LEVEL_WAITING,
 )
 
 POWER = "sensor.washer_power"
@@ -763,6 +766,65 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
     await hass.async_block_till_done()
     assert light.native_value == CLEANING_RED, "the leak stopped being the headline"
     assert "leaking" in light.extra_state_attributes["detail"]
+
+
+async def test_the_cleaning_light_carries_the_level_not_just_the_colour(
+    hass: HomeAssistant, machine: Machine
+) -> None:
+    """The tab tile wears a level, and amber is not one level.
+
+    Three different jobs are amber, and one of them -- a machine left
+    without power mid-cycle -- is `waiting` rather than `attention`. A dock
+    button mapping the colour itself cannot know that, and mapping it in
+    two places is how the map drifted off the palette in the first place.
+    """
+    from custom_components.home_signals.appliance import CleaningStatusSensor
+
+    light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
+    light.hass = hass
+    light.entity_id = "sensor.cleaning_status"
+
+    # Nothing waiting takes no level at all -- not the quietest one, or
+    # the tile is coloured on a morning with nothing wrong.
+    assert light.extra_state_attributes["level"] is None
+
+    await machine.draw(2000, for_minutes=30)
+    await machine.draw(0, for_minutes=6)
+    assert light.native_value == CLEANING_AMBER
+    assert light.extra_state_attributes["level"] == LEVEL_ATTENTION
+
+    # Same amber, different promise: wet washing and a clock running.
+    machine.set(PLUG, "off")
+    await hass.async_block_till_done()
+    assert light.native_value == CLEANING_AMBER
+    assert light.extra_state_attributes["level"] == LEVEL_WAITING, (
+        "a machine left without power was reported as an errand for tomorrow"
+    )
+
+    machine.set(LEAK, "on")
+    await hass.async_block_till_done()
+    assert light.native_value == CLEANING_RED
+    assert light.extra_state_attributes["level"] == LEVEL_CRITICAL
+
+
+async def test_a_full_drum_is_attention_on_the_tab(
+    hass: HomeAssistant, machine: Machine
+) -> None:
+    """The other amber, and it keeps: the washing is dry and indoors."""
+    from custom_components.home_signals.appliance import CleaningStatusSensor
+
+    light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
+    light.hass = hass
+    light.entity_id = "sensor.cleaning_status"
+
+    await machine.draw(2000, for_minutes=30)
+    await machine.draw(0, for_minutes=6)
+    assert machine.sensor.hung() is True, "no load was queued to clear"
+
+    assert machine.attrs["drum_full"] is True
+    assert light.native_value == CLEANING_AMBER
+    assert "to empty" in light.extra_state_attributes["detail"]
+    assert light.extra_state_attributes["level"] == LEVEL_ATTENTION
 
 
 # --- what the machine is doing, from the draw -------------------------
