@@ -701,6 +701,23 @@ wall panel can be a colour before anybody reads a word of it.
   without power.
 - **green** — nothing waiting.
 
+It also publishes **`level`**, and that is what a tab tile should read.
+Amber covers three different jobs and they are not one level: a machine
+left without power mid-cycle is wet washing and a clock running, which is
+`waiting`, while a drum to empty or washing to hang is `attention`. Green
+carries **no level at all** — not the quietest one — so the tile goes back
+to its own accent rather than being coloured on a morning with nothing
+wrong.
+
+The colour and the level are published side by side rather than one being
+derived from the other, because green/amber/red is this sensor's own
+vocabulary. Anything translating it into a level for itself is a second
+place the levels have to be kept right — and that is exactly what drifted:
+the dock button's map named decorative accent slots 1 and 2, written when
+those slots were the orange and the yellow, so once the levels took those
+hues out of the palette a load to hang painted the tab bone-white and a
+leak painted it tan.
+
 ## Laundry in `Needs you`
 
 Every action an appliance can ask of you is a Needs you row, and only a Needs
@@ -814,6 +831,10 @@ from across the room, and "is the house shut?" is one question.
   than the grace period), `red` (the same, for longer).
 - **`detail`** — one line for a tab summary: "All secure", "Front door",
   "2 unlocked, 1 open".
+- **`level`** — `critical` past the grace period, `waiting` inside it, and
+  `null` when the house is shut, so the tab tile wears a level rather than
+  translating the colour itself. It is read off the same `_status` branch
+  the rows are, so the tile and the list cannot disagree.
 - **`since`** — when the house last stopped being shut, or `null`.
 - **`items`** — rows for a card, each carrying its own `since` so the card
   can render a live "unlocked for 12m" without this sensor updating.
