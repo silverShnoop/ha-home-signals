@@ -93,6 +93,7 @@ from .appliance import (
     ApplianceCycleSensor,
     CleaningStatusSensor,
 )
+from .rooms import HouseClimateSensor
 from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
 from .energy import EnergyDaySensor
 from .todo_done import TodoDoneTodaySensor
@@ -207,6 +208,7 @@ async def async_setup_entry(
         SystemHealthSensor(entry),
         SecurityStatusSensor(entry),
         EnergyDaySensor(entry),
+        HouseClimateSensor(entry),
     ]
 
     specs = _appliance_specs(entry)

@@ -19,7 +19,15 @@
           "salt_one_threshold": "Alert when any one side is at or below (%)",
           "security_locks": "Locks that must be locked (empty means all)",
           "security_openings": "Door and window contacts that must be closed",
-          "security_grace_minutes": "Grace before amber turns red (minutes)"
+          "security_grace_minutes": "Grace before amber turns red (minutes)",
+          "climate_zones": "Heating zones",
+          "climate_scale_min": "Room comparison scale, cold end (°C)",
+          "climate_scale_max": "Room comparison scale, warm end (°C)",
+          "climate_stuck_minutes": "Heating this long without the room moving (minutes)",
+          "climate_stuck_rise": "Movement that counts as the room warming (°C)",
+          "climate_manual_hours": "Manual override held this long counts as stuck (hours)",
+          "outdoor_temperature": "Outdoor temperature sensor",
+          "outdoor_humidity": "Outdoor humidity sensor"
         }
       }
     },
@@ -47,7 +55,15 @@
           "salt_one_threshold": "Alert when any one side is at or below (%)",
           "security_locks": "Locks that must be locked (empty means all)",
           "security_openings": "Door and window contacts that must be closed",
-          "security_grace_minutes": "Grace before amber turns red (minutes)"
+          "security_grace_minutes": "Grace before amber turns red (minutes)",
+          "climate_zones": "Heating zones",
+          "climate_scale_min": "Room comparison scale, cold end (°C)",
+          "climate_scale_max": "Room comparison scale, warm end (°C)",
+          "climate_stuck_minutes": "Heating this long without the room moving (minutes)",
+          "climate_stuck_rise": "Movement that counts as the room warming (°C)",
+          "climate_manual_hours": "Manual override held this long counts as stuck (hours)",
+          "outdoor_temperature": "Outdoor temperature sensor",
+          "outdoor_humidity": "Outdoor humidity sensor"
         }
       }
     }
