@@ -628,6 +628,77 @@ async def test_a_named_load_clears_exactly_that_one(machine: Machine) -> None:
     assert machine.sensor.hung(newest) is False, "clearing the same load twice worked"
 
 
+# --- what the card lists, and what it says about each row ---------------
+
+
+async def test_a_finished_load_says_whether_it_still_needs_hanging(
+    machine: Machine,
+) -> None:
+    """The card marks the row, so it has to be told which row.
+
+    `pending` is a separate attribute; a row on the card has no way of
+    asking whether its own id is in it.
+    """
+    await machine.draw(2000, for_minutes=30)
+    await machine.draw(0, for_minutes=6)
+
+    today = machine.attrs["finished_today"]
+    assert len(today) == 1
+    assert today[0]["hanging"] is True
+
+    assert machine.sensor.hung() is True
+    assert machine.attrs["finished_today"][0]["hanging"] is False
+
+
+async def test_a_load_still_to_hang_survives_midnight(machine: Machine) -> None:
+    """Midnight is a fact about the clock, not about the washing.
+
+    A wash that ended last night and is still on the floor this morning
+    has not stopped needing hanging. Dropping it would leave the card
+    saying "1 to hang" over a list with nothing in it -- and which load
+    is exactly what the list is for.
+    """
+    await machine.draw(2000, for_minutes=30)
+    await machine.draw(0, for_minutes=6)
+    load = machine.attrs["finished_today"][0]["id"]
+
+    await machine.advance(60 * 24)
+    today = machine.attrs["finished_today"]
+    assert [h["id"] for h in today] == [load], "yesterday's washing was forgotten"
+    assert today[0]["hanging"] is True
+
+
+async def test_and_leaves_the_list_the_moment_it_is_hung(machine: Machine) -> None:
+    """Hung, not yesterday, is what takes an old load off the list.
+
+    Otherwise it would sit there as leftovers until the next midnight.
+    """
+    await machine.draw(2000, for_minutes=30)
+    await machine.draw(0, for_minutes=6)
+    await machine.advance(60 * 24)
+    assert machine.attrs["finished_today"], "the load was gone before it was hung"
+
+    assert machine.sensor.hung() is True
+    assert machine.attrs["finished_today"] == [], "a hung load stayed on the list"
+
+
+async def test_a_load_hung_on_the_day_it_ran_stays_on_the_list(
+    machine: Machine,
+) -> None:
+    """Hanging does not delete the day's history.
+
+    Today's list is still today's list: what leaves early is only the
+    load that had outlived its own day and had nothing else keeping it.
+    """
+    await machine.draw(2000, for_minutes=30)
+    await machine.draw(0, for_minutes=6)
+    assert machine.sensor.hung() is True
+
+    today = machine.attrs["finished_today"]
+    assert len(today) == 1, "today's wash vanished as soon as it was hung"
+    assert today[0]["hanging"] is False
+
+
 # --- the leak is independent of the power ------------------------------
 
 

@@ -170,7 +170,9 @@ async def test_it_keeps_a_history_to_list(dryer: Dryer) -> None:
     assert len(history) == 1
     assert history[0]["duration_minutes"] >= 45
     assert history[0]["energy_kwh"] > 0
-    assert dryer.attrs["finished_today"] == history
+    today = dryer.attrs["finished_today"]
+    assert [{k: v for k, v in h.items() if k != "hanging"} for h in today] == history
+    assert today[0]["hanging"] is False, "a dry load was marked as needing hanging"
 
 
 # --- the half that must NOT appear ------------------------------------

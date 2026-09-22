@@ -502,7 +502,10 @@ plug reports.
 - **`queues_loads`** — whether a finished load leaves a job behind after
   the drum is emptied. True for the washer, false for the dryer.
 - **`finished` / `finished_today`** — completed cycles with their duration
-  and energy, for a card to list.
+  and energy, for a card to list. Each entry in `finished_today` also
+  carries **`hanging`**, whether that load is still in the queue: the card
+  marks the row, and `pending` is a separate attribute a row has no way of
+  asking about itself.
 - **`longest_lull_seconds`, `peak_watts`** — what the last cycle actually
   looked like, for tuning the thresholds against a real wash.
 
@@ -519,6 +522,18 @@ They are tracked separately because three different things answer them:
 Emptying the drum never clears the hanging list, and hanging never empties
 the drum. Conflating them is the obvious simplification and it is wrong: you
 carry the washing to the airer in one trip and hang it in another.
+
+### `finished_today` is a day, plus anything still to hang
+
+Midnight is a fact about the clock, not about the washing. A wash that ended
+at 23:40 and is still on the floor at 00:10 has not stopped needing hanging,
+so it stays on the list past its own day — otherwise the card would say
+"1 to hang" over a list with nothing in it, and *which load* is the one
+question the list answers.
+
+What takes it off is being hung, not the date rolling over again: the
+moment the queue lets go of it, an out-of-date load leaves the list. A load
+hung on the day it ran stays, because today's list is still today's list.
 
 ### The dryer is the same machine, one state shorter
 
