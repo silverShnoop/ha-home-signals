@@ -933,6 +933,150 @@ async def test_the_floor_says_what_a_year_of_it_costs(meter: Meter) -> None:
     assert meter.attrs["floor_cost_year"] == 621
 
 
+# --- where the power went, and roughly when --------------------------
+#
+# A day's total says nothing about the day. Two days at the same total can
+# be a morning of laundry and an evening of the oven, and only one of those
+# is a thing anybody would change.
+
+
+async def test_the_day_cuts_into_four_six_hour_blocks(meter: Meter) -> None:
+    """And they sum to the day, because they are its own slots counted once.
+
+    That is what makes a stacked column honest: nothing here is projected
+    or apportioned, unlike `baseline_watts`, which takes the overnight rate
+    and asks what a whole day of it would be.
+    """
+    a = meter.attrs
+    assert a["block_names"] == ["Overnight", "Morning", "Afternoon", "Evening"]
+    assert a["block_hours"] == 6
+    assert len(a["block_kwh"]) == 4
+    assert sum(a["block_kwh"]) == pytest.approx(a["kwh"], abs=0.01)
+    assert sum(a["block_cost"]) == pytest.approx(a["usage"], abs=0.02)
+
+
+async def test_the_blocks_are_the_real_measured_saturday(meter: Meter) -> None:
+    """Worked out from the fixture array, not from the code under test."""
+    expected_kwh = [
+        round(sum(SATURDAY[i * 12:(i + 1) * 12]), 3) for i in range(4)
+    ]
+    assert meter.attrs["block_kwh"] == pytest.approx(expected_kwh, abs=0.001)
+    # The overnight block is the baseline's own six hours, so the two agree.
+    assert meter.attrs["block_kwh"][0] == pytest.approx(
+        meter.attrs["baseline_watts"] * 6 / 1000, abs=0.01
+    )
+
+
+async def test_a_day_of_blocks_carries_its_own_totals(meter: Meter) -> None:
+    """The card prints them under each column rather than computing them."""
+    row = meter.attrs["block_days"][-1]
+    assert row["day"] == "2026-09-19"
+    assert row["label"] == "Sat"
+    assert row["total_cost"] == pytest.approx(sum(row["cost"]), abs=0.01)
+    assert row["total_cost_text"].startswith("£")
+    assert len(row["cost"]) == 4 and len(row["kwh"]) == 4
+
+
+async def test_days_without_blocks_are_dropped_not_zero_filled(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A column of four empty segments under a real date is a lie.
+
+    The house never used nothing. Such rows only come from a version before
+    this figure existed, or a day the backfill could not reach, and a gap is
+    the truth about both.
+    """
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    m.sensor._history = [
+        {"day": "2026-09-17", "cost": 3.0, "kwh": 12.0, "baseline_watts": 280},
+        {"day": "2026-09-18", "cost": 3.2, "kwh": 12.5, "baseline_watts": 281,
+         "block_cost": [0.4, 0.9, 1.0, 0.9], "block_kwh": [1.6, 3.6, 4.0, 3.6]},
+    ]
+    publish(hass, "2026-09-19")
+    await m.settle()
+
+    days = [row["day"] for row in m.attrs["block_days"]]
+    assert days == ["2026-09-18", "2026-09-19"], "a blockless day was drawn"
+
+
+async def test_the_block_card_shows_at_most_a_week(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Seven columns, each with four segments and two lines of text.
+
+    A fortnight of those is a texture rather than a week you can read.
+    """
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    m.sensor._history = [
+        {"day": f"2026-09-{day:02d}", "cost": 3.0, "kwh": 12.0,
+         "baseline_watts": 280, "block_cost": [0.4, 0.9, 1.0, 0.9],
+         "block_kwh": [1.6, 3.6, 4.0, 3.6]}
+        for day in range(6, 19)
+    ]
+    publish(hass, "2026-09-19")
+    await m.settle()
+
+    rows = m.attrs["block_days"]
+    assert len(rows) == 7
+    assert rows[-1]["day"] == "2026-09-19", "oldest first, newest last"
+    assert rows[0]["day"] < rows[-1]["day"]
+
+
+# --- recovering the days nobody was writing down ---------------------
+
+
+async def test_an_old_day_reads_through_the_same_parser(meter: Meter) -> None:
+    """Which is the whole design of the backfill.
+
+    The recorder kept the source sensor's past states, attributes and all,
+    and its attributes ARE the forty-eight half-hours. So an old day is
+    recovered by handing those attributes to the same reader that handles a
+    live one -- not by a second parser that would be a second thing to keep
+    right.
+    """
+    attrs = {
+        "charges": charges("2026-09-12", SATURDAY),
+        "standing_charge": STANDING,
+        "total_without_standing_charge": round(
+            sum(row["raw_cost"] for row in charges("2026-09-12", SATURDAY)), 2
+        ),
+    }
+    day = meter.sensor._day_from(attrs)
+
+    assert day is not None
+    assert day["day"].isoformat() == "2026-09-12"
+    assert day["kwh"] == pytest.approx(14.164, abs=0.001)
+    assert len(day["block_cost"]) == 4
+    assert day["baseline_watts"] == 286
+
+
+async def test_a_recovered_day_joins_the_history(meter: Meter) -> None:
+    """And is then indistinguishable from one that arrived live."""
+    before = meter.attrs["days_of_history"]
+    attrs = {"charges": charges("2026-09-12", SATURDAY),
+             "standing_charge": STANDING}
+    meter.sensor._remember(meter.sensor._day_from(attrs))
+
+    rows = meter.attrs["block_days"]
+    assert meter.attrs["days_of_history"] == before + 1
+    assert [r["day"] for r in rows] == ["2026-09-12", "2026-09-19"]
+    assert all(len(r["cost"]) == 4 for r in rows)
+
+
+async def test_rubbish_in_the_recorder_is_skipped_not_raised_on(
+    meter: Meter,
+) -> None:
+    """A purged day, a half-written row, an attribute that changed shape.
+
+    The backfill walks whatever the database hands it, so every one of
+    these has to produce None rather than an exception -- a broken startup
+    is a worse outcome than a shorter chart.
+    """
+    for attrs in ({}, {"charges": None}, {"charges": []},
+                  {"charges": "nope"}, {"charges": [{"start": "x"}]}):
+        assert meter.sensor._day_from(attrs) is None, attrs
+
+
 async def test_the_standing_charge_says_its_year_too(meter: Meter) -> None:
     """Beside the floor's year, so the two rows are the same kind of figure.
 

@@ -269,6 +269,32 @@ ENERGY_SAME_PCT = 5
 CONF_BASELINE_EXCESS_PCT = "baseline_excess_pct"
 DEFAULT_BASELINE_EXCESS_PCT = 40
 
+# --- Where the power went, and roughly when -------------------------
+#
+# The day cut into four even six-hour blocks. Even sixes rather than the
+# hours a person would name -- "morning" is not six o'clock to everybody --
+# because the four are meant to be COMPARED, and blocks of different length
+# cannot be. The names are published with them so the card does not have to
+# know what a block is.
+#
+# Four is the most a stacked column can carry and stay readable at a
+# doorway's distance, and it is enough to separate the thing you can act on
+# (a floor that grew overnight) from the thing you chose (an afternoon of
+# the oven on).
+BLOCK_HOURS = 6
+BLOCK_NAMES = ("Overnight", "Morning", "Afternoon", "Evening")
+
+# How many days the split card draws. Seven rather than fourteen: each
+# column carries four segments and two lines of text under it, and a
+# fortnight of those is a texture rather than a week you can read.
+ENERGY_BLOCK_DAYS = 7
+
+# How far back to look for days the source sensor has already been through.
+# The sensor holds one day at a time, so everything before this integration
+# was installed is only recoverable from the recorder's own copy of its past
+# states -- see `_backfill`.
+ENERGY_BACKFILL_DAYS = 10
+
 # Nights needed before there is a "usual" at all. More than the cost average
 # wants: a floor is the quietest number the house produces, so a norm built
 # from three of them is one odd night away from being wrong.
