@@ -97,6 +97,56 @@ async def test_all_locked_is_green_and_says_nothing_else(
     assert sensor._items == []
 
 
+async def test_the_tab_wears_the_level_rather_than_mapping_the_colour(
+    hass: HomeAssistant, clock
+) -> None:
+    """The dock button needs a level, and green/amber/red is not one.
+
+    Those three words are this sensor's own vocabulary. A dock button
+    translating them itself is a second place the levels have to be kept
+    right, and that second place drifted: it named decorative accent
+    slots 1 and 2 from when they were the orange and the yellow, so once
+    those hues left the palette an open door painted the tab bone-white.
+    """
+    set_lock(hass, "locked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+
+    # A house that is shut asks nothing, so it takes no level at all --
+    # not the quietest one -- and the tile falls back to its own accent.
+    assert sensor.extra_state_attributes["level"] is None
+
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_AMBER
+    assert sensor.extra_state_attributes["level"] == LEVEL_WAITING
+
+    clock.tick(timedelta(minutes=6))
+    sensor._recompute()
+    assert sensor.native_value == SECURITY_RED
+    assert sensor.extra_state_attributes["level"] == LEVEL_CRITICAL
+
+
+async def test_the_tab_level_never_disagrees_with_the_rows(
+    hass: HomeAssistant, clock
+) -> None:
+    """Both come off `_status`, so they cannot drift apart."""
+    set_lock(hass, "unlocked")
+    await hass.async_block_till_done()
+    sensor = make(hass)
+    sensor._recompute()
+
+    for _ in range(2):
+        tab = sensor.extra_state_attributes["level"]
+        assert all(row["level"] == tab for row in sensor._items), (
+            f"the tab said {tab} and the rows did not"
+        )
+        clock.tick(timedelta(minutes=6))
+        sensor._recompute()
+
+
 # --- the grace period -------------------------------------------------
 
 

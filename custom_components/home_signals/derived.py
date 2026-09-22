@@ -1287,6 +1287,19 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
         return {
             "items": list(self._items),
             "detail": self._detail,
+            # The same level the rows carry, hoisted so the tab tile can
+            # wear it. `system_health` already does this; the three-colour
+            # state cannot stand in for it, because green/amber/red are
+            # this sensor's own vocabulary and a dock button that maps
+            # them itself is a second place the levels have to be kept
+            # right. That second place is exactly what drifted: the map
+            # was written when the decorative accents 1 and 2 were the
+            # orange and the yellow, and when those hues moved out of the
+            # palette it went on naming the slots -- so an open door
+            # painted the tab bone-white and a red one painted it tan.
+            #
+            # None on green, because a house that is shut asks nothing.
+            "level": self._level(),
             "since": self._since.isoformat() if self._since else None,
             "unlocked": list(self._unlocked),
             "open": list(self._open),
@@ -1295,3 +1308,15 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
             "open_count": len(self._open),
             "grace_minutes": self._grace().total_seconds() / 60,
         }
+
+    def _level(self) -> str | None:
+        """Critical past the grace, waiting inside it, nothing when shut.
+
+        Read off `_status` rather than off the rows, so the colour and the
+        word can never disagree: the same branch decides both.
+        """
+        if self._status == SECURITY_RED:
+            return LEVEL_CRITICAL
+        if self._status == SECURITY_AMBER:
+            return LEVEL_WAITING
+        return None
