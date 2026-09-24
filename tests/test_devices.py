@@ -159,3 +159,12 @@ async def test_a_device_already_offline_on_first_look_has_no_time(
     assert sensor.extra_state_attributes["problems"][0]["since"] is None, (
         "the second scan invented a time for a device that was already down"
     )
+
+
+def test_a_three_part_identifier_does_not_take_the_sensor_down() -> None:
+    """Some integrations register (domain, a, b); the live house has one."""
+
+    class _Device:
+        identifiers = {("legacy", "hub", "7"), ("zha", "00:11")}
+
+    assert DevicesSensor._network_of(_Device()) == "Zigbee"  # noqa: SLF001
