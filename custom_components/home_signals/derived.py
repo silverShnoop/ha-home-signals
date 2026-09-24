@@ -17,6 +17,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_DEVICE_CLASS,
     ATTR_FRIENDLY_NAME,
+    EVENT_STATE_CHANGED,
     STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
@@ -28,6 +29,7 @@ from homeassistant.core import (
     HomeAssistant,
     State,
     callback,
+    split_entity_id,
 )
 from homeassistant.helpers import (
     area_registry as ar,
@@ -330,6 +332,9 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # start again at every reboot and a tracker quiet since breakfast
         # would never get past it.
         self._dark_since: dict[str, datetime] = {}
+        # Set by the platform. The door is decided in one place -- the
+        # grace, the jam, the blip-proof clock -- and this only reads it.
+        self.security: SecurityStatusSensor | None = None
 
     async def async_added_to_hass(self) -> None:
         """Restore suppressions, then recompute so a restart does not un-dismiss.
@@ -405,6 +410,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
 
     def _recompute(self) -> None:
         candidates: list[dict[str, Any]] = []
+        candidates.extend(self._security())
         candidates.extend(self._bins())
         candidates.extend(self._tasks())
         candidates.extend(self._batteries())
@@ -434,6 +440,53 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             del self._suppressed[stale]
 
     # --- the providers ------------------------------------------------
+
+    def _security(self) -> list[dict[str, Any]]:
+        """A door left unlocked or open, as a job rather than a banner.
+
+        It used to be a separate red alert card above this list, which
+        broke two rules at once: a job that lived somewhere other than
+        here, and red from the first second -- the loudest colour in the
+        house on somebody carrying the shopping in. Now it is a row like
+        any other, `waiting` inside the grace and `critical` past it, and
+        the level is read off `Security status` so the row, the card and
+        the tab can never disagree about which it is.
+
+        No snooze. A door does not keep; the row clears when it shuts.
+        """
+        if self.security is None:
+            return []
+        level = self.security.level
+        if level is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for door in self.security.unlocked:
+            since = dt_util.parse_datetime(door["since"])
+            when = dt_util.as_local(since).strftime("%H:%M") if since else None
+            jammed = door.get("jammed")
+            rows.append({
+                "id": f"unlocked_{door['entity_id']}",
+                "title": f"{door['name']} {'jammed' if jammed else 'unlocked'}",
+                "detail": f"Unlocked since {when}" if when else "Unlocked",
+                "icon": door["icon"],
+                "level": level,
+                "sticky": True,
+                "action_label": "Lock",
+                "action": {"service": "lock.lock",
+                           "target": {"entity_id": door["entity_id"]}},
+            })
+        for door in self.security.opened:
+            since = dt_util.parse_datetime(door["since"])
+            when = dt_util.as_local(since).strftime("%H:%M") if since else None
+            rows.append({
+                "id": f"open_{door['entity_id']}",
+                "title": f"{door['name']} open",
+                "detail": f"Open since {when}" if when else "Open",
+                "icon": door["icon"],
+                "level": level,
+                "sticky": True,
+            })
+        return rows
 
     def _bins(self) -> list[dict[str, Any]]:
         """The day before a collection, because that is when they go out.
@@ -985,13 +1038,18 @@ class SystemHealthSensor(_Derived):
         return worst
 
 
+@callback
+def _is_lock_change(data: EventStateChangedData) -> bool:
+    return split_entity_id(data["entity_id"])[0] == "lock"
+
+
 class SecurityStatusSensor(_Derived, RestoreEntity):
     """Is the house shut, as one of three colours.
 
-    Ambient status, like `System health`, and deliberately not a `Needs you`
-    row: the alert card already asks somebody to lock the front door, and a
-    second copy of the same sentence is nagging rather than informing. What
-    this adds is the thing a list cannot say from across the room — a colour.
+    Ambient status, like `System health`. The job itself -- lock the door --
+    is a `Needs you` row, built from what this decides, so the list, the
+    Security card and its tab wear one level between them. What this adds
+    is the thing a list cannot say from across the room — a colour.
 
     Amber covers the honest minute: a door is open because somebody is
     walking through it. Red is that same door still open once nobody could
@@ -1017,6 +1075,31 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
         self._open: list[dict[str, Any]] = []
         self._unreadable: list[dict[str, Any]] = []
         self._cancel_grace: CALLBACK_TYPE | None = None
+        # Anything with a `refresh()` -- `Needs you` -- to tell after a
+        # write, the way the appliances do. The grace expiring is a change
+        # no state subscription elsewhere could see.
+        self._listeners: list[Any] = []
+
+    def add_listener(self, listener: Any) -> None:
+        self._listeners.append(listener)
+
+    @callback
+    def async_write_ha_state(self) -> None:
+        super().async_write_ha_state()
+        for listener in self._listeners:
+            listener.refresh()
+
+    @property
+    def level(self) -> str | None:
+        return self._level()
+
+    @property
+    def unlocked(self) -> list[dict[str, Any]]:
+        return list(self._unlocked)
+
+    @property
+    def opened(self) -> list[dict[str, Any]]:
+        return list(self._open)
 
     async def async_added_to_hass(self) -> None:
         """Restore when the house stopped being shut, so red survives a restart.
@@ -1028,6 +1111,19 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
         """
         await super().async_added_to_hass()
         self.async_on_remove(self._stop_grace)
+        if not self._option(CONF_SECURITY_LOCKS, []):
+            # "Every lock" cannot be a list of entity ids: at setup the lock
+            # integrations have mostly not loaded, so the list was empty and
+            # the only thing that ever noticed the front door was the
+            # five-minute tick. The panel said "All secure" for three and a
+            # half minutes with the door unlocked. Listen to the domain.
+            self.async_on_remove(
+                self.hass.bus.async_listen(
+                    EVENT_STATE_CHANGED,
+                    self._async_changed,
+                    event_filter=_is_lock_change,
+                )
+            )
 
         if (last := await self.async_get_last_state()) is None:
             return
@@ -1064,9 +1160,9 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
         """The locks that count, defaulting to every lock in the house.
 
         Defaulting to all of them means a new lock is covered without anyone
-        remembering to come back here. The cost is that the default only
-        rescans on restart; the five-minute tick still catches a lock added
-        since, just not the instant it appears.
+        remembering to come back here. It is re-read on every recompute, and
+        a listener on the whole `lock` domain drives those recomputes, so a
+        lock that loads after this sensor is heard the instant it changes.
         """
         chosen = list(self._option(CONF_SECURITY_LOCKS, []) or [])
         if chosen:
@@ -1083,7 +1179,9 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
         return list(self._option(CONF_SECURITY_OPENINGS, []) or [])
 
     def _watched(self) -> list[str]:
-        return self._locks() + self._openings()
+        """The chosen locks and openings. Defaulted locks ride a domain
+        listener instead; see `async_added_to_hass`."""
+        return list(self._option(CONF_SECURITY_LOCKS, []) or []) + self._openings()
 
     def _since_for(self, state: State, insecure: bool) -> datetime:
         """When this entity stopped being shut, held across a blip.
