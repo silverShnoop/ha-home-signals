@@ -78,6 +78,8 @@ from .const import (
     CONF_ENTITIES,
     CONF_MAX_EVENTS,
     DEFAULT_MAX_EVENTS,
+    BY_AREA_MAX_TIMES,
+    BY_AREA_WINDOW_MINUTES,
     KIND_BUTTON,
     KIND_DOOR,
     KIND_LOCK,
@@ -394,6 +396,10 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         self._attr_unique_id = f"{entry.entry_id}_activity_feed"
         self._events: deque[dict[str, Any]] = deque(maxlen=self._max_events)
         self._last: datetime | None = None
+        # Area -> {kind, at, times}: the last hour, per room, for a floor
+        # plan. Kept apart from `events` because the rail's cap is a length
+        # and the plan's is an age.
+        self._by_area: dict[str, dict[str, Any]] = {}
 
     @property
     def _max_events(self) -> int:
@@ -425,6 +431,23 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
                 self._events.extend(
                     row for row in restored[: self._max_events] if isinstance(row, dict)
                 )
+            by_area = last.attributes.get("by_area")
+            if isinstance(by_area, dict):
+                for area, row in by_area.items():
+                    if (
+                        isinstance(row, dict)
+                        and isinstance(row.get("times"), list)
+                        and row["times"]
+                    ):
+                        self._by_area[str(area)] = {
+                            "kind": row.get("kind"),
+                            "at": row.get("at"),
+                            "times": [
+                                int(t) for t in row["times"]
+                                if isinstance(t, (int, float))
+                            ][:BY_AREA_MAX_TIMES],
+                        }
+                self._prune_by_area(dt_util.utcnow())
 
         tracked = self._tracked
         if not tracked:
@@ -464,17 +487,24 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
             return
 
         now = dt_util.utcnow()
+        area = self._area_name(entity_id)
         self._events.appendleft(
             {
                 "entity_id": entity_id,
                 "name": new_state.attributes.get(ATTR_FRIENDLY_NAME, entity_id),
-                "area": self._area_name(entity_id),
+                "area": area,
                 "kind": kind,
                 "state": new_state.state,
                 "at": now.isoformat(),
             }
         )
         self._last = now
+        if area is not None:
+            row = self._by_area.setdefault(area, {"times": []})
+            row["kind"] = kind
+            row["at"] = now.isoformat()
+            row["times"] = [int(now.timestamp()), *row["times"]][:BY_AREA_MAX_TIMES]
+        self._prune_by_area(now)
         self.async_write_ha_state()
 
     @staticmethod
@@ -519,6 +549,21 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         area = ar.async_get(self.hass).async_get_area(area_id)
         return area.name if area else None
 
+    def _prune_by_area(self, now: datetime) -> None:
+        """Forget what is older than the window, and rooms left with nothing.
+
+        Only runs when something is written, so a quiet house keeps its last
+        hour on the entity past the hour. That is harmless: every time
+        carries its own age, and the reader fades by that, not by presence.
+        """
+        cutoff = now.timestamp() - BY_AREA_WINDOW_MINUTES * 60
+        for area in list(self._by_area):
+            times = [t for t in self._by_area[area]["times"] if t >= cutoff]
+            if times:
+                self._by_area[area]["times"] = times
+            else:
+                del self._by_area[area]
+
     @property
     def native_value(self) -> datetime | None:
         """When anything last happened anywhere."""
@@ -529,5 +574,12 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         """The feed itself, newest first."""
         return {
             "events": list(self._events),
+            # Copied, not shared: the state machine keeps the previous
+            # attributes to compare against, and a row mutated in place
+            # would change the old state along with the new one.
+            "by_area": {
+                area: {**row, "times": list(row["times"])}
+                for area, row in self._by_area.items()
+            },
             "tracked_count": len(self._tracked),
         }
