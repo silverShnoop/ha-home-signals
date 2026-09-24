@@ -131,6 +131,11 @@ def _battery_label(state: State) -> str:
     return name
 
 
+def _salt_detail(readings: list[tuple[str, float]]) -> str:
+    """ "Left 30%, Right 0%" -- the same line wherever the salt is a row."""
+    return ", ".join(f"{side} {level:.0f}%" for side, level in readings)
+
+
 def _salt_side(state: State) -> str:
     """Which cylinder a salt sensor is reading, for the row's detail line.
 
@@ -280,6 +285,45 @@ class _Derived(SensorEntity):
             found.append((state, level))
         found.sort(key=lambda pair: pair[1])
         return found
+
+    def _salt_low(self) -> list[tuple[str, float]]:
+        """Every side's reading while the softener needs filling, else none.
+
+        The one place the salt rule lives. Needs you raises its row from it
+        and System health raises the Maintenance tab's level from it, and
+        two copies of a threshold is how a tab comes to go yellow for a
+        softener the list has stopped mentioning -- or the reverse.
+
+        A twin-cylinder softener alternates: one side works while the other
+        regenerates, so a single side running out is normal and survivable,
+        and both running down together is not. That is why there are two
+        thresholds rather than one. Every side at or below the first is the
+        real warning; any single side at or below the second is the earlier,
+        sharper one.
+        """
+        entity_ids = self._option(CONF_SALT_SENSORS, []) or []
+        readings: list[tuple[str, float]] = []
+        for entity_id in entity_ids:
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state in _NOT_A_READING:
+                continue
+            try:
+                readings.append((_salt_side(state), float(state.state)))
+            except (TypeError, ValueError):
+                continue
+
+        # No usable reading is not the same as a full tank. Say nothing
+        # rather than claim the softener is fine.
+        if not readings:
+            return []
+
+        both = float(self._option(CONF_SALT_BOTH_THRESHOLD, DEFAULT_SALT_BOTH_THRESHOLD))
+        one = float(self._option(CONF_SALT_ONE_THRESHOLD, DEFAULT_SALT_ONE_THRESHOLD))
+
+        levels = [level for _, level in readings]
+        all_low = all(level <= both for level in levels)
+        any_low = any(level <= one for level in levels)
+        return readings if (all_low or any_low) else []
 
     def _batteries_below(self, threshold: int) -> list[tuple[State, float]]:
         """Battery sensors under the threshold, worst first."""
@@ -551,48 +595,17 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         }]
 
     def _salt(self) -> list[dict[str, Any]]:
-        """One row when the softener needs filling, under either of two rules.
-
-        A twin-cylinder softener alternates: one side works while the other
-        regenerates, so a single side running out is normal and survivable,
-        and both running down together is not. That is why there are two
-        thresholds rather than one. Every side at or below the first is the
-        real warning; any single side at or below the second is the earlier,
-        sharper one.
+        """One row when the softener needs filling -- see `_salt_low`.
 
         Always one row, never one per side. Filling the machine is a single
         errand whichever cylinder prompted it, and two rows for one bag of
         salt is the noise this sensor exists to avoid.
         """
-        entity_ids = self._option(CONF_SALT_SENSORS, []) or []
-        if not entity_ids:
-            return []
-
-        readings: list[tuple[str, float]] = []
-        for entity_id in entity_ids:
-            state = self.hass.states.get(entity_id)
-            if state is None or state.state in _NOT_A_READING:
-                continue
-            try:
-                readings.append((_salt_side(state), float(state.state)))
-            except (TypeError, ValueError):
-                continue
-
-        # No usable reading is not the same as a full tank. Say nothing
-        # rather than claim the softener is fine.
+        readings = self._salt_low()
         if not readings:
             return []
 
-        both = float(self._option(CONF_SALT_BOTH_THRESHOLD, DEFAULT_SALT_BOTH_THRESHOLD))
-        one = float(self._option(CONF_SALT_ONE_THRESHOLD, DEFAULT_SALT_ONE_THRESHOLD))
-
-        levels = [level for _, level in readings]
-        all_low = all(level <= both for level in levels)
-        any_low = any(level <= one for level in levels)
-        if not (all_low or any_low):
-            return []
-
-        detail = ", ".join(f"{side} {level:.0f}%" for side, level in readings)
+        detail = _salt_detail(readings)
         return [{
             "id": "softener_salt",
             "title": "Water softener needs salt",
@@ -939,6 +952,7 @@ class SystemHealthSensor(_Derived):
         self._threshold = DEFAULT_BATTERY_THRESHOLD
         self._offline: list[dict[str, Any]] = []
         self._updates: list[dict[str, Any]] = []
+        self._salt: list[tuple[str, float]] = []
 
     def _recompute(self) -> None:
         threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
@@ -1001,6 +1015,22 @@ class SystemHealthSensor(_Derived):
                 "icon": "mdi:battery-alert-variant-outline",
                 "level": LEVEL_ATTENTION,
             })
+        # The softener lives on the Maintenance tab, so its salt is part of
+        # what this sensor says about the tab: a row here, and the level the
+        # tab's rail button wears. The Water softener card's outline reads
+        # `salt_level` below. All three come from `_salt_low`, which is also
+        # where the Needs you row comes from, so card, tab and row agree --
+        # the same three-way obligation the batteries already keep.
+        self._salt = self._salt_low()
+        if self._salt:
+            rows.append({
+                "id": "softener_salt",
+                "name": "Softener salt",
+                "sub": _salt_detail(self._salt),
+                "value": f"{min(level for _, level in self._salt):.0f}%",
+                "icon": "mdi:shaker-outline",
+                "level": LEVEL_ATTENTION,
+            })
         if self._offline:
             rows.append({
                 "id": "offline",
@@ -1047,6 +1077,10 @@ class SystemHealthSensor(_Derived):
             # the batteries row above carries, and the Needs you rows for
             # the same batteries carry, so card, tab and row agree.
             "battery_level": LEVEL_ATTENTION if self._batteries else None,
+            # The level the Water softener card wears, for the same reason
+            # and on the same terms: exactly the level of the salt row above
+            # and of the Needs you row for the same softener.
+            "salt_level": LEVEL_ATTENTION if self._salt else None,
             "offline": list(self._offline),
             "updates_pending": list(self._updates),
             "battery_count": len(self._batteries),
