@@ -233,6 +233,35 @@ and `automation` domains, are excluded from the offline count. They go
 unavailable constantly and nobody acts on it. Anything else noisy can be
 listed under "Never report these as offline".
 
+## `sensor.devices`
+
+How many of the house's devices are answering, counted as **things** rather
+than entities. A car that loses its cloud connection is eighteen entities and
+one car.
+
+- **State** — how many devices are offline or partly offline.
+- **`connected`, `offline`, `partial`, `total`** — the counts. A device is
+  *offline* when every entity it has is unavailable, *partial* when some are.
+- **`problems`** — one row per device that is not fully answering: `name`,
+  `area`, `network`, `state`, `detail` (for a partial device, what is missing:
+  `No temperature`, or `5 of 8 missing`) and `since`.
+- **`networks`** — `online`/`offline`/`partial` per network: Hue, Zigbee,
+  Tado, Cast, and everything else as `Wi-Fi & cloud`.
+- **`level`** — `attention` while anything is not answering, else `null`. The
+  same devices are already behind the offline row in `Needs you`.
+
+**`since` is remembered, not read.** Home Assistant resets every `last_changed`
+on a restart, so a bulb dead for a week would read as having died at the last
+reboot. This writes the time down when a device first stops answering and
+restores it across restarts. A device already down the first time it looks
+gets `null` rather than a guess, and keeps it until it comes back.
+
+Not counted: service devices (backups, AI models, the sun), and the registry
+entries that are groups rather than things — Hue rooms and zones and Cast
+speaker groups, which would report one dead bulb or speaker twice. Diagnostic
+entities, buttons and updates, and anything under "Never report these", don't
+count towards a device being unavailable.
+
 ## `sensor.energy_day`
 
 What the house's electricity cost, reduced once. Octopus publishes the

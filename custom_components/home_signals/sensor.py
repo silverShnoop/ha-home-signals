@@ -94,6 +94,7 @@ from .appliance import (
     CleaningStatusSensor,
 )
 from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
+from .devices import DevicesSensor
 from .energy import EnergyDaySensor
 from .todo_done import TodoDoneTodaySensor
 
@@ -208,6 +209,7 @@ async def async_setup_entry(
         ActivityFeedSensor(entry),
         needs_you,
         SystemHealthSensor(entry),
+        DevicesSensor(entry),
         security,
         EnergyDaySensor(entry),
     ]
