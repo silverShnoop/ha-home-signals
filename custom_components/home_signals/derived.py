@@ -262,8 +262,9 @@ class _Derived(SensorEntity):
         """
         return set(self._option(CONF_IGNORE_UNAVAILABLE, []) or [])
 
-    def _batteries_below(self, threshold: int) -> list[tuple[State, float]]:
-        """Battery sensors under the threshold, worst first."""
+    def _battery_readings(self) -> list[tuple[State, float]]:
+        """Every battery sensor with a reading, worst first."""
+        ignored = self._ignored()
         found: list[tuple[State, float]] = []
         for state in self.hass.states.async_all("sensor"):
             if state.attributes.get(ATTR_DEVICE_CLASS) != "battery":
@@ -274,12 +275,19 @@ class _Derived(SensorEntity):
                 level = float(state.state)
             except ValueError:
                 continue
-            if state.entity_id in self._ignored():
+            if state.entity_id in ignored:
                 continue
-            if level <= threshold:
-                found.append((state, level))
+            found.append((state, level))
         found.sort(key=lambda pair: pair[1])
         return found
+
+    def _batteries_below(self, threshold: int) -> list[tuple[State, float]]:
+        """Battery sensors under the threshold, worst first."""
+        return [
+            (state, level)
+            for state, level in self._battery_readings()
+            if level <= threshold
+        ]
 
     def _unavailable(self) -> list[State]:
         """Entities that have gone away, minus the ones nobody acts on.
@@ -927,11 +935,29 @@ class SystemHealthSensor(_Derived):
         super().__init__(entry)
         self._attr_unique_id = f"{entry.entry_id}_system_health"
         self._batteries: list[dict[str, Any]] = []
+        self._all_batteries: list[dict[str, Any]] = []
+        self._threshold = DEFAULT_BATTERY_THRESHOLD
         self._offline: list[dict[str, Any]] = []
         self._updates: list[dict[str, Any]] = []
 
     def _recompute(self) -> None:
         threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
+        self._threshold = threshold
+        # Every battery, not just the flat ones, so the Batteries card can
+        # say how the rest stand. `low` is decided here rather than by the
+        # card comparing against a threshold of its own: two places holding
+        # the line is how a card comes to call a battery fine that Needs
+        # you is asking somebody to change.
+        self._all_batteries = [
+            {
+                "entity_id": state.entity_id,
+                "name": _battery_label(state),
+                "area": _area_of(self.hass, state.entity_id),
+                "percent": percent,
+                "low": percent <= threshold,
+            }
+            for state, percent in self._battery_readings()
+        ]
         self._batteries = [
             {
                 "entity_id": state.entity_id,
@@ -1014,6 +1040,13 @@ class SystemHealthSensor(_Derived):
             # its own accent rather than to the quietest alarm.
             "level": self._worst(),
             "low_batteries": list(self._batteries),
+            "batteries": list(self._all_batteries),
+            "battery_threshold": self._threshold,
+            # The level the Batteries card wears, named rather than left
+            # for the card to derive from a count. It is exactly the level
+            # the batteries row above carries, and the Needs you rows for
+            # the same batteries carry, so card, tab and row agree.
+            "battery_level": LEVEL_ATTENTION if self._batteries else None,
             "offline": list(self._offline),
             "updates_pending": list(self._updates),
             "battery_count": len(self._batteries),
