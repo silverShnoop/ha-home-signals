@@ -50,6 +50,13 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     BASELINE_UNTIL_HOUR,
+    BREAKDOWN_OTHER,
+    ENERGY_AVG_MAX_WEEKS,
+    ENERGY_BREAKDOWN_DAYS,
+    ENERGY_MIN_MONTHS,
+    ENERGY_MIN_WEEKS_FOR_AVERAGE,
+    ENERGY_MONTHS_SHOWN,
+    ENERGY_WEEK_HOURS,
     BLOCK_HOURS,
     BLOCK_NAMES,
     ENERGY_BACKFILL_DAYS,
@@ -68,6 +75,7 @@ from .const import (
     ENERGY_WEEK_DAYS,
 )
 from .money import money
+from .usage import Meters, async_buckets, async_meters, async_totals
 
 LOGGER = logging.getLogger(__name__)
 
@@ -189,6 +197,11 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         # would mean losing the one comparison that works without a Home
         # Mini, every time Home Assistant updates.
         self._history: list[dict[str, Any]] = []
+        # The long run, refreshed on the timer rather than worked out when
+        # the attributes are read: each of these is a recorder query, and
+        # reading a card must not touch the database. None means "not asked
+        # yet", which a card renders as nothing -- the same as "no data".
+        self._long: dict[str, Any] = {}
 
     def _option(self, key: str, default: Any = None) -> Any:
         return self._entry.options.get(key, self._entry.data.get(key, default))
@@ -265,6 +278,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         # should wait on it. The card renders whatever days it has and grows
         # a moment later.
         self.hass.async_create_task(self._async_backfill())
+        self.hass.async_create_task(self._async_tick_long())
 
     async def _async_backfill(self) -> None:
         """Recover the days that went past before anybody was writing them down.
@@ -339,6 +353,22 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
     @callback
     def _async_tick(self, _now: datetime) -> None:
         self._recompute()
+        self.async_write_ha_state()
+        self.hass.async_create_task(self._async_tick_long())
+
+    async def _async_tick_long(self) -> None:
+        """Refresh the long run, and never let it take the sensor down.
+
+        Half-hourly is far more often than a week's total can change, and
+        that is the point: it is the cheapest schedule that needs no
+        reasoning about when a day lands, a month rolls over, or the clocks
+        go back.
+        """
+        try:
+            await self._async_refresh_long()
+        except Exception:  # noqa: BLE001 - a card is not worth an exception
+            LOGGER.debug("Could not refresh the long-run figures", exc_info=True)
+            return
         self.async_write_ha_state()
 
     # --- reading the day ----------------------------------------------
@@ -652,6 +682,222 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             out.append(f"{parsed:%a}"[0] if parsed else "")
         return out
 
+    async def _async_refresh_long(self) -> None:
+        """The week, the week before, the long average, the months, the split.
+
+        One pass, on the timer, because every figure here is a recorder
+        query and a card must never be the thing that runs one.
+
+        Each is gated on having a genuinely full window. A four-day "week"
+        under a seven-day heading is the figure somebody quotes back at you
+        a month later, and nothing is a perfectly good thing for a card to
+        show -- the panel already renders it.
+        """
+        meters = await async_meters(self.hass)
+        if not meters.usable:
+            self._long = {}
+            return
+
+        now = dt_util.now()
+        out: dict[str, Any] = {}
+        ids = [meters.grid_kwh] + ([meters.grid_cost] if meters.grid_cost else [])
+
+        # --- this week against the one before
+        week = timedelta(hours=ENERGY_WEEK_HOURS)
+        this_start, prev_start = now - week, now - week * 2
+        this_totals = await async_totals(self.hass, ids, this_start, now)
+        prev_totals = await async_totals(self.hass, ids, prev_start, this_start)
+
+        def _pair(totals: dict[str, float], prefix: str) -> None:
+            kwh = totals.get(meters.grid_kwh)
+            if kwh:
+                out[f"{prefix}_kwh"] = round(kwh, 1)
+            cost = totals.get(meters.grid_cost) if meters.grid_cost else None
+            if cost:
+                out[f"{prefix}_cost"] = round(cost, 2)
+                out[f"{prefix}_cost_text"] = money(cost)
+
+        _pair(this_totals, "week7")
+        _pair(prev_totals, "prev7")
+        this_cost = out.get("week7_cost")
+        prev_cost = out.get("prev7_cost")
+        if this_cost is not None and prev_cost:
+            pct = _pct(this_cost, prev_cost)
+            out["week7_vs_prev_pct"] = pct
+            out["week7_vs_prev_text"] = _comparison(pct, "the week before")
+
+        # --- the average week, over however many whole weeks there are
+        weeks = await async_buckets(
+            self.hass,
+            [meters.grid_kwh] + ([meters.grid_cost] if meters.grid_cost else []),
+            now - timedelta(weeks=ENERGY_AVG_MAX_WEEKS),
+            now,
+            "week",
+        )
+        # The current week is partial by definition and would drag every
+        # average down, so it is dropped rather than averaged in.
+        whole = {
+            stat: [value for at, value in rows if at + week <= now]
+            for stat, rows in weeks.items()
+        }
+        counted = whole.get(meters.grid_kwh) or []
+        if len(counted) >= ENERGY_MIN_WEEKS_FOR_AVERAGE:
+            out["avg_week_kwh"] = round(sum(counted) / len(counted), 1)
+            out["avg_weeks"] = len(counted)
+            costs = whole.get(meters.grid_cost) if meters.grid_cost else None
+            if costs:
+                mean = sum(costs) / len(costs)
+                out["avg_week_cost"] = round(mean, 2)
+                out["avg_week_cost_text"] = money(mean)
+            # Says what it actually averaged. "A 7-day average" implies a
+            # year of evidence that does not exist in the first month.
+            out["avg_week_note"] = (
+                f"over {len(counted)} weeks" if len(counted) < ENERGY_AVG_MAX_WEEKS
+                else "over the year"
+            )
+        else:
+            out["avg_weeks"] = len(counted)
+
+        out.update(await self._async_months(meters, now))
+        out.update(await self._async_breakdown(meters, now))
+        self._long = out
+
+    async def _async_months(
+        self, meters: Meters, now: datetime
+    ) -> dict[str, Any]:
+        """Whole months, oldest first, shaped for the same card the days use.
+
+        The current month is never drawn. It is always the short bar and
+        would always read as an improvement, right up to the last day.
+        """
+        rows = await async_buckets(
+            self.hass,
+            [meters.grid_kwh] + ([meters.grid_cost] if meters.grid_cost else []),
+            now - timedelta(days=31 * ENERGY_MONTHS_SHOWN),
+            now,
+            "month",
+        )
+        kwhs = rows.get(meters.grid_kwh) or []
+        costs = dict(rows.get(meters.grid_cost) or []) if meters.grid_cost else {}
+        months = []
+        for at, kwh in kwhs:
+            if at.year == now.year and at.month == now.month:
+                continue
+            cost = costs.get(at)
+            months.append({
+                "day": f"{at:%Y-%m}",
+                "label": f"{at:%b}",
+                # One segment, because a month IS the whole. The card that
+                # draws the four blocks of a day draws this unchanged.
+                "cost": [round(cost, 2) if cost else round(kwh, 2)],
+                "kwh": [round(kwh, 3)],
+                "total_cost": round(cost, 2) if cost else None,
+                "total_cost_text": money(cost) if cost else None,
+                "total_kwh": round(kwh, 1),
+            })
+        months = months[-ENERGY_MONTHS_SHOWN:]
+        if len(months) < ENERGY_MIN_MONTHS:
+            # One month is not a trend, and a card with one bar is a stat
+            # tile that has been made to look like a chart.
+            return {"month_rows": [], "months_known": len(months)}
+        return {"month_rows": months, "months_known": len(months)}
+
+    async def _async_breakdown(
+        self, meters: Meters, now: datetime
+    ) -> dict[str, Any]:
+        """What the week's electricity went on, as far as anything is metered.
+
+        The remainder is the honest part. Two plugs account for a tenth of
+        this house, so the slice that matters is the one nothing is watching
+        -- and it is named rather than left as the gap between a total and
+        some parts.
+
+        Each device is capped at the grid total and the remainder floored at
+        zero: a plug and a meter are different instruments with different
+        clocks, and a breakdown whose parts exceed its whole is worse than
+        no breakdown.
+        """
+        if not meters.devices:
+            return {"breakdown": []}
+        start = now - timedelta(days=ENERGY_BREAKDOWN_DAYS)
+        ids = [meters.grid_kwh] + [stat for _name, stat in meters.devices]
+        totals = await async_totals(self.hass, ids, start, now)
+        grid = totals.get(meters.grid_kwh) or 0.0
+        if grid <= 0:
+            return {"breakdown": []}
+
+        rate = None
+        spend = None
+        if meters.grid_cost:
+            spend = (
+                await async_totals(self.hass, [meters.grid_cost], start, now)
+            ).get(meters.grid_cost)
+            if spend:
+                # The week's own average rate, which is the only rate that
+                # can divide up the week's own money.
+                rate = spend / grid
+
+        slices: list[dict[str, Any]] = []
+        named = 0.0
+        priced = 0.0
+        for name, stat in meters.devices:
+            kwh = min(totals.get(stat) or 0.0, grid)
+            if kwh <= 0:
+                continue
+            named += kwh
+            wedge = self._slice(name, kwh, grid, rate)
+            priced += wedge.get("cost") or 0.0
+            slices.append(wedge)
+
+        rest = max(0.0, grid - named)
+        if rest > 0:
+            wedge = self._slice(BREAKDOWN_OTHER, rest, grid, rate)
+            if spend is not None and rate is not None:
+                # The remainder takes the remaining money rather than its
+                # own multiplication, so the wedges add up to the week's
+                # total to the penny. Rounding each slice independently put
+                # them a penny over, and a pie whose parts exceed the figure
+                # printed beside it is a pie nobody believes.
+                left = round(spend - priced, 2)
+                wedge["cost"] = left
+                wedge["cost_text"] = money(left)
+            slices.append(wedge)
+
+        out: dict[str, Any] = {
+            "breakdown": slices,
+            "breakdown_days": ENERGY_BREAKDOWN_DAYS,
+            "breakdown_kwh": round(grid, 1),
+            # How much of the house is actually watched. Today it is a
+            # tenth, and that is the finding rather than a shortcoming of
+            # the picture.
+            "breakdown_metered_pct": round(named / grid * 100),
+        }
+        if spend:
+            out["breakdown_cost"] = round(spend, 2)
+            out["breakdown_cost_text"] = money(spend)
+        return out
+
+    @staticmethod
+    def _slice(
+        name: str, kwh: float, whole: float, rate: float | None
+    ) -> dict[str, Any]:
+        """One wedge, with its own figures already written out.
+
+        The share and the money ride along because the card prints them: a
+        slice of four percent cannot be read as a shape, and a number
+        beside it is the whole reason the picture is allowed to be a pie.
+        """
+        out: dict[str, Any] = {
+            "name": name,
+            "kwh": round(kwh, 2),
+            "share": round(kwh / whole * 100, 1),
+        }
+        if rate is not None:
+            cost = kwh * rate
+            out["cost"] = round(cost, 2)
+            out["cost_text"] = money(cost)
+        return out
+
     def _block_days(self) -> list[dict[str, Any]]:
         """The last few days as four blocks each, oldest first.
 
@@ -946,6 +1192,10 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             "block_kwh": day["block_kwh"],
             "block_cost": day["block_cost"],
             "block_days": self._block_days(),
+            # The long run, from Home Assistant's own statistics. Each key
+            # is absent until its window is genuinely full -- see
+            # `_async_refresh_long` and usage.py.
+            **self._long,
             "cost_series": self._series("cost", 2),
             "kwh_series": self._series("kwh", 3),
             "baseline_series": self._series("baseline_watts", 0),
