@@ -177,3 +177,14 @@ async def test_a_lock_that_loads_after_the_sensor_is_heard_at_once(
 
     assert security.native_value == "amber"
     assert writes[-1] == "amber"
+    # And back: locking has to reach green without waiting for a tick,
+    # even past the grace, when the panel is red.
+    clock.tick(timedelta(minutes=6))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert security.native_value == "red"
+
+    hass.states.async_set(FRONT, "locked", {"friendly_name": "Front door"})
+    await hass.async_block_till_done()
+    assert security.native_value == "green"
+    assert writes[-1] == "green"
