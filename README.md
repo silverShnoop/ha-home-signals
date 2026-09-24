@@ -266,9 +266,12 @@ gets `null` rather than a guess, and keeps it until it comes back.
 
 Not counted: service devices (backups, AI models, the sun), and the registry
 entries that are groups rather than things — Hue rooms and zones and Cast
-speaker groups, which would report one dead bulb or speaker twice. Diagnostic
-entities, buttons and updates, and anything under "Never report these", don't
-count towards a device being unavailable.
+speaker groups, which would report one dead bulb or speaker twice. Buttons and
+updates, and anything under "Never report these", don't count towards a device
+being unavailable. Diagnostic entities (signal strength, battery) only decide
+for a device that has nothing else — a ZHA button, whose presses are events
+rather than entities — so a bulb whose signal reading goes quiet is still a
+working bulb, and a button that stops checking in still shows as offline.
 
 ## `sensor.energy_day`
 
