@@ -201,11 +201,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up the derived signal sensors."""
     needs_you = NeedsYouSensor(entry)
+    security = SecurityStatusSensor(entry)
+    security.add_listener(needs_you)
+    needs_you.security = security
     entities: list[SensorEntity] = [
         ActivityFeedSensor(entry),
         needs_you,
         SystemHealthSensor(entry),
-        SecurityStatusSensor(entry),
+        security,
         EnergyDaySensor(entry),
     ]
 
