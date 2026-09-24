@@ -1022,6 +1022,100 @@ async def test_the_block_card_shows_at_most_a_week(
     assert rows[0]["day"] < rows[-1]["day"]
 
 
+# --- what the week went on -------------------------------------------
+#
+# Two plugs account for a tenth of this house. The slice that matters is
+# therefore the one nothing is watching, and it is named rather than left
+# as the gap between a total and some parts.
+
+
+def _slices(sensor, devices, grid, spend=None):
+    """Drive the wedge arithmetic without a recorder behind it."""
+    rate = None if spend is None else spend / grid
+    out, named, priced = [], 0.0, 0.0
+    for name, kwh in devices:
+        kwh = min(kwh, grid)
+        named += kwh
+        wedge = sensor._slice(name, kwh, grid, rate)
+        priced += wedge.get("cost") or 0.0
+        out.append(wedge)
+    rest = max(0.0, grid - named)
+    if rest > 0:
+        wedge = sensor._slice("Everything else", rest, grid, rate)
+        if spend is not None and rate is not None:
+            left = round(spend - priced, 2)
+            wedge["cost"] = left
+        out.append(wedge)
+    return out
+
+
+async def test_the_wedges_sum_to_the_week(meter: Meter) -> None:
+    """Shares to a hundred, money to the penny.
+
+    The remainder takes the remaining money rather than its own
+    multiplication. Rounding each wedge independently put them a penny over
+    the total, and a pie whose parts exceed the figure printed beside it is
+    a pie nobody believes.
+    """
+    rows = _slices(
+        meter.sensor,
+        [("Washing machine", 2.0), ("Tumble dryer", 4.433)],
+        51.422,
+        12.74,
+    )
+
+    assert sum(r["share"] for r in rows) == pytest.approx(100.0, abs=0.1)
+    assert sum(r["cost"] for r in rows) == pytest.approx(12.74, abs=0.001)
+    assert [r["name"] for r in rows][-1] == "Everything else"
+
+
+async def test_the_unwatched_remainder_is_most_of_the_house(
+    meter: Meter,
+) -> None:
+    """Which is the finding, not a shortcoming of the picture.
+
+    Three point nine percent and eight point six are the two real plugs on
+    the three real days. The rest is a gap with a name.
+    """
+    rows = _slices(
+        meter.sensor,
+        [("Washing machine", 2.0), ("Tumble dryer", 4.433)],
+        51.422,
+        12.74,
+    )
+    by_name = {r["name"]: r for r in rows}
+
+    assert by_name["Washing machine"]["share"] == pytest.approx(3.9, abs=0.1)
+    assert by_name["Tumble dryer"]["share"] == pytest.approx(8.6, abs=0.1)
+    assert by_name["Everything else"]["share"] == pytest.approx(87.5, abs=0.1)
+
+
+async def test_a_plug_that_out_reads_the_meter_is_capped(
+    meter: Meter,
+) -> None:
+    """A plug and a meter are different instruments with different clocks.
+
+    Left uncapped, a plug reporting more than the grid total would give a
+    negative remainder and a wedge pointing the wrong way round.
+    """
+    rows = _slices(meter.sensor, [("Washing machine", 99.0)], 10.0, 2.5)
+
+    assert rows[0]["kwh"] == 10.0
+    assert rows[0]["share"] == pytest.approx(100.0)
+    assert [r["name"] for r in rows] == ["Washing machine"], "no negative rest"
+
+
+async def test_a_week_with_no_price_still_divides_up_the_units(
+    meter: Meter,
+) -> None:
+    """A house can meter its units without having told HA a tariff."""
+    rows = _slices(meter.sensor, [("Tumble dryer", 4.0)], 20.0)
+
+    assert [r["kwh"] for r in rows] == [4.0, 16.0]
+    assert all("cost" not in r for r in rows)
+    assert sum(r["share"] for r in rows) == pytest.approx(100.0)
+
+
 # --- recovering the days nobody was writing down ---------------------
 
 

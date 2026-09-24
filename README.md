@@ -489,6 +489,90 @@ shares no axis with anything — it is a wattage, on its own scale, under bars
 made of money — and it is the series that answers a question the bars cannot:
 whether the thing underneath every day is creeping upwards.
 
+## The long run, from statistics rather than from here
+
+Everything else in this integration is built from entity states. The week,
+the month and the breakdown are built from **long-term statistics**, and
+that is a hard limit rather than a preference: a week against the week
+before, a month against last month, and what a socket used over seven days
+are all questions about the past, and the source sensors hold only the
+present. Octopus publishes one settled day at a time; a plug publishes a
+running total that resets when it is re-paired.
+
+Statistics are the right store and already exist. Home Assistant keeps them
+for ever, survives a purge of the states they came from, and — unlike
+anything this integration could accumulate in an attribute — they are
+already correct for the days before it was installed.
+
+### Which statistics is not ours to guess
+
+The obvious move is to construct the ids from the Octopus naming, and
+`usage.py` deliberately does not: nothing else here knows what a tariff
+provider is called, and a house that changes supplier should not need a
+code change.
+
+Instead it reads the **Energy dashboard's own preferences** — the grid
+consumption and cost statistics, and the named device-consumption list.
+That is the householder having already declared *"this is my meter, and
+these are the things I am monitoring"*, in the one place Home Assistant
+asks them to. Both the flat and the nested `flow_from` grid shapes are
+read, because both are live in the wild.
+
+**The pleasant consequence:** adding a monitoring socket to the Energy
+dashboard adds it to the breakdown. No option to set, nothing to redeploy.
+
+### Nothing is reported before its window is full
+
+```
+week7_kwh / week7_cost_text        the last seven days
+prev7_kwh / prev7_cost_text        the seven before those
+week7_vs_prev_text                 "12% above the week before"
+avg_week_cost_text / avg_weeks     the average week, and how many it had
+avg_week_note                      "over 6 weeks", or "over the year"
+month_rows                         whole months, oldest first
+breakdown / breakdown_metered_pct  the week's wedges, and how much is watched
+```
+
+Each key is **absent until its window is genuinely full**. A four-day
+"week" under a seven-day heading is the figure somebody quotes back at you
+a month later, and a card renders nothing perfectly well.
+
+- Fewer than `ENERGY_MIN_WEEKS_FOR_AVERAGE` whole weeks and there is no
+  average, only `avg_weeks` saying how few there were. The **current** week
+  is never averaged in — it is partial by definition and would drag every
+  average down.
+- `avg_week_note` says what it actually averaged. "A 7-day average" implies
+  a year of evidence that does not exist in the first month.
+- The **current month is never drawn**. It is always the short bar and would
+  always read as an improvement, right up to the last day. Fewer than
+  `ENERGY_MIN_MONTHS` whole months and the card shows nothing: one month is
+  not a trend, and a chart with one bar is a stat tile in fancy dress.
+
+The refresh runs on the half-hourly timer, not when the attributes are
+read. Every figure here is a recorder query and **a card must never be the
+thing that runs one**. It is also wrapped: a card nobody is looking at must
+not be able to take the sensor down.
+
+### The breakdown's honest part is the remainder
+
+```
+Washing machine     2.00 kWh   50p    3.9%
+Tumble dryer        4.43 kWh   £1.10  8.6%
+Everything else    44.99 kWh   £11.14 87.5%
+```
+
+Two plugs account for a tenth of this house, so the slice that matters is
+the one nothing is watching — and it is **named** rather than left as the
+gap between a total and some parts. `breakdown_metered_pct` says the same
+thing as a number.
+
+Each device is capped at the grid total and the remainder floored at zero:
+a plug and a meter are different instruments with different clocks, and a
+breakdown whose parts exceed its whole is worse than no breakdown. The
+remainder also takes the **remaining money** rather than its own
+multiplication, so the wedges sum to the week's total to the penny —
+rounding each independently put them a penny over.
+
 ### The week and the month, which can disagree
 
 Two trailing windows rather than one blended average:
