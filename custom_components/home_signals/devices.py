@@ -93,21 +93,28 @@ class DevicesSensor(_Derived, RestoreEntity):
         ignored = self._ignored()
 
         # Every entity that says something about its device answering:
-        # not a diagnostic, not a button or an update, and not one the
-        # house has chosen to stop hearing about.
-        by_device: dict[str, list[tuple[er.RegistryEntry, bool]]] = {}
+        # not a button or an update, and not one the house has chosen to
+        # stop hearing about. Diagnostics are kept apart rather than
+        # dropped. A bulb's signal-strength reading going quiet is not the
+        # bulb going quiet, so where a device has ordinary entities they
+        # are what decide. But a ZHA button has none at all -- its presses
+        # are events, never entities -- and its battery and signal readings
+        # are the only way to know it is still there. Dropping them took a
+        # button the house uses every day out of the count entirely.
+        primary: dict[str, list[tuple[er.RegistryEntry, bool]]] = {}
+        diagnostic: dict[str, list[tuple[er.RegistryEntry, bool]]] = {}
         for entry in entities.entities.values():
             if entry.device_id is None or entry.disabled_by is not None:
                 continue
-            if entry.entity_category is not None or entry.domain in _NOISY_DOMAINS:
-                continue
-            if entry.entity_id in ignored:
+            if entry.domain in _NOISY_DOMAINS or entry.entity_id in ignored:
                 continue
             if (state := hass.states.get(entry.entity_id)) is None:
                 continue
-            by_device.setdefault(entry.device_id, []).append(
+            bucket = diagnostic if entry.entity_category is not None else primary
+            bucket.setdefault(entry.device_id, []).append(
                 (entry, state.state == STATE_UNAVAILABLE)
             )
+        by_device = {**diagnostic, **primary}
 
         tally = {name: {"name": name, "online": 0, OFFLINE: 0, PARTIAL: 0}
                  for name in NETWORK_ORDER}

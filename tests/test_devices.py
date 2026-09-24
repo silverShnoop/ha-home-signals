@@ -168,3 +168,44 @@ def test_a_three_part_identifier_does_not_take_the_sensor_down() -> None:
         identifiers = {("legacy", "hub", "7"), ("zha", "00:11")}
 
     assert DevicesSensor._network_of(_Device()) == "Zigbee"  # noqa: SLF001
+
+
+async def test_a_device_with_only_diagnostics_is_still_counted(
+    hass: HomeAssistant,
+) -> None:
+    """A ZHA button's presses are events; its battery is how we know it is there."""
+    src = _source(hass)
+    registry = er.async_get(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=src.entry_id, identifiers={("zha", "button")},
+        name="Washer Button", model="SNZB-01P",
+    )
+    battery = registry.async_get_or_create(
+        "sensor", "zha", "button_battery", device_id=device.id,
+        entity_category=er.EntityCategory.DIAGNOSTIC,
+        suggested_object_id="washer_button_battery",
+    )
+    hass.states.async_set(battery.entity_id, "100")
+    sensor = _sensor(hass)
+    nets = {n["name"]: n for n in sensor.extra_state_attributes["networks"]}
+    assert nets["Zigbee"]["online"] == 1, "a button with only a battery went uncounted"
+
+    hass.states.async_set(battery.entity_id, "unavailable")
+    sensor._recompute()  # noqa: SLF001
+    assert [p["name"] for p in sensor.extra_state_attributes["problems"]] == ["Washer Button"]
+
+
+async def test_a_quiet_diagnostic_does_not_fault_a_device_that_answers(
+    hass: HomeAssistant,
+) -> None:
+    """A bulb whose signal reading is unavailable is still a working bulb."""
+    src = _source(hass)
+    device_id = _device(hass, src, "Bulb", {"light": "on"})
+    signal = er.async_get(hass).async_get_or_create(
+        "sensor", "hue", "bulb_rssi", device_id=device_id,
+        entity_category=er.EntityCategory.DIAGNOSTIC,
+        suggested_object_id="bulb_rssi",
+    )
+    hass.states.async_set(signal.entity_id, "unavailable")
+
+    assert _sensor(hass).extra_state_attributes["problems"] == []
