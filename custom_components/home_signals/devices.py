@@ -169,9 +169,12 @@ class DevicesSensor(_Derived, RestoreEntity):
 
     @staticmethod
     def _network_of(device: dr.DeviceEntry) -> str:
-        for domain, _ in device.identifiers:
-            if domain in NETWORKS:
-                return NETWORKS[domain]
+        # Only the first element of an identifier is promised. Some
+        # integrations register three-part identifiers, and unpacking two
+        # took the whole sensor down on the real house.
+        for identifier in device.identifiers:
+            if identifier and identifier[0] in NETWORKS:
+                return NETWORKS[identifier[0]]
         return OTHER_NETWORK
 
     @staticmethod
