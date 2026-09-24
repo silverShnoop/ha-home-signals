@@ -33,6 +33,14 @@ One merged, newest-first feed of things that happened in the house.
   `entity_id`, `name`, `area`, `kind`, `state` and `at`.
 - **`tracked_count`** — how many entities are being watched, so a card can tell
   "nothing has happened" apart from "nothing is configured".
+- **`by_area`** — the last hour, per room: `{"Hall": {"kind", "at", "times"}}`,
+  where `times` is epoch seconds, newest first. It is what a floor plan
+  reads. The rail's `events` are capped by length — twenty rows is about ten
+  minutes of an ordinary evening — and a plan that fades over an hour cannot
+  be drawn from ten minutes. So it has its own record, capped by **age**
+  instead (60 minutes, at most 120 per room), in bare numbers so a busy hour
+  stays a few kilobytes. An entity with no area is on the rail and not here:
+  there is nowhere to draw it.
 
 `kind` is one of `button`, `lock`, `motion`, `door`, `other`. It is a contract
 with the frontend: a rail draws its icon from the kind, and a button press is

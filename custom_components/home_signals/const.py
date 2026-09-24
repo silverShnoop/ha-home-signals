@@ -7,6 +7,15 @@ CONF_MAX_EVENTS = "max_events"
 
 DEFAULT_MAX_EVENTS = 20
 
+# How far back `by_area` remembers, and how many presses per room it keeps.
+# The rail's twenty rows are about ten minutes of an ordinary evening, which
+# is too short for a floor plan that fades over an hour -- so the plan reads
+# its own, smaller record rather than the rail's being made longer. Bare
+# epoch seconds keep an hour of a busy house to a few kilobytes, well under
+# the recorder's 16 KB attribute limit.
+BY_AREA_WINDOW_MINUTES = 60
+BY_AREA_MAX_TIMES = 120
+
 # Event kinds. The rail draws its icon from the kind, so these are a contract
 # with the frontend, not free text.
 KIND_BUTTON = "button"
