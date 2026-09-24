@@ -295,6 +295,40 @@ ENERGY_BLOCK_DAYS = 7
 # states -- see `_backfill`.
 ENERGY_BACKFILL_DAYS = 10
 
+# --- The week, the month, and where it went -------------------------
+#
+# Long-run figures come from Home Assistant's own statistics rather than
+# from anything accumulated here -- see usage.py for why. These are only
+# the windows and the thresholds.
+#
+# A week is seven days and the week before is the seven before that. Both
+# are only reported when they are GENUINELY full: a four-day "week" put
+# under a seven-day heading is the kind of figure somebody quotes back at
+# you a month later, and the card renders nothing perfectly well.
+ENERGY_WEEK_HOURS = 7 * 24
+
+# The long average, in whole weeks, and the fewest that may be called one.
+# Two weeks is not an average of weeks, it is two weeks -- and the label
+# says how many it actually had, because "a 7-day average" implies a year
+# of evidence that does not exist in the first month.
+ENERGY_AVG_MAX_WEEKS = 53
+ENERGY_MIN_WEEKS_FOR_AVERAGE = 3
+
+# Months drawn on the monthly card, and the fewest worth drawing. One month
+# is not a trend and a part-month is not a month, so the current one is
+# never plotted -- it would always be the short bar and always look like an
+# improvement.
+ENERGY_MONTHS_SHOWN = 13
+ENERGY_MIN_MONTHS = 2
+
+# The breakdown's window. Seven days so it matches the weekly card beside
+# it; anything shorter and one wash swings the whole picture.
+ENERGY_BREAKDOWN_DAYS = 7
+
+# What the unmetered remainder is called. It is most of the house today and
+# should read as an honest gap rather than as a measured thing.
+BREAKDOWN_OTHER = "Everything else"
+
 # Nights needed before there is a "usual" at all. More than the cost average
 # wants: a floor is the quietest number the house produces, so a norm built
 # from three of them is one odd night away from being wrong.
