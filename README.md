@@ -217,6 +217,11 @@ status, so it stays true for as long as it is true and is never dismissable.
 - **`battery_level`** — `attention` while any battery is low, else `null`.
   The level the Batteries card wears, and the same one its `Needs you`
   rows carry.
+- **`salt_level`** — `attention` while the softener needs salt, else `null`.
+  The level the Water softener card wears. It comes from the same rule as
+  the `Needs you` salt row, and while it is set there is also a
+  `Softener salt` row in `items`, so the Maintenance tab's `level` goes
+  yellow with it. Card, tab and row are raised together and clear together.
 
 The raw lists are the point. An agent asking "what is offline?" wants entity
 ids, not a sentence assembled for a card — and an agent never looks at a
