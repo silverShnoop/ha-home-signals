@@ -210,6 +210,13 @@ status, so it stays true for as long as it is true and is never dismissable.
   `percent`, not `level`: `level` now names one of the three job levels,
   and a dict published to a card with a `level` of `41.0` is a trap set
   for whoever first renders `low_batteries` as rows.
+- **`batteries`** — every battery with a reading, worst first: the same
+  fields plus `low`, decided here against `battery_threshold` so the
+  Batteries card and `Needs you` can never draw the line in two places.
+  Ignored and unreadable batteries are left out.
+- **`battery_level`** — `attention` while any battery is low, else `null`.
+  The level the Batteries card wears, and the same one its `Needs you`
+  rows carry.
 
 The raw lists are the point. An agent asking "what is offline?" wants entity
 ids, not a sentence assembled for a card — and an agent never looks at a
