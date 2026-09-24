@@ -912,9 +912,16 @@ contacts** are opt-in only: a house's binary sensors include the fridge, the
 boiler and the washing machine door, and a light that goes red because
 somebody is making a sandwich teaches people to ignore it.
 
-This does not replace the "Front door unlocked" alert card, which is the
-thing that asks somebody to do something about it. Status is ambient;
-actions are actions.
+The job itself -- lock the door -- is a `Needs you` row, built from what
+this sensor decides: `waiting` inside the grace, `critical` past it, and
+`critical` at once for a jam. There used to be a separate "Front door
+unlocked" alert card for that, red from the first second; it is gone,
+because a job lives in `Needs you` and nowhere else.
+
+With the locks left to default, the sensor listens to the whole `lock`
+domain rather than to a list taken at setup. Lock integrations mostly load
+after this one, and a list taken then was empty -- so the only thing that
+noticed the front door was the five-minute scan.
 
 ## Setup
 
