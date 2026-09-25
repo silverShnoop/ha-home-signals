@@ -42,15 +42,25 @@ NETWORK_ORDER = [*NETWORKS.values(), OTHER_NETWORK]
 # group of bulbs the bridge happens to describe as a device, and a Cast
 # group is a set of speakers; counting either would report one dead bulb
 # three times, or a speaker group as offline because one speaker is.
-_NOT_A_THING = ("room", "zone", "group")
+#
+# Room and zone are only skipped for Hue. Tado also calls each room a
+# "Zone", but a Tado zone is the room's heating control: when it goes
+# unavailable nothing else on the card says so, and skipping it hid the
+# Gym's heating being uncontrollable.
+_GROUP_WORD = "group"
+_HUE_GROUP_WORDS = ("room", "zone")
 
 OFFLINE = "offline"
 PARTIAL = "partial"
 
 
 def _is_group(device: dr.DeviceEntry) -> bool:
-    model = (device.model or "").lower()
-    return any(word in model.split() for word in _NOT_A_THING)
+    words = (device.model or "").lower().split()
+    if _GROUP_WORD in words:
+        return True
+    return _network_of(device) == NETWORKS["hue"] and any(
+        word in words for word in _HUE_GROUP_WORDS
+    )
 
 
 def _network_of(device: dr.DeviceEntry) -> str:

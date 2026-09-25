@@ -273,7 +273,9 @@ gets `null` rather than a guess, and keeps it until it comes back.
 
 Not counted: service devices (backups, AI models, the sun), and the registry
 entries that are groups rather than things — Hue rooms and zones and Cast
-speaker groups, which would report one dead bulb or speaker twice. Buttons and
+speaker groups, which would report one dead bulb or speaker twice. A Tado
+"Zone" is counted: it is the room's heating control, not a group, and when it
+goes unavailable nothing else says so. Buttons and
 updates, and anything under "Never report these", don't count towards a device
 being unavailable. Diagnostic entities (signal strength, battery) only decide
 for a device that has nothing else — a ZHA button, whose presses are events
