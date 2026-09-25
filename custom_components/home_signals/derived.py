@@ -118,6 +118,10 @@ def _name_of(state: State) -> str:
     return state.attributes.get(ATTR_FRIENDLY_NAME, state.entity_id)
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
 def _battery_label(state: State) -> str:
     """The device's name, without the word the row is about to add.
 
@@ -886,28 +890,42 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         return rows
 
     def _offline(self) -> list[dict[str, Any]]:
-        """One row for all of them, not one each.
+        """One row for all of them, not one each, counted as devices.
 
-        Twenty-seven unavailable entities is one problem — an integration is
-        down — and twenty-seven rows would bury everything else.
+        Twenty-seven unavailable entities is one problem -- an integration
+        is down -- and twenty-seven rows would bury everything else. It is
+        counted the way the Devices card counts, from the same scan, so the
+        row and the card say the same number: this row used to count
+        entities and read "31 offline" beside a card saying 7.
         """
-        gone = self._unavailable()
-        if not gone:
+        # Imported here: the devices module builds on this one.
+        from .devices import OFFLINE, scan_devices
+
+        problems, _ = scan_devices(self.hass, self._ignored())
+        if not problems:
             return []
-        names = ", ".join(_name_of(s) for s in gone[:3])
-        if len(gone) > 3:
-            names += f" and {len(gone) - 3} more"
+        off = sum(1 for p in problems if p["state"] == OFFLINE)
+        part = len(problems) - off
+        if off and part:
+            title = f"{_count(off, 'device')} offline, {part} partly"
+        elif off:
+            title = f"{_count(off, 'device')} offline"
+        else:
+            title = f"{_count(part, 'device')} partly offline"
+        names = ", ".join(p["name"] for p in problems[:3])
+        if len(problems) > 3:
+            names += f" and {len(problems) - 3} more"
         return [{
             "id": "offline",
             "action": _snooze("offline", 12),
-            "title": f"{len(gone)} entities offline",
+            "title": title,
             "detail": names,
             "icon": "mdi:lan-disconnect",
             # Nothing is accruing damage and nothing is paused waiting
-            # for a person: 31 offline entities is an investigation for
-            # today or tomorrow. It was the loudest thing on the panel
-            # and it was pushing the Maintenance tile red every morning,
-            # which is how a red stops meaning anything.
+            # for a person: a quiet device is an investigation for today
+            # or tomorrow. It was the loudest thing on the panel once and
+            # pushed the Maintenance tile red every morning, which is how
+            # a red stops meaning anything.
             "level": LEVEL_ATTENTION,
             "action_label": "Snooze",
         }]
@@ -1031,12 +1049,17 @@ class SystemHealthSensor(_Derived):
                 "icon": "mdi:shaker-outline",
                 "level": LEVEL_ATTENTION,
             })
-        if self._offline:
+        # The row counts devices, from the same scan as the Devices card
+        # and the Needs you row; `offline` below stays the raw entity list,
+        # because an agent asking "what is offline?" wants entity ids.
+        from .devices import scan_devices  # the devices module builds on this one
+
+        if devices := scan_devices(self.hass, self._ignored())[0]:
             rows.append({
                 "id": "offline",
                 "name": "Offline",
-                "sub": self._offline[0]["name"],
-                "value": str(len(self._offline)),
+                "sub": devices[0]["name"],
+                "value": str(len(devices)),
                 "icon": "mdi:lan-disconnect",
                 "level": LEVEL_ATTENTION,
             })

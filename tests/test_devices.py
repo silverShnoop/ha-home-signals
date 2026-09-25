@@ -209,3 +209,42 @@ async def test_a_quiet_diagnostic_does_not_fault_a_device_that_answers(
     hass.states.async_set(signal.entity_id, "unavailable")
 
     assert _sensor(hass).extra_state_attributes["problems"] == []
+
+
+async def test_needs_you_counts_the_same_devices_as_the_card(
+    hass: HomeAssistant,
+) -> None:
+    """The row said "31 entities offline" beside a card saying 7. One scan now."""
+    from custom_components.home_signals.derived import NeedsYouSensor
+
+    src = _source(hass)
+    _device(hass, src, "Car", {k: "unavailable" for k in "abcdefgh"} | {"z": "on"},
+            domain="stellantis")
+    _device(hass, src, "Speaker", {"media": "unavailable"}, domain="cast")
+    _device(hass, src, "Upstairs", {"media": "unavailable"}, domain="cast",
+            model="Google Cast Group")
+    _device(hass, src, "Bulb", {"light": "on"})
+
+    card = _sensor(hass).extra_state_attributes
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    needs_you = NeedsYouSensor(entry)
+    needs_you.hass = hass
+    [row] = needs_you._offline()  # noqa: SLF001
+
+    assert (card["offline"], card["partial"]) == (1, 1)
+    assert row["title"] == "1 device offline, 1 partly", row["title"]
+    assert row["detail"] == "Car, Speaker"
+
+
+async def test_a_tado_zone_is_a_thing_but_a_hue_zone_is_not(
+    hass: HomeAssistant,
+) -> None:
+    """A Tado zone is the room's heating control; a Hue zone is a set of bulbs."""
+    src = _source(hass)
+    _device(hass, src, "Gym", {"climate": "unavailable", "humidity": "40"},
+            domain="tado", model="Zone")
+    _device(hass, src, "Home", {"light": "unavailable"}, model="Zone")
+    problems = _sensor(hass).extra_state_attributes["problems"]
+
+    assert [p["name"] for p in problems] == ["Gym"], problems
