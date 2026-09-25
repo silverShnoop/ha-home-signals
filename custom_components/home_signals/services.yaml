@@ -76,3 +76,101 @@ laundry_hung:
               value: button
             - label: A screen
               value: ui
+
+save_recipe:
+  name: Save recipe
+  description: >-
+    Create a recipe in Mealie, or change one. Name a recipe to change it;
+    leave it out to create a new one, which then needs a name. Anything not
+    given is left as it is. An ingredient line that has not changed keeps
+    Mealie's own parse of it. Answers with the recipe's slug, id and name.
+  fields:
+    recipe:
+      name: Recipe
+      description: The slug or id of the recipe to change. Omit to create one.
+      example: nanas-curry
+      selector:
+        text:
+    name:
+      name: Name
+      example: Nana's curry
+      selector:
+        text:
+    description:
+      name: Description
+      selector:
+        text:
+          multiline: true
+    total_time:
+      name: Total time
+      example: 45 minutes
+      selector:
+        text:
+    servings:
+      name: Servings
+      selector:
+        number:
+          min: 1
+          max: 50
+          mode: box
+    ingredients:
+      name: Ingredients
+      description: One per line. Replaces the whole list.
+      example: "2 onions\n1 tin chopped tomatoes"
+      selector:
+        text:
+          multiline: true
+    method:
+      name: Method
+      description: One step per line. Replaces the whole method.
+      selector:
+        text:
+          multiline: true
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+import_recipe:
+  name: Import recipe
+  description: >-
+    Import a recipe into Mealie from a web page or a video link, waiting up
+    to five minutes for it. A page with no recipe data is read by Mealie's AI
+    provider and a video is transcribed, either of which can take a minute.
+    Answers with the recipe's slug, id and name.
+  fields:
+    url:
+      name: Link
+      description: The recipe page or video.
+      required: true
+      example: https://www.youtube.com/shorts/ekOjr2XP_zU
+      selector:
+        text:
+          type: url
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+delete_recipe:
+  name: Delete recipe
+  description: >-
+    Delete a recipe from Mealie. A meal already planned with it loses its
+    recipe.
+  fields:
+    recipe:
+      name: Recipe
+      description: The slug or id of the recipe.
+      required: true
+      selector:
+        text:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie

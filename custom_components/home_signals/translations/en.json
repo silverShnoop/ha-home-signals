@@ -80,6 +80,72 @@
     "reset": {
       "name": "Reset dismissals",
       "description": "Bring every dismissed and snoozed row back."
+    },
+    "save_recipe": {
+      "name": "Save recipe",
+      "description": "Create a recipe in Mealie, or change one.",
+      "fields": {
+        "recipe": {
+          "name": "Recipe",
+          "description": "The slug or id of the recipe to change. Omit to create one."
+        },
+        "name": {
+          "name": "Name",
+          "description": "What the recipe is called."
+        },
+        "description": {
+          "name": "Description",
+          "description": "A line or two about it."
+        },
+        "total_time": {
+          "name": "Total time",
+          "description": "How long it takes, in words."
+        },
+        "servings": {
+          "name": "Servings",
+          "description": "How many it feeds."
+        },
+        "ingredients": {
+          "name": "Ingredients",
+          "description": "One per line. Replaces the whole list."
+        },
+        "method": {
+          "name": "Method",
+          "description": "One step per line. Replaces the whole method."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "import_recipe": {
+      "name": "Import recipe",
+      "description": "Import a recipe into Mealie from a web page or a video link.",
+      "fields": {
+        "url": {
+          "name": "Link",
+          "description": "The recipe page or video."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "delete_recipe": {
+      "name": "Delete recipe",
+      "description": "Delete a recipe from Mealie.",
+      "fields": {
+        "recipe": {
+          "name": "Recipe",
+          "description": "The slug or id of the recipe."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
     }
   }
 }
