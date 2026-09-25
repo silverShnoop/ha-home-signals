@@ -199,6 +199,22 @@ SERVICE_RESET = "reset"
 ATTR_ITEM_ID = "item_id"
 ATTR_HOURS = "hours"
 
+# --- Recipes ---------------------------------------------------------
+#
+# Written to Mealie directly, with the address and token borrowed from the
+# Mealie integration's own config entry. See recipes.py.
+MEALIE_DOMAIN = "mealie"
+SERVICE_SAVE_RECIPE = "save_recipe"
+SERVICE_DELETE_RECIPE = "delete_recipe"
+ATTR_RECIPE = "recipe"
+ATTR_NAME = "name"
+ATTR_DESCRIPTION = "description"
+ATTR_TOTAL_TIME = "total_time"
+ATTR_SERVINGS = "servings"
+ATTR_INGREDIENTS = "ingredients"
+ATTR_METHOD = "method"
+ATTR_CONFIG_ENTRY_ID = "config_entry_id"
+
 
 # --- What the day cost ------------------------------------------------
 #
