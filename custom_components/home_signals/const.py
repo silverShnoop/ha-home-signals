@@ -208,6 +208,13 @@ SERVICE_SAVE_RECIPE = "save_recipe"
 SERVICE_DELETE_RECIPE = "delete_recipe"
 SERVICE_IMPORT_RECIPE = "import_recipe"
 ATTR_URL = "url"
+
+# --- Photos ------------------------------------------------------------
+#
+# A photo from a card, kept in local media for an AI task. See photos.py.
+SERVICE_SAVE_PHOTO = "save_photo"
+ATTR_IMAGE = "image"
+ATTR_FOLDER = "folder"
 ATTR_RECIPE = "recipe"
 ATTR_NAME = "name"
 ATTR_DESCRIPTION = "description"

@@ -174,3 +174,24 @@ delete_recipe:
       selector:
         config_entry:
           integration: mealie
+
+save_photo:
+  name: Save photo
+  description: >-
+    Keep a photo sent by a card in local media, so an AI task can take it as
+    an attachment. Answers with its media_content_id and media_content_type.
+    Only the newest twelve in each folder are kept.
+  fields:
+    image:
+      name: Photo
+      description: A JPEG, PNG or WebP as base64, or as a data URL. Under 3 MB.
+      required: true
+      selector:
+        text:
+    folder:
+      name: Folder
+      description: Where under local media/home_signals to keep it.
+      default: photos
+      example: fridge
+      selector:
+        text:
