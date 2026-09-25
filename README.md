@@ -258,6 +258,13 @@ one car.
 - **`level`** — `attention` while anything is not answering, else `null`. The
   same devices are already behind the offline row in `Needs you`.
 
+**One count, three places.** The offline row in `Needs you`, the offline row in
+`System health` and this sensor all come from the same device scan, so they
+say the same number ("7 devices offline, 3 partly"). The row used to count
+entities and read "31 entities offline" beside a card saying 7. System
+health's raw `offline` list stays entity-level, for an agent asking which
+entity ids are down.
+
 **`since` is remembered, not read.** Home Assistant resets every `last_changed`
 on a restart, so a bulb dead for a week would read as having died at the last
 reboot. This writes the time down when a device first stops answering and
@@ -266,7 +273,9 @@ gets `null` rather than a guess, and keeps it until it comes back.
 
 Not counted: service devices (backups, AI models, the sun), and the registry
 entries that are groups rather than things — Hue rooms and zones and Cast
-speaker groups, which would report one dead bulb or speaker twice. Buttons and
+speaker groups, which would report one dead bulb or speaker twice. A Tado
+"Zone" is counted: it is the room's heating control, not a group, and when it
+goes unavailable nothing else says so. Buttons and
 updates, and anything under "Never report these", don't count towards a device
 being unavailable. Diagnostic entities (signal strength, battery) only decide
 for a device that has nothing else — a ZHA button, whose presses are events
