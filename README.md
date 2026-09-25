@@ -258,6 +258,13 @@ one car.
 - **`level`** — `attention` while anything is not answering, else `null`. The
   same devices are already behind the offline row in `Needs you`.
 
+**One count, three places.** The offline row in `Needs you`, the offline row in
+`System health` and this sensor all come from the same device scan, so they
+say the same number ("7 devices offline, 3 partly"). The row used to count
+entities and read "31 entities offline" beside a card saying 7. System
+health's raw `offline` list stays entity-level, for an agent asking which
+entity ids are down.
+
 **`since` is remembered, not read.** Home Assistant resets every `last_changed`
 on a restart, so a bulb dead for a week would read as having died at the last
 reboot. This writes the time down when a device first stops answering and
