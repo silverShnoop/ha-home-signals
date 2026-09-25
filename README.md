@@ -977,6 +977,52 @@ This does not replace the "Front door unlocked" alert card, which is the
 thing that asks somebody to do something about it. Status is ambient;
 actions are actions.
 
+## Writing recipes to Mealie
+
+`home_signals.save_recipe` and `home_signals.delete_recipe` do what Home
+Assistant's own Mealie integration cannot: create a recipe, change one, and
+delete one. The integration reads recipes and imports one from a link, and
+that is all. So a family recipe with no web page, or a quantity that needs
+fixing after an import, meant opening Mealie's own interface. The meal card
+exists so that nobody has to.
+
+```yaml
+action: home_signals.save_recipe
+data:
+  name: Nana's curry          # leave out `recipe` to create a new one
+  servings: 4
+  total_time: 1 hour
+  ingredients: |
+    2 onions
+    1 tin chopped tomatoes
+  method: |
+    Fry the onions until soft.
+    Add the tomatoes and simmer for 40 minutes.
+response_variable: saved      # {slug, recipe_id, name}
+```
+
+Name an existing recipe with `recipe` (its slug or id) to change it. Only the
+fields you send are touched: a save that leaves out `method` leaves the
+method alone, and one that sends an empty method clears it.
+
+**The address and token are borrowed from the Mealie integration**, not set
+up again here. A second copy of the token is a second place for it to go
+stale, and Home Assistant has already been told where Mealie is.
+
+**An ingredient line that has not changed keeps Mealie's parse of it.** On
+import Mealie works out the food, the unit and the quantity of each line,
+which is what its shopping lists add up. An edited line becomes plain text.
+Rewriting every line as text on every save would throw that parse away the
+first time anybody fixed a typo in the method.
+
+**Pasted numbering is dropped.** Mealie numbers the method itself, so a
+pasted "1. Heat the oil" would otherwise show as "1. 1. Heat the oil".
+Bullets go the same way. A quantity at the start of an ingredient ("1.5 kg
+potatoes") is not a list number and stays.
+
+A rename moves the recipe to a new slug, so the answer is read from what
+Mealie sent back rather than from what was asked for.
+
 ## Setup
 
 Install through HACS, restart once so Home Assistant picks up the new
