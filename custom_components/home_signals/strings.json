@@ -119,6 +119,20 @@
         }
       }
     },
+    "import_recipe": {
+      "name": "Import recipe",
+      "description": "Import a recipe into Mealie from a web page or a video link.",
+      "fields": {
+        "url": {
+          "name": "Link",
+          "description": "The recipe page or video."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
     "delete_recipe": {
       "name": "Delete recipe",
       "description": "Delete a recipe from Mealie.",

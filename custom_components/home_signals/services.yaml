@@ -133,6 +133,29 @@ save_recipe:
         config_entry:
           integration: mealie
 
+import_recipe:
+  name: Import recipe
+  description: >-
+    Import a recipe into Mealie from a web page or a video link, waiting up
+    to five minutes for it. A page with no recipe data is read by Mealie's AI
+    provider and a video is transcribed, either of which can take a minute.
+    Answers with the recipe's slug, id and name.
+  fields:
+    url:
+      name: Link
+      description: The recipe page or video.
+      required: true
+      example: https://www.youtube.com/shorts/ekOjr2XP_zU
+      selector:
+        text:
+          type: url
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
 delete_recipe:
   name: Delete recipe
   description: >-

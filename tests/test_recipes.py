@@ -23,6 +23,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from custom_components.home_signals.const import (
     DOMAIN,
     SERVICE_DELETE_RECIPE,
+    SERVICE_IMPORT_RECIPE,
     SERVICE_SAVE_RECIPE,
 )
 from custom_components.home_signals.recipes import _lines
@@ -69,6 +70,7 @@ async def test_the_actions_exist(hass: HomeAssistant) -> None:
     await _start(hass)
     assert hass.services.has_service(DOMAIN, SERVICE_SAVE_RECIPE)
     assert hass.services.has_service(DOMAIN, SERVICE_DELETE_RECIPE)
+    assert hass.services.has_service(DOMAIN, SERVICE_IMPORT_RECIPE)
 
 
 async def test_an_edit_keeps_the_parse_of_every_line_it_did_not_touch(
@@ -201,6 +203,42 @@ async def test_delete_and_a_refused_token(
     with pytest.raises(HomeAssistantError, match="refused the token"):
         await hass.services.async_call(
             DOMAIN, SERVICE_DELETE_RECIPE, {"recipe": "sea-bass"}, blocking=True,
+        )
+
+
+async def test_an_import_answers_with_where_the_recipe_lives(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.post(f"{BASE}/recipes/create/url", text='"spaghetti-puttanesca"', status=201)
+    aioclient_mock.get(
+        f"{BASE}/recipes/spaghetti-puttanesca",
+        json={"id": "rid-3", "slug": "spaghetti-puttanesca", "name": "Spaghetti Puttanesca"},
+    )
+
+    answer = await hass.services.async_call(
+        DOMAIN, SERVICE_IMPORT_RECIPE,
+        {"url": " https://www.youtube.com/shorts/ekOjr2XP_zU "},
+        blocking=True, return_response=True,
+    )
+
+    assert _sent(aioclient_mock, "POST") == [
+        {"url": "https://www.youtube.com/shorts/ekOjr2XP_zU", "includeTags": False}
+    ]
+    assert answer == {
+        "slug": "spaghetti-puttanesca", "recipe_id": "rid-3", "name": "Spaghetti Puttanesca",
+    }
+
+
+async def test_an_import_with_no_recipe_says_so(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.post(f"{BASE}/recipes/create/url", status=400, json={"detail": "BAD_RECIPE_DATA"})
+    with pytest.raises(ServiceValidationError, match="No recipe could be read"):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_IMPORT_RECIPE, {"url": "https://example.com/"},
+            blocking=True, return_response=True,
         )
 
 

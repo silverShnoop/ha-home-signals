@@ -48,13 +48,21 @@ from .const import (
     ATTR_RECIPE,
     ATTR_SERVINGS,
     ATTR_TOTAL_TIME,
+    ATTR_URL,
     DOMAIN,
     MEALIE_DOMAIN,
     SERVICE_DELETE_RECIPE,
+    SERVICE_IMPORT_RECIPE,
     SERVICE_SAVE_RECIPE,
 )
 
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
+# An import can take a minute. A page with no recipe data is read by
+# Mealie's AI provider, and a video is downloaded and transcribed first.
+# The core integration gives up after ten seconds, while Mealie carries on
+# and saves the recipe anyway, so the person is told it failed when it
+# worked. That is the whole reason this action exists.
+_IMPORT_TIMEOUT = aiohttp.ClientTimeout(total=300)
 
 # "- ", "• ", "3. " or "3) " at the start of a line.
 _MARKER = re.compile(r"^\s*(?:[-*•]+|\d{1,2}[.)])\s+")
@@ -92,6 +100,11 @@ SAVE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
+IMPORT_SCHEMA = vol.Schema({
+    vol.Required(ATTR_URL): cv.string,
+    vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+})
+
 DELETE_SCHEMA = vol.Schema({
     vol.Required(ATTR_RECIPE): cv.string,
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
@@ -113,11 +126,14 @@ class _Mealie:
             hass, verify_ssl=bool(entry.data.get("verify_ssl", True))
         )
 
-    async def request(self, method: str, path: str, body: Any = None) -> Any:
+    async def request(
+        self, method: str, path: str, body: Any = None,
+        timeout: aiohttp.ClientTimeout = _TIMEOUT,
+    ) -> Any:
         try:
             async with self._session.request(
                 method, f"{self._base}{path}", json=body,
-                headers=self._headers, timeout=_TIMEOUT,
+                headers=self._headers, timeout=timeout,
             ) as resp:
                 if resp.status == 404:
                     raise ServiceValidationError("Mealie has no such recipe.")
@@ -257,6 +273,30 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     }
 
 
+async def async_import_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
+    """Import a recipe from a web page or a video. Returns where it now lives."""
+    api = _Mealie(hass, _mealie_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID)))
+    url = str(call.data[ATTR_URL]).strip()
+    try:
+        slug = await api.request(
+            "POST", "/recipes/create/url", {"url": url, "includeTags": False},
+            timeout=_IMPORT_TIMEOUT,
+        )
+    except HomeAssistantError as err:
+        # Mealie answers 400 when nothing it tried found a recipe.
+        if "said 400" in str(err):
+            raise ServiceValidationError(f"No recipe could be read from {url}.") from err
+        raise
+    if not isinstance(slug, str) or not slug:
+        raise HomeAssistantError("Mealie imported the recipe but did not say where.")
+    saved = await api.request("GET", f"/recipes/{slug}") or {}
+    return {
+        "slug": saved.get("slug", slug),
+        "recipe_id": saved.get("id"),
+        "name": saved.get("name"),
+    }
+
+
 async def async_delete_recipe(hass: HomeAssistant, call: ServiceCall) -> None:
     """Delete a recipe. Meals already planned with it lose their recipe."""
     api = _Mealie(hass, _mealie_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID)))
@@ -274,10 +314,17 @@ def async_register_recipe_services(hass: HomeAssistant) -> None:
     async def _delete(call: ServiceCall) -> None:
         await async_delete_recipe(hass, call)
 
+    async def _import(call: ServiceCall) -> ServiceResponse:
+        return await async_import_recipe(hass, call)
+
     hass.services.async_register(
         DOMAIN, SERVICE_SAVE_RECIPE, _save,
         schema=SAVE_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN, SERVICE_DELETE_RECIPE, _delete, schema=DELETE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_IMPORT_RECIPE, _import,
+        schema=IMPORT_SCHEMA, supports_response=SupportsResponse.ONLY,
     )
