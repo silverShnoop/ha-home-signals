@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
+from .images import async_register_image_view
 from .photos import async_register_photo_services
 from .recipes import async_register_recipe_services
 
@@ -25,6 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     async_register_recipe_services(hass)
     async_register_photo_services(hass)
+    async_register_image_view(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

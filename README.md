@@ -1023,6 +1023,21 @@ potatoes") is not a list number and stays.
 A rename moves the recipe to a new slug, so the answer is read from what
 Mealie sent back rather than from what was asked for.
 
+## Recipe photos and saved photos
+
+**`GET /api/home_signals/recipe_image/<recipe_id>/<size>`** passes a recipe's
+photo through from Mealie, with `size` one of `tiny`, `min` or `original`. The
+meal cards cannot reach Mealie themselves, because the app sits behind
+ingress. The path needs Home Assistant's authentication. An `<img>` cannot
+send a token, so the card signs the path first with `auth/sign_path` and
+uses the signed URL. The browser keeps each photo for a day.
+
+**`home_signals.save_photo`** keeps a photo sent by a card (base64 or a data
+URL, JPEG, PNG or WebP, under 3 MB) in local media under
+`home_signals/<folder>/`. It answers with the `media_content_id` an
+`ai_task.generate_data` attachment takes. Only the newest twelve per folder
+are kept.
+
 ## Setup
 
 Install through HACS, restart once so Home Assistant picks up the new
