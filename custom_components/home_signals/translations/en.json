@@ -183,6 +183,16 @@
         }
       }
     },
+    "prune_tags": {
+      "name": "Prune tags",
+      "description": "Delete every Mealie tag that no recipe uses.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
     "save_photo": {
       "name": "Save photo",
       "description": "Keep a photo sent by a card where an AI task can see it.",
