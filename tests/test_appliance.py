@@ -26,9 +26,7 @@ from custom_components.home_signals.const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
     APPLIANCE_RUNNING,
-    CLEANING_AMBER,
-    CLEANING_GREEN,
-    CLEANING_RED,
+    CLEANING_CLEAR,
     LEVEL_ATTENTION,
     LEVEL_CRITICAL,
     LEVEL_WAITING,
@@ -804,26 +802,26 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
     light.hass = hass
     light.entity_id = "sensor.cleaning_status"
 
-    assert light.native_value == CLEANING_GREEN
+    assert light.native_value == CLEANING_CLEAR
 
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
-    assert light.native_value == CLEANING_AMBER
+    assert light.native_value == LEVEL_ATTENTION
     assert "1 load to hang" in light.extra_state_attributes["detail"]
 
     machine.set(LEAK, "on")
     await hass.async_block_till_done()
-    assert light.native_value == CLEANING_RED, "water on the floor was not red"
+    assert light.native_value == LEVEL_CRITICAL, "water on the floor was not critical"
 
     machine.set(PLUG, "off")
     await hass.async_block_till_done()
-    assert light.native_value == CLEANING_RED, "the leak stopped being the headline"
+    assert light.native_value == LEVEL_CRITICAL, "the leak stopped being the headline"
     assert "leaking" in light.extra_state_attributes["detail"]
 
     # Somebody put the power back on over the wet pad. Their call.
     machine.set(PLUG, "on")
     await hass.async_block_till_done()
-    assert light.native_value == CLEANING_AMBER, "a handled leak kept the tab red"
+    assert light.native_value == LEVEL_ATTENTION, "a handled leak kept the tab critical"
     # Still wet, so the cutoff cannot fire again: a job, but one that keeps.
     assert light.extra_state_attributes["level"] == LEVEL_ATTENTION
     assert "still wet" in light.extra_state_attributes["detail"]
@@ -836,12 +834,11 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
 async def test_the_cleaning_light_carries_the_level_not_just_the_colour(
     hass: HomeAssistant, machine: Machine
 ) -> None:
-    """The tab tile wears a level, and amber is not one level.
+    """The tab's state is its level, and there are two below critical.
 
-    Three different jobs are amber, and one of them -- a machine left
-    without power mid-cycle -- is `waiting` rather than `attention`. A dock
-    button mapping the colour itself cannot know that, and mapping it in
-    two places is how the map drifted off the palette in the first place.
+    A machine left without power mid-cycle is `waiting`; washing to hang
+    is `attention`. When the state was a colour both were "amber", and a
+    reader mapping the colour could not tell them apart.
     """
     from custom_components.home_signals.appliance import CleaningStatusSensor
 
@@ -855,27 +852,27 @@ async def test_the_cleaning_light_carries_the_level_not_just_the_colour(
 
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
-    assert light.native_value == CLEANING_AMBER
+    assert light.native_value == LEVEL_ATTENTION
     assert light.extra_state_attributes["level"] == LEVEL_ATTENTION
 
-    # Same amber, different promise: wet washing and a clock running.
+    # Not attention: wet washing and a clock running.
     machine.set(PLUG, "off")
     await hass.async_block_till_done()
-    assert light.native_value == CLEANING_AMBER
+    assert light.native_value == LEVEL_WAITING
     assert light.extra_state_attributes["level"] == LEVEL_WAITING, (
         "a machine left without power was reported as an errand for tomorrow"
     )
 
     machine.set(LEAK, "on")
     await hass.async_block_till_done()
-    assert light.native_value == CLEANING_RED
+    assert light.native_value == LEVEL_CRITICAL
     assert light.extra_state_attributes["level"] == LEVEL_CRITICAL
 
 
 async def test_a_full_drum_is_attention_on_the_tab(
     hass: HomeAssistant, machine: Machine
 ) -> None:
-    """The other amber, and it keeps: the washing is dry and indoors."""
+    """Attention, and it keeps: the washing is dry and indoors."""
     from custom_components.home_signals.appliance import CleaningStatusSensor
 
     light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
@@ -887,7 +884,7 @@ async def test_a_full_drum_is_attention_on_the_tab(
     assert machine.sensor.hung() is True, "no load was queued to clear"
 
     assert machine.attrs["drum_full"] is True
-    assert light.native_value == CLEANING_AMBER
+    assert light.native_value == LEVEL_ATTENTION
     assert "to empty" in light.extra_state_attributes["detail"]
     assert light.extra_state_attributes["level"] == LEVEL_ATTENTION
 

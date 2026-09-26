@@ -59,9 +59,7 @@ from .const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
     APPLIANCE_RUNNING,
-    CLEANING_AMBER,
-    CLEANING_GREEN,
-    CLEANING_RED,
+    CLEANING_CLEAR,
     DOMAIN,
     LEVEL_ATTENTION,
     LEVEL_CRITICAL,
@@ -1183,12 +1181,12 @@ class AppliancePressSensor(SensorEntity, RestoreEntity):
 
 
 class CleaningStatusSensor(SensorEntity):
-    """Is anything in the utility corner asking for attention, as a colour.
+    """Is anything in the utility corner asking for attention, as a level.
 
-    The same shape as `security_status`, and for the same reason: a tab on a
-    wall panel can be a colour long before anybody reads a word of it. Red is
-    water on the floor. Amber is a job — washing to hang, or a machine left
-    without power.
+    The state is `critical` (water on the floor), `waiting` (a machine left
+    without power), `attention` (washing to hang, a drum to empty, a leak
+    pad still wet) or `clear` -- the same names the Needs-you rows and the
+    cards use, so the tab cannot say a different thing from either.
     """
 
     _attr_should_poll = False
@@ -1196,7 +1194,7 @@ class CleaningStatusSensor(SensorEntity):
     _attr_name = "Cleaning status"
     _attr_icon = "mdi:washing-machine"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = [CLEANING_GREEN, CLEANING_AMBER, CLEANING_RED]
+    _attr_options = [CLEANING_CLEAR, LEVEL_ATTENTION, LEVEL_WAITING, LEVEL_CRITICAL]
 
     def __init__(self, entry: ConfigEntry, sensors: list[ApplianceCycleSensor]) -> None:
         self._entry = entry
@@ -1221,7 +1219,7 @@ class CleaningStatusSensor(SensorEntity):
     def _async_tick(self, _now: datetime) -> None:
         self.async_write_ha_state()
 
-    def _read(self) -> tuple[str, str, str | None]:
+    def _read(self) -> tuple[str, str | None]:
         leaking: list[str] = []
         unpowered: list[str] = []
         still_wet: list[str] = []
@@ -1246,52 +1244,32 @@ class CleaningStatusSensor(SensorEntity):
             if attrs.get("drum_full"):
                 full.append(sensor.name or sensor.slug)
 
-        # The level is not the colour, and this is the sensor where the
-        # difference shows. Amber covers three different jobs, and one of
-        # them -- a machine left without power mid-cycle -- is wet washing
-        # and a clock running, which is `waiting` rather than `attention`.
-        # The Needs-you row has said so since the levels arrived; the tab
-        # tile could not, because it was reading the three-colour state.
-        #
-        # So the level rides alongside the colour instead of being derived
-        # from it. A dock button that mapped amber to a level itself would
-        # be a second place the levels have to be kept right -- and that
-        # second place is what drifted: the map named decorative accent
-        # slots 1 and 2 from back when they were the orange and the
-        # yellow, so once those hues left the palette a load to hang
-        # painted the tab bone-white and a leak painted it tan.
+        # The state IS the level. It used to be a colour, and "amber"
+        # covered two levels -- a machine left without power is `waiting`,
+        # a load to hang is `attention` -- so the level had to ride
+        # alongside it and anything reading the colour got it wrong.
         if leaking:
-            return CLEANING_RED, f"{leaking[0]} leaking", LEVEL_CRITICAL
+            return f"{leaking[0]} leaking", LEVEL_CRITICAL
         if unpowered:
-            return (
-                CLEANING_AMBER,
-                f"{unpowered[0]} has no power",
-                LEVEL_WAITING,
-            )
+            return f"{unpowered[0]} has no power", LEVEL_WAITING
         if still_wet:
-            return (
-                CLEANING_AMBER,
-                f"{still_wet[0]} leak sensor still wet",
-                LEVEL_ATTENTION,
-            )
+            return f"{still_wet[0]} leak sensor still wet", LEVEL_ATTENTION
         if waiting:
             plural = "s" if waiting > 1 else ""
-            return (
-                CLEANING_AMBER,
-                f"{waiting} load{plural} to hang",
-                LEVEL_ATTENTION,
-            )
+            return f"{waiting} load{plural} to hang", LEVEL_ATTENTION
         if full:
-            return CLEANING_AMBER, f"{full[0]} to empty", LEVEL_ATTENTION
+            return f"{full[0]} to empty", LEVEL_ATTENTION
         # No level at all, not the quietest one. Nothing is waiting, so
         # nothing wants doing, and the tile goes back to its own accent.
-        return CLEANING_GREEN, "Nothing waiting", None
+        return "Nothing waiting", None
 
     @property
     def native_value(self) -> str:
-        return self._read()[0]
+        return self._read()[1] or CLEANING_CLEAR
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        status, detail, level = self._read()
-        return {"detail": detail, "status": status, "level": level}
+        detail, level = self._read()
+        # `level` stays as an attribute, None when clear, so a reader that
+        # already maps it keeps working unchanged.
+        return {"detail": detail, "level": level}
