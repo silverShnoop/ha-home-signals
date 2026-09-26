@@ -756,15 +756,41 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             name = _name_of(state)
             slug = attrs.get("slug") or entity_id
 
-            if attrs.get("leak"):
+            # `leak_alarm`, not `leak`. Once somebody has switched the plug
+            # back on over a wet pad they have looked at the floor and
+            # decided to finish the wash; the pad staying damp after that
+            # is a fact for the card, not a job. Older states without the
+            # key fall back to the raw sensor rather than going quiet.
+            if attrs.get("leak_alarm", attrs.get("leak")):
+                powered = attrs.get("powered", True)
                 rows.append({
                     "id": f"leak_{slug}",
                     "title": f"{name} is leaking",
-                    "detail": "Power cut at the plug \u00b7 check the floor",
+                    # Never claim the cut: this row also fires when the
+                    # cutoff has not happened, which is the worse case.
+                    "detail": (
+                        "Power still on \u00b7 check the floor"
+                        if powered
+                        else "Power cut at the plug \u00b7 check the floor"
+                    ),
                     "icon": "mdi:water-alert",
                     "level": LEVEL_CRITICAL,
                     "action_label": "Snooze",
                     "action": _snooze(f"leak_{slug}", hours=1),
+                })
+
+            elif attrs.get("leak"):
+                # Power restored over a wet pad. The person has decided about
+                # the floor, but the cutoff only fires on the pad GOING wet,
+                # so until it dries a second leak would cut nothing. That is
+                # a real job -- dry the pad -- and it keeps, so attention.
+                # Cleared by the pad drying, which is the only true answer.
+                rows.append({
+                    "id": f"leak_wet_{slug}",
+                    "title": f"{name} leak sensor still wet",
+                    "detail": "Won't cut the power again until it dries",
+                    "icon": "mdi:water-alert",
+                    "level": LEVEL_ATTENTION,
                 })
 
             # Deliberately independent of the leak: the sensor stays wet long

@@ -59,9 +59,7 @@ from .const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
     APPLIANCE_RUNNING,
-    CLEANING_AMBER,
-    CLEANING_GREEN,
-    CLEANING_RED,
+    CLEANING_CLEAR,
     DOMAIN,
     LEVEL_ATTENTION,
     LEVEL_CRITICAL,
@@ -190,6 +188,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._pending: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = []
         self._door_was_open = False
+        # Whether somebody has switched the plug back on since the pad
+        # last went wet. See _sync_leak.
+        self._leak_was_wet = False
+        self._plug_was_on: bool | None = None
+        self._leak_handled = False
         # Things to poke when this changes. Needs you and the cleaning light
         # are both derived from `pending`, which lives in here rather than in
         # any entity they could subscribe to — a state subscription would
@@ -264,6 +267,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._rewashing = bool(attrs.get("rewashing"))
         load = attrs.get("rewashing_load")
         self._rewashing_load = str(load) if load else None
+        # Somebody already turned the power back on over a wet pad. A
+        # restart is not new information about the floor, so it must not
+        # turn their decision back into an alarm.
+        self._leak_handled = bool(attrs.get("leak_handled"))
+        self._leak_was_wet = self._leak_handled
         # A cycle in flight is not resumed, so the re-wash it was part of
         # is over as far as we can tell. Put the fullness back rather
         # than lose it: the washing is still in the drum either way.
@@ -285,18 +293,21 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
     @callback
     def _async_started(self, _hass: HomeAssistant) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
     @callback
     def _async_changed(self, _event: Event[EventStateChangedData]) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
     @callback
     def _async_tick(self, _now: datetime) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
@@ -334,6 +345,44 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._rewashing = False
             self._rewashing_load = None
         self._door_was_open = open_now
+
+    # --- the leak -----------------------------------------------------
+
+    def _sync_leak(self) -> None:
+        """Whether a wet pad is still news, or somebody has already acted.
+
+        The pad going wet is critical: the leak automation cuts the plug,
+        and water may be on the floor. The pad STAYS wet long after the
+        floor has been dealt with, though, and switching the plug back on
+        over it is a person deciding to finish the wash. We trust them to
+        have looked, so from then on "wet" is a fact on the card and no
+        longer a job.
+
+        Only a real off -> on of the plug counts. A plug that was never
+        cut -- the cutoff failed, or the plug is not reporting -- has not
+        been restored by anybody, so the leak stays an alarm. The pad
+        going wet again is new information and re-arms it.
+        """
+        wet = _is_on(self.hass, self._spec.get("leak"), default=False)
+        plug = self._spec.get("plug")
+        state = self.hass.states.get(plug) if plug else None
+        plug_on = (
+            None
+            if state is None or state.state in _NOT_A_READING
+            else state.state == STATE_ON
+        )
+
+        if not wet:
+            self._leak_handled = False
+        elif not self._leak_was_wet:
+            # Went wet just now: new, whatever anybody decided last time.
+            self._leak_handled = False
+        elif plug_on and self._plug_was_on is False:
+            self._leak_handled = True
+
+        self._leak_was_wet = wet
+        if plug_on is not None:
+            self._plug_was_on = plug_on
 
     def _lock_released(self) -> None:
         """The door just opened. A short run was the lock, not a wash.
@@ -1016,6 +1065,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "power_w": watts,
             "powered": powered,
             "leak": leak,
+            # The pad is wet AND nobody has switched the plug back on over
+            # it. This, not `leak`, is what raises the Needs-you row, the
+            # tab and the card's outline: `leak` alone stays true for hours
+            # after the floor is dry and somebody has chosen to carry on.
+            "leak_alarm": leak and not self._leak_handled,
+            "leak_handled": leak and self._leak_handled,
             "door_open": door_open,
             # Whether there is washing in the drum. Not the same question as
             # whether there is washing to hang, and cleared by a different
@@ -1126,12 +1181,12 @@ class AppliancePressSensor(SensorEntity, RestoreEntity):
 
 
 class CleaningStatusSensor(SensorEntity):
-    """Is anything in the utility corner asking for attention, as a colour.
+    """Is anything in the utility corner asking for attention, as a level.
 
-    The same shape as `security_status`, and for the same reason: a tab on a
-    wall panel can be a colour long before anybody reads a word of it. Red is
-    water on the floor. Amber is a job — washing to hang, or a machine left
-    without power.
+    The state is `critical` (water on the floor), `waiting` (a machine left
+    without power), `attention` (washing to hang, a drum to empty, a leak
+    pad still wet) or `clear` -- the same names the Needs-you rows and the
+    cards use, so the tab cannot say a different thing from either.
     """
 
     _attr_should_poll = False
@@ -1139,7 +1194,7 @@ class CleaningStatusSensor(SensorEntity):
     _attr_name = "Cleaning status"
     _attr_icon = "mdi:washing-machine"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = [CLEANING_GREEN, CLEANING_AMBER, CLEANING_RED]
+    _attr_options = [CLEANING_CLEAR, LEVEL_ATTENTION, LEVEL_WAITING, LEVEL_CRITICAL]
 
     def __init__(self, entry: ConfigEntry, sensors: list[ApplianceCycleSensor]) -> None:
         self._entry = entry
@@ -1164,15 +1219,21 @@ class CleaningStatusSensor(SensorEntity):
     def _async_tick(self, _now: datetime) -> None:
         self.async_write_ha_state()
 
-    def _read(self) -> tuple[str, str, str | None]:
+    def _read(self) -> tuple[str, str | None]:
         leaking: list[str] = []
         unpowered: list[str] = []
+        still_wet: list[str] = []
         full: list[str] = []
         waiting = 0
         for sensor in self._sensors:
             attrs = sensor.extra_state_attributes
-            if attrs.get("leak"):
+            # The alarm, not the raw pad: see `leak_alarm`.
+            if attrs.get("leak_alarm", attrs.get("leak")):
                 leaking.append(sensor.name or sensor.slug)
+            elif attrs.get("leak"):
+                # Stood down, but still wet: the cutoff cannot fire again
+                # until the pad dries.
+                still_wet.append(sensor.name or sensor.slug)
             elif not attrs.get("powered", True):
                 # Only worth saying while there is no leak: with water on the
                 # floor, "it has no power" is the automation working, not a
@@ -1183,46 +1244,32 @@ class CleaningStatusSensor(SensorEntity):
             if attrs.get("drum_full"):
                 full.append(sensor.name or sensor.slug)
 
-        # The level is not the colour, and this is the sensor where the
-        # difference shows. Amber covers three different jobs, and one of
-        # them -- a machine left without power mid-cycle -- is wet washing
-        # and a clock running, which is `waiting` rather than `attention`.
-        # The Needs-you row has said so since the levels arrived; the tab
-        # tile could not, because it was reading the three-colour state.
-        #
-        # So the level rides alongside the colour instead of being derived
-        # from it. A dock button that mapped amber to a level itself would
-        # be a second place the levels have to be kept right -- and that
-        # second place is what drifted: the map named decorative accent
-        # slots 1 and 2 from back when they were the orange and the
-        # yellow, so once those hues left the palette a load to hang
-        # painted the tab bone-white and a leak painted it tan.
+        # The state IS the level. It used to be a colour, and "amber"
+        # covered two levels -- a machine left without power is `waiting`,
+        # a load to hang is `attention` -- so the level had to ride
+        # alongside it and anything reading the colour got it wrong.
         if leaking:
-            return CLEANING_RED, f"{leaking[0]} leaking", LEVEL_CRITICAL
+            return f"{leaking[0]} leaking", LEVEL_CRITICAL
         if unpowered:
-            return (
-                CLEANING_AMBER,
-                f"{unpowered[0]} has no power",
-                LEVEL_WAITING,
-            )
+            return f"{unpowered[0]} has no power", LEVEL_WAITING
+        if still_wet:
+            return f"{still_wet[0]} leak sensor still wet", LEVEL_ATTENTION
         if waiting:
             plural = "s" if waiting > 1 else ""
-            return (
-                CLEANING_AMBER,
-                f"{waiting} load{plural} to hang",
-                LEVEL_ATTENTION,
-            )
+            return f"{waiting} load{plural} to hang", LEVEL_ATTENTION
         if full:
-            return CLEANING_AMBER, f"{full[0]} to empty", LEVEL_ATTENTION
+            return f"{full[0]} to empty", LEVEL_ATTENTION
         # No level at all, not the quietest one. Nothing is waiting, so
         # nothing wants doing, and the tile goes back to its own accent.
-        return CLEANING_GREEN, "Nothing waiting", None
+        return "Nothing waiting", None
 
     @property
     def native_value(self) -> str:
-        return self._read()[0]
+        return self._read()[1] or CLEANING_CLEAR
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        status, detail, level = self._read()
-        return {"detail": detail, "status": status, "level": level}
+        detail, level = self._read()
+        # `level` stays as an attribute, None when clear, so a reader that
+        # already maps it keeps working unchanged.
+        return {"detail": detail, "level": level}
