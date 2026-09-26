@@ -113,6 +113,14 @@
           "name": "Method",
           "description": "One step per line. Replaces the whole method."
         },
+        "tags": {
+          "name": "Tags",
+          "description": "Tag names, replacing the recipe's tags. Missing tags are created."
+        },
+        "favourite": {
+          "name": "Favourite",
+          "description": "Whether it is a favourite of the Mealie user whose token this is."
+        },
         "config_entry_id": {
           "name": "Mealie",
           "description": "Which Mealie, if there is more than one."
@@ -140,6 +148,34 @@
         "recipe": {
           "name": "Recipe",
           "description": "The slug or id of the recipe."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "recipe_index": {
+      "name": "Recipe index",
+      "description": "Every recipe with its tags, ingredients, when it was last made and whether it is a favourite.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "mark_made": {
+      "name": "Mark made",
+      "description": "Record that a recipe was eaten on a day.",
+      "fields": {
+        "recipe": {
+          "name": "Recipe",
+          "description": "The slug or id of the recipe."
+        },
+        "date": {
+          "name": "Date",
+          "description": "The day it was eaten. Today if not given."
         },
         "config_entry_id": {
           "name": "Mealie",

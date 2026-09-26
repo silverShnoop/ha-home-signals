@@ -1023,6 +1023,41 @@ potatoes") is not a list number and stays.
 A rename moves the recipe to a new slug, so the answer is read from what
 Mealie sent back rather than from what was asked for.
 
+## Finding a meal: the recipe index, tags, favourites, last made
+
+`home_signals.recipe_index` answers every recipe in Mealie with what a
+picker filters on:
+
+```yaml
+recipes:
+  - recipe_id: 464a3de1-…
+    slug: chicken-fajitas
+    name: Chicken fajitas
+    total_time: 45 minutes
+    image: pfLf                  # set when Mealie has a photo
+    tags: [Dinner, Quick, Chicken, Mexican]
+    ingredients: [500g chicken thighs, 2 peppers, …]
+    last_made: 2026-09-01        # local date, or null
+    date_added: 2026-08-20
+    favourite: true              # the token user's favourite
+tags: [Chicken, Dinner, Mexican, Quick]
+```
+
+Mealie's recipe list carries no ingredients, so each full recipe is read
+once and kept until Mealie's `updatedAt` for it changes. A repeat call reads
+only the list.
+
+`save_recipe` also takes `tags` (names; replaces the recipe's tags, creating
+any Mealie does not have, matched ignoring case) and `favourite` (true or
+false, for the Mealie user whose token the integration uses). Either works
+on its own: `{recipe: chicken-fajitas, favourite: true}` changes nothing
+else.
+
+`home_signals.mark_made` records that a recipe was eaten on a day (today
+unless `date` is given). It never moves the date backwards, so marking an
+older meal after a newer one is harmless. The meal scripts call it each
+night for the day that has just gone.
+
 ## Recipe photos and saved photos
 
 **`GET /api/home_signals/recipe_image/<recipe_id>/<size>`** passes a recipe's
