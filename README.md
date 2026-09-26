@@ -1048,6 +1048,7 @@ recipes:
     last_made: 2026-09-01        # local date, or null
     date_added: 2026-08-20
     favourite: true              # the token user's favourite
+    source: https://...          # where it was imported from, when it was
 tags: [Chicken, Dinner, Mexican, Quick]
 ```
 

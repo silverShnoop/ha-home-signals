@@ -528,6 +528,9 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
             "last_made": _day(summary.get("lastMade")),
             "date_added": _day(summary.get("dateAdded") or summary.get("createdAt")),
             "favourite": str(summary.get("id")) in favourites,
+            # Where it came from, so a link shared a second time is known
+            # before it is imported again.
+            "source": summary.get("orgURL") or None,
         })
     return {"recipes": recipes, "tags": sorted(tag_names, key=str.lower)}
 

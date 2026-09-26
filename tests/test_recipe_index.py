@@ -26,7 +26,8 @@ LISTING = f"{BASE}/recipes?perPage=-1&orderBy=name&orderDirection=asc"
 SUMMARIES = {"items": [
     {"id": "r1", "slug": "fajitas", "name": "Chicken fajitas", "totalTime": "45 minutes",
      "image": "abc", "tags": [{"name": "Dinner", "slug": "dinner"}, {"name": "Chicken", "slug": "chicken"}],
-     "lastMade": "2026-09-01T18:00:00Z", "dateAdded": "2026-08-20", "updatedAt": "2026-09-01T10:00:00Z"},
+     "lastMade": "2026-09-01T18:00:00Z", "dateAdded": "2026-08-20", "updatedAt": "2026-09-01T10:00:00Z",
+     "orgURL": "https://example.com/fajitas"},
     {"id": "r2", "slug": "oats", "name": "Overnight oats", "totalTime": None,
      "image": None, "tags": [], "lastMade": None, "dateAdded": "2026-09-25",
      "updatedAt": "2026-09-25T10:00:00Z"},
@@ -87,6 +88,8 @@ async def test_the_index_carries_what_a_picker_filters_on(
     assert oats["favourite"] is True
     assert oats["ingredients"] == ["50g oats"]
     assert oats["last_made"] is None
+    assert fajitas["source"] == "https://example.com/fajitas"
+    assert oats["source"] is None
     assert answer["tags"] == ["Chicken", "Dinner"]
 
 
