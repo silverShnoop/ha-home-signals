@@ -173,3 +173,66 @@ async def test_mark_made_only_moves_forward(
     assert newer == {"slug": "fajitas", "last_made": "2026-09-20", "changed": True}
     (sent,) = _calls(aioclient_mock, "PATCH", "/recipes/fajitas/last-made")
     assert _body(sent)["timestamp"].startswith("2026-09-20T12:00:00")
+
+
+async def test_a_list_of_tags_arrives_as_a_list(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The bug this guards: cv.string first turned the list into its text."""
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes/fajitas", json=FAJITAS)
+    aioclient_mock.get(f"{BASE}/organizers/tags?perPage=-1", json={"items": [
+        {"id": "t1", "name": "Dinner", "slug": "dinner"},
+        {"id": "t2", "name": "Chicken", "slug": "chicken"},
+    ]})
+    aioclient_mock.patch(f"{BASE}/recipes/fajitas", json=FAJITAS)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "fajitas", "tags": ["Dinner", "Chicken"]},
+        blocking=True, return_response=True,
+    )
+
+    (patch,) = _calls(aioclient_mock, "PATCH", "/recipes/fajitas")
+    assert [t["name"] for t in _body(patch)["tags"]] == ["Dinner", "Chicken"]
+    assert not _calls(aioclient_mock, "POST", "/organizers/tags")
+
+
+async def test_a_mangled_tag_is_found_by_its_slug_and_renamed(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes/fajitas", json=FAJITAS)
+    aioclient_mock.get(f"{BASE}/organizers/tags?perPage=-1", json={"items": [
+        {"id": "t9", "name": "['Lunch'", "slug": "lunch"},
+    ]})
+    aioclient_mock.put(f"{BASE}/organizers/tags/t9", json={"id": "t9", "name": "Lunch", "slug": "lunch"})
+    aioclient_mock.patch(f"{BASE}/recipes/fajitas", json=FAJITAS)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "fajitas", "tags": "Lunch"},
+        blocking=True, return_response=True,
+    )
+
+    (renamed,) = _calls(aioclient_mock, "PUT", "/organizers/tags/t9")
+    assert _body(renamed) == {"name": "Lunch"}
+    assert not _calls(aioclient_mock, "POST", "/organizers/tags"), "a second tag was made on the same slug"
+    (patch,) = _calls(aioclient_mock, "PATCH", "/recipes/fajitas")
+    assert _body(patch)["tags"] == [{"id": "t9", "name": "Lunch", "slug": "lunch"}]
+
+
+async def test_prune_deletes_the_tags_nothing_uses(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/organizers/tags/empty", json=[
+        {"id": "t8", "name": "'Quick'"}, {"id": "t9", "name": "old"},
+    ])
+    aioclient_mock.delete(f"{BASE}/organizers/tags/t8", json={})
+    aioclient_mock.delete(f"{BASE}/organizers/tags/t9", json={})
+
+    answer = await hass.services.async_call(
+        DOMAIN, "prune_tags", {}, blocking=True, return_response=True,
+    )
+
+    assert answer == {"deleted": ["'Quick'", "old"]}
+    assert len(_calls(aioclient_mock, "DELETE", "/organizers/tags/t8")) == 1

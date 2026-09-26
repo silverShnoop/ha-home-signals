@@ -228,6 +228,19 @@ mark_made:
         config_entry:
           integration: mealie
 
+prune_tags:
+  name: Prune tags
+  description: >-
+    Delete every Mealie tag that no recipe uses, and answer with their names.
+    Tags are made as recipes are tagged; this tidies the ones left behind.
+  fields:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
 save_photo:
   name: Save photo
   description: >-

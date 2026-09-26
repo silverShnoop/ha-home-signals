@@ -1053,6 +1053,11 @@ false, for the Mealie user whose token the integration uses). Either works
 on its own: `{recipe: chicken-fajitas, favourite: true}` changes nothing
 else.
 
+Tags are matched by slug, as Mealie matches them, so "quick", "Quick" and
+"'Quick'" are one tag; a tag found under another spelling is renamed to the
+one asked for. `home_signals.prune_tags` deletes every tag no recipe uses and
+answers `{deleted: [names]}`.
+
 `home_signals.mark_made` records that a recipe was eaten on a day (today
 unless `date` is given). It never moves the date backwards, so marking an
 older meal after a newer one is harmless. The meal scripts call it each
