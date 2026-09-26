@@ -67,6 +67,7 @@ from .const import (
     SERVICE_DELETE_RECIPE,
     SERVICE_IMPORT_RECIPE,
     SERVICE_MARK_MADE,
+    SERVICE_PRUNE_TAGS,
     SERVICE_RECIPE_INDEX,
     SERVICE_SAVE_RECIPE,
 )
@@ -110,14 +111,21 @@ SAVE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_DESCRIPTION): cv.string,
     vol.Optional(ATTR_TOTAL_TIME): cv.string,
     vol.Optional(ATTR_SERVINGS): vol.Coerce(float),
-    vol.Optional(ATTR_INGREDIENTS): vol.Any(cv.string, [cv.string]),
-    vol.Optional(ATTR_METHOD): vol.Any(cv.string, [cv.string]),
-    vol.Optional(ATTR_TAGS): vol.Any(cv.string, [cv.string]),
+    # A list is tried first. cv.string turns anything into text, so with it
+    # first a list of tags arrived as "['Dinner', 'Quick']" and was split on
+    # its commas into tags called "['Dinner'" and "'Quick']".
+    vol.Optional(ATTR_INGREDIENTS): vol.Any([cv.string], cv.string),
+    vol.Optional(ATTR_METHOD): vol.Any([cv.string], cv.string),
+    vol.Optional(ATTR_TAGS): vol.Any([cv.string], cv.string),
     vol.Optional(ATTR_FAVOURITE): cv.boolean,
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
 INDEX_SCHEMA = vol.Schema({
+    vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+})
+
+PRUNE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
@@ -331,27 +339,65 @@ def _tag_names(value: Any) -> list[str] | None:
     return out
 
 
+def _tag_slug(name: str) -> str:
+    """The slug Mealie would give a tag: what makes two names the same tag."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 async def _tags_for(api: _Mealie, names: list[str]) -> list[dict[str, Any]]:
     """Mealie's tags for these names, creating any it does not have yet.
 
-    Matched ignoring case, so "quick" from one script and "Quick" from
-    another are the same tag rather than two chips side by side.
+    Matched by slug, as Mealie does: "quick", "Quick" and "'Quick'" are one
+    tag, and a second can never be created beside it. A tag found under
+    another spelling is renamed to the one asked for, so a mangled name
+    left by an earlier save is mended rather than kept.
     """
-    have = await api.request("GET", "/organizers/tags?perPage=-1") or {}
-    known = {
-        str(t.get("name", "")).lower(): t
-        for t in (have.get("items") or [])
-        if isinstance(t, dict)
-    }
+    async def known() -> dict[str, dict[str, Any]]:
+        have = await api.request("GET", "/organizers/tags?perPage=-1") or {}
+        return {
+            str(t.get("slug") or _tag_slug(str(t.get("name", "")))): t
+            for t in (have.get("items") or [])
+            if isinstance(t, dict)
+        }
+
+    tags = await known()
     out = []
     for name in names:
-        tag = known.get(name.lower())
+        slug = _tag_slug(name)
+        if not slug:
+            continue
+        tag = tags.get(slug)
         if tag is None:
-            tag = await api.request("POST", "/organizers/tags", {"name": name}) or {}
-            known[name.lower()] = tag
-        if tag.get("slug"):
+            try:
+                tag = await api.request("POST", "/organizers/tags", {"name": name}) or {}
+            except HomeAssistantError as err:
+                # Made by someone else a moment ago: read it back.
+                if "said 409" not in str(err):
+                    raise
+                tags = await known()
+                tag = tags.get(slug) or {}
+            tags[slug] = tag
+        elif tag.get("id") and str(tag.get("name", "")).lower() != name.lower():
+            renamed = await api.request("PUT", f"/organizers/tags/{tag['id']}", {"name": name})
+            tag = renamed if isinstance(renamed, dict) and renamed.get("slug") else {**tag, "name": name}
+            tags[slug] = tag
+        if tag.get("slug") and all(t["slug"] != tag["slug"] for t in out):
             out.append({"id": tag.get("id"), "name": tag.get("name", name), "slug": tag["slug"]})
     return out
+
+
+async def async_prune_tags(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
+    """Delete every tag no recipe uses. Answers with their names."""
+    api = _Mealie(hass, _mealie_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID)))
+    empty = await api.request("GET", "/organizers/tags/empty") or []
+    if isinstance(empty, dict):
+        empty = empty.get("items") or []
+    gone = []
+    for tag in empty:
+        if isinstance(tag, dict) and tag.get("id"):
+            await api.request("DELETE", f"/organizers/tags/{tag['id']}")
+            gone.append(tag.get("name"))
+    return {"deleted": gone}
 
 
 async def _set_favourite(api: _Mealie, slug: str, favourite: bool) -> None:
@@ -527,6 +573,9 @@ def async_register_recipe_services(hass: HomeAssistant) -> None:
     async def _made(call: ServiceCall) -> ServiceResponse:
         return await async_mark_made(hass, call)
 
+    async def _prune(call: ServiceCall) -> ServiceResponse:
+        return await async_prune_tags(hass, call)
+
     hass.services.async_register(
         DOMAIN, SERVICE_SAVE_RECIPE, _save,
         schema=SAVE_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
@@ -541,6 +590,10 @@ def async_register_recipe_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_RECIPE_INDEX, _index,
         schema=INDEX_SCHEMA, supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_PRUNE_TAGS, _prune,
+        schema=PRUNE_SCHEMA, supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN, SERVICE_MARK_MADE, _made,
