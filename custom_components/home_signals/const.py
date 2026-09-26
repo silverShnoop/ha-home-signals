@@ -133,9 +133,10 @@ APPLIANCE_OFF = "off"
 APPLIANCE_IDLE = "idle"
 APPLIANCE_RUNNING = "running"
 
-CLEANING_GREEN = "green"
-CLEANING_AMBER = "amber"
-CLEANING_RED = "red"
+# The Cleaning tab's state is its level, or `clear` when nothing wants
+# doing. It used to be a colour -- green, amber, red -- which made "amber"
+# one word for two levels and a second name for the same yellow.
+CLEANING_CLEAR = "clear"
 
 SERVICE_LAUNDRY_HUNG = "laundry_hung"
 ATTR_LOAD_ID = "load_id"

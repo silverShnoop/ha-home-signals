@@ -722,6 +722,19 @@ after the floor has been dealt with, and the cycle still has to be finished —
 so `leak` and `powered` are never inferred from each other, and nothing here
 stops power being restored while the sensor is still wet.
 
+What *does* change when power is restored is whether the leak is still a
+job. `leak_alarm` is the pad being wet **and** nobody having switched the
+plug back on since it went wet; that, not `leak`, raises the critical
+`Needs you` row and puts the Cleaning tab at `critical`. Only a real off → on counts,
+so a plug the cutoff never reached keeps the alarm — and the row then says
+the power is still on rather than claiming a cut. The pad going wet again
+re-arms it.
+
+Stood down is not the same as quiet. The cutoff fires only on the pad
+*going* wet, so while it stays wet a second leak would cut nothing. Until it
+dries there is an `attention` row, "leak sensor still wet", and the Cleaning
+tab is at `attention` too. It clears itself when the pad dries.
+
 ### A dryer only tumbles, and says so
 
 The washer's phase bands were measured on the washer, off one wash, so
@@ -806,30 +819,25 @@ to be believed about money by never being nearly right.
 
 ## `sensor.cleaning_status`
 
-The same three colours as `security_status`, for the same reason: a tab on a
-wall panel can be a colour before anybody reads a word of it.
+The Cleaning tab's level, as its state — the same names the `Needs you` rows
+and the cards use:
 
-- **red** — water on the floor.
-- **amber** — a job: a drum to empty, washing to hang, or a machine left
-  without power.
-- **green** — nothing waiting.
+- **`critical`** — water on the floor, and nobody has acted on it yet.
+- **`waiting`** — a machine left without power mid-cycle.
+- **`attention`** — a drum to empty, washing to hang, or a leak pad still
+  wet after the power was restored.
+- **`clear`** — nothing waiting.
 
-It also publishes **`level`**, and that is what a tab tile should read.
-Amber covers three different jobs and they are not one level: a machine
-left without power mid-cycle is wet washing and a clock running, which is
-`waiting`, while a drum to empty or washing to hang is `attention`. Green
-carries **no level at all** — not the quietest one — so the tile goes back
-to its own accent rather than being coloured on a morning with nothing
-wrong.
+`level` is also published as an attribute (`None` when clear), so a tile can
+read either. `detail` names the thing, e.g. "1 load to hang".
 
-The colour and the level are published side by side rather than one being
-derived from the other, because green/amber/red is this sensor's own
-vocabulary. Anything translating it into a level for itself is a second
-place the levels have to be kept right — and that is exactly what drifted:
-the dock button's map named decorative accent slots 1 and 2, written when
-those slots were the orange and the yellow, so once the levels took those
-hues out of the palette a load to hang painted the tab bone-white and a
-leak painted it tan.
+The state used to be a colour — green, amber or red. "Amber" then covered
+two different levels (`waiting` and `attention`) and was a second name for
+the same yellow the rows and cards wear, so a reader translating the colour
+into a level was a second place the levels had to be kept right. That is
+what drifted before: the dock button's map named decorative accent slots,
+and once those hues left the palette a load to hang painted the tab
+bone-white and a leak painted it tan.
 
 ## Laundry in `Needs you`
 

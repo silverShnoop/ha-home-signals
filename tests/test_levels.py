@@ -84,6 +84,36 @@ async def test_a_leak_is_critical(hass: HomeAssistant) -> None:
     assert (await _row(hass, "leak_"))["level"] == LEVEL_CRITICAL
 
 
+async def test_a_leak_somebody_restored_power_over_is_attention(
+    hass: HomeAssistant,
+) -> None:
+    """The person has decided about the floor; the pad still has to dry.
+
+    Until it does the cutoff cannot fire again, which is a job -- but one
+    that keeps, so not critical, and not the leak row.
+    """
+    _machine(hass, leak=True, leak_alarm=False, powered=True)
+    rows = await _rows(hass)
+    ids = [r["id"] for r in rows]
+    assert "leak_washing_machine" not in ids
+    wet = next(r for r in rows if r["id"].startswith("leak_wet_"))
+    assert wet["level"] == LEVEL_ATTENTION
+
+
+async def test_a_dry_pad_leaves_no_leak_row(hass: HomeAssistant) -> None:
+    _machine(hass, leak=False, leak_alarm=False)
+    assert await _row(hass, "leak_") is None
+
+
+async def test_a_leak_row_never_claims_a_cut_that_did_not_happen(
+    hass: HomeAssistant,
+) -> None:
+    _machine(hass, leak=True, leak_alarm=True, powered=True)
+    row = await _row(hass, "leak_")
+    assert row["level"] == LEVEL_CRITICAL
+    assert "cut" not in row["detail"].lower()
+
+
 async def test_a_dead_plug_is_waiting_not_an_errand(
     hass: HomeAssistant,
 ) -> None:
@@ -127,6 +157,7 @@ async def test_a_leak_and_a_dead_plug_are_separate_rows_at_separate_levels(
         {"powered": False},
         {"drum_full": True},
         {"leak": True, "powered": False, "drum_full": True},
+        {"leak": True, "leak_alarm": False},
     ],
 )
 async def test_every_row_carries_a_real_level_and_no_accent(
