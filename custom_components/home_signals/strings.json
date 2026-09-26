@@ -146,6 +146,20 @@
           "description": "Which Mealie, if there is more than one."
         }
       }
+    },
+    "save_photo": {
+      "name": "Save photo",
+      "description": "Keep a photo sent by a card where an AI task can see it.",
+      "fields": {
+        "image": {
+          "name": "Photo",
+          "description": "A JPEG, PNG or WebP as base64, or as a data URL. Under 3 MB."
+        },
+        "folder": {
+          "name": "Folder",
+          "description": "Where under local media/home_signals to keep it."
+        }
+      }
     }
   }
 }

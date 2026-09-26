@@ -195,7 +195,11 @@ async def test_a_restart_keeps_the_morning(hass: HomeAssistant) -> None:
     The record is restored, and the census that follows must not then
     drop it back out again for having no stamp of its own.
     """
-    earlier = dt_util.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+    # Halfway between midnight and now: always earlier today. A fixed 09:00
+    # was in the future for anyone running this before nine, and a future
+    # stamp is rightly not counted as done today.
+    start = dt_util.start_of_local_day()
+    earlier = dt_util.as_utc(start + (dt_util.now() - start) / 2)
     mock_restore_cache(
         hass,
         (
