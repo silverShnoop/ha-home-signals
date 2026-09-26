@@ -190,6 +190,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._pending: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = []
         self._door_was_open = False
+        # Whether somebody has switched the plug back on since the pad
+        # last went wet. See _sync_leak.
+        self._leak_was_wet = False
+        self._plug_was_on: bool | None = None
+        self._leak_handled = False
         # Things to poke when this changes. Needs you and the cleaning light
         # are both derived from `pending`, which lives in here rather than in
         # any entity they could subscribe to — a state subscription would
@@ -264,6 +269,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._rewashing = bool(attrs.get("rewashing"))
         load = attrs.get("rewashing_load")
         self._rewashing_load = str(load) if load else None
+        # Somebody already turned the power back on over a wet pad. A
+        # restart is not new information about the floor, so it must not
+        # turn their decision back into an alarm.
+        self._leak_handled = bool(attrs.get("leak_handled"))
+        self._leak_was_wet = self._leak_handled
         # A cycle in flight is not resumed, so the re-wash it was part of
         # is over as far as we can tell. Put the fullness back rather
         # than lose it: the washing is still in the drum either way.
@@ -285,18 +295,21 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
     @callback
     def _async_started(self, _hass: HomeAssistant) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
     @callback
     def _async_changed(self, _event: Event[EventStateChangedData]) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
     @callback
     def _async_tick(self, _now: datetime) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
@@ -334,6 +347,44 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._rewashing = False
             self._rewashing_load = None
         self._door_was_open = open_now
+
+    # --- the leak -----------------------------------------------------
+
+    def _sync_leak(self) -> None:
+        """Whether a wet pad is still news, or somebody has already acted.
+
+        The pad going wet is critical: the leak automation cuts the plug,
+        and water may be on the floor. The pad STAYS wet long after the
+        floor has been dealt with, though, and switching the plug back on
+        over it is a person deciding to finish the wash. We trust them to
+        have looked, so from then on "wet" is a fact on the card and no
+        longer a job.
+
+        Only a real off -> on of the plug counts. A plug that was never
+        cut -- the cutoff failed, or the plug is not reporting -- has not
+        been restored by anybody, so the leak stays an alarm. The pad
+        going wet again is new information and re-arms it.
+        """
+        wet = _is_on(self.hass, self._spec.get("leak"), default=False)
+        plug = self._spec.get("plug")
+        state = self.hass.states.get(plug) if plug else None
+        plug_on = (
+            None
+            if state is None or state.state in _NOT_A_READING
+            else state.state == STATE_ON
+        )
+
+        if not wet:
+            self._leak_handled = False
+        elif not self._leak_was_wet:
+            # Went wet just now: new, whatever anybody decided last time.
+            self._leak_handled = False
+        elif plug_on and self._plug_was_on is False:
+            self._leak_handled = True
+
+        self._leak_was_wet = wet
+        if plug_on is not None:
+            self._plug_was_on = plug_on
 
     def _lock_released(self) -> None:
         """The door just opened. A short run was the lock, not a wash.
@@ -1016,6 +1067,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "power_w": watts,
             "powered": powered,
             "leak": leak,
+            # The pad is wet AND nobody has switched the plug back on over
+            # it. This, not `leak`, is what raises the Needs-you row, the
+            # tab and the card's outline: `leak` alone stays true for hours
+            # after the floor is dry and somebody has chosen to carry on.
+            "leak_alarm": leak and not self._leak_handled,
+            "leak_handled": leak and self._leak_handled,
             "door_open": door_open,
             # Whether there is washing in the drum. Not the same question as
             # whether there is washing to hang, and cleared by a different
@@ -1171,7 +1228,8 @@ class CleaningStatusSensor(SensorEntity):
         waiting = 0
         for sensor in self._sensors:
             attrs = sensor.extra_state_attributes
-            if attrs.get("leak"):
+            # The alarm, not the raw pad: see `leak_alarm`.
+            if attrs.get("leak_alarm", attrs.get("leak")):
                 leaking.append(sensor.name or sensor.slug)
             elif not attrs.get("powered", True):
                 # Only worth saying while there is no leak: with water on the

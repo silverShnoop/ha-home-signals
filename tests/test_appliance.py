@@ -728,6 +728,59 @@ async def test_power_can_be_restored_while_the_sensor_is_still_wet(
     assert machine.state == APPLIANCE_IDLE, "the machine stayed off in its own report"
 
 
+async def test_restoring_power_over_a_wet_pad_stands_the_alarm_down(
+    machine: Machine,
+) -> None:
+    """Somebody switching the plug back on has looked at the floor.
+
+    The pad is still wet and still says so, but it is no longer a job.
+    """
+    machine.set(PLUG, "on")
+    machine.set(LEAK, "on")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak_alarm"] is True
+
+    machine.set(PLUG, "off")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak_alarm"] is True, "the cut itself cleared the alarm"
+
+    machine.set(PLUG, "on")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak"] is True
+    assert machine.attrs["leak_alarm"] is False
+    assert machine.attrs["leak_handled"] is True
+
+
+async def test_a_plug_that_was_never_cut_keeps_the_alarm(
+    machine: Machine,
+) -> None:
+    """Nobody restored anything: the cutoff did not happen. Still critical."""
+    machine.set(PLUG, "on")
+    await machine.hass.async_block_till_done()
+    machine.set(LEAK, "on")
+    await machine.hass.async_block_till_done()
+    machine.set(PLUG, "on")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak_alarm"] is True
+
+
+async def test_the_pad_going_wet_again_rearms_the_alarm(
+    machine: Machine,
+) -> None:
+    machine.set(LEAK, "on")
+    machine.set(PLUG, "off")
+    await machine.hass.async_block_till_done()
+    machine.set(PLUG, "on")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak_alarm"] is False
+
+    machine.set(LEAK, "off")
+    await machine.hass.async_block_till_done()
+    machine.set(LEAK, "on")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak_alarm"] is True, "a new leak was taken as handled"
+
+
 async def test_a_cycle_runs_normally_with_the_sensor_still_wet(
     machine: Machine,
 ) -> None:
@@ -766,6 +819,12 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
     await hass.async_block_till_done()
     assert light.native_value == CLEANING_RED, "the leak stopped being the headline"
     assert "leaking" in light.extra_state_attributes["detail"]
+
+    # Somebody put the power back on over the wet pad. Their call.
+    machine.set(PLUG, "on")
+    await hass.async_block_till_done()
+    assert light.native_value != CLEANING_RED, "a handled leak kept the tab red"
+    assert light.extra_state_attributes["level"] != LEVEL_CRITICAL
 
 
 async def test_the_cleaning_light_carries_the_level_not_just_the_colour(

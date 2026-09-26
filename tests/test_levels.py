@@ -84,6 +84,23 @@ async def test_a_leak_is_critical(hass: HomeAssistant) -> None:
     assert (await _row(hass, "leak_"))["level"] == LEVEL_CRITICAL
 
 
+async def test_a_leak_somebody_restored_power_over_is_no_row(
+    hass: HomeAssistant,
+) -> None:
+    """The pad is still wet; the person at the machine has decided."""
+    _machine(hass, leak=True, leak_alarm=False, powered=True)
+    assert await _row(hass, "leak_") is None
+
+
+async def test_a_leak_row_never_claims_a_cut_that_did_not_happen(
+    hass: HomeAssistant,
+) -> None:
+    _machine(hass, leak=True, leak_alarm=True, powered=True)
+    row = await _row(hass, "leak_")
+    assert row["level"] == LEVEL_CRITICAL
+    assert "cut" not in row["detail"].lower()
+
+
 async def test_a_dead_plug_is_waiting_not_an_errand(
     hass: HomeAssistant,
 ) -> None:

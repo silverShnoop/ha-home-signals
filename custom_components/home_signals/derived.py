@@ -756,11 +756,23 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             name = _name_of(state)
             slug = attrs.get("slug") or entity_id
 
-            if attrs.get("leak"):
+            # `leak_alarm`, not `leak`. Once somebody has switched the plug
+            # back on over a wet pad they have looked at the floor and
+            # decided to finish the wash; the pad staying damp after that
+            # is a fact for the card, not a job. Older states without the
+            # key fall back to the raw sensor rather than going quiet.
+            if attrs.get("leak_alarm", attrs.get("leak")):
+                powered = attrs.get("powered", True)
                 rows.append({
                     "id": f"leak_{slug}",
                     "title": f"{name} is leaking",
-                    "detail": "Power cut at the plug \u00b7 check the floor",
+                    # Never claim the cut: this row also fires when the
+                    # cutoff has not happened, which is the worse case.
+                    "detail": (
+                        "Power still on \u00b7 check the floor"
+                        if powered
+                        else "Power cut at the plug \u00b7 check the floor"
+                    ),
                     "icon": "mdi:water-alert",
                     "level": LEVEL_CRITICAL,
                     "action_label": "Snooze",
