@@ -207,6 +207,11 @@ MEALIE_DOMAIN = "mealie"
 SERVICE_SAVE_RECIPE = "save_recipe"
 SERVICE_DELETE_RECIPE = "delete_recipe"
 SERVICE_IMPORT_RECIPE = "import_recipe"
+SERVICE_RECIPE_INDEX = "recipe_index"
+SERVICE_MARK_MADE = "mark_made"
+ATTR_TAGS = "tags"
+ATTR_FAVOURITE = "favourite"
+ATTR_DATE = "date"
 ATTR_URL = "url"
 
 # --- Photos ------------------------------------------------------------
