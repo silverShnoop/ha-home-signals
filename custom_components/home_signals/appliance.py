@@ -1224,6 +1224,7 @@ class CleaningStatusSensor(SensorEntity):
     def _read(self) -> tuple[str, str, str | None]:
         leaking: list[str] = []
         unpowered: list[str] = []
+        still_wet: list[str] = []
         full: list[str] = []
         waiting = 0
         for sensor in self._sensors:
@@ -1231,6 +1232,10 @@ class CleaningStatusSensor(SensorEntity):
             # The alarm, not the raw pad: see `leak_alarm`.
             if attrs.get("leak_alarm", attrs.get("leak")):
                 leaking.append(sensor.name or sensor.slug)
+            elif attrs.get("leak"):
+                # Stood down, but still wet: the cutoff cannot fire again
+                # until the pad dries.
+                still_wet.append(sensor.name or sensor.slug)
             elif not attrs.get("powered", True):
                 # Only worth saying while there is no leak: with water on the
                 # floor, "it has no power" is the automation working, not a
@@ -1262,6 +1267,12 @@ class CleaningStatusSensor(SensorEntity):
                 CLEANING_AMBER,
                 f"{unpowered[0]} has no power",
                 LEVEL_WAITING,
+            )
+        if still_wet:
+            return (
+                CLEANING_AMBER,
+                f"{still_wet[0]} leak sensor still wet",
+                LEVEL_ATTENTION,
             )
         if waiting:
             plural = "s" if waiting > 1 else ""

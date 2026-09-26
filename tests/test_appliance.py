@@ -823,8 +823,14 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
     # Somebody put the power back on over the wet pad. Their call.
     machine.set(PLUG, "on")
     await hass.async_block_till_done()
-    assert light.native_value != CLEANING_RED, "a handled leak kept the tab red"
-    assert light.extra_state_attributes["level"] != LEVEL_CRITICAL
+    assert light.native_value == CLEANING_AMBER, "a handled leak kept the tab red"
+    # Still wet, so the cutoff cannot fire again: a job, but one that keeps.
+    assert light.extra_state_attributes["level"] == LEVEL_ATTENTION
+    assert "still wet" in light.extra_state_attributes["detail"]
+
+    machine.set(LEAK, "off")
+    await hass.async_block_till_done()
+    assert "still wet" not in light.extra_state_attributes["detail"]
 
 
 async def test_the_cleaning_light_carries_the_level_not_just_the_colour(

@@ -779,6 +779,20 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                     "action": _snooze(f"leak_{slug}", hours=1),
                 })
 
+            elif attrs.get("leak"):
+                # Power restored over a wet pad. The person has decided about
+                # the floor, but the cutoff only fires on the pad GOING wet,
+                # so until it dries a second leak would cut nothing. That is
+                # a real job -- dry the pad -- and it keeps, so attention.
+                # Cleared by the pad drying, which is the only true answer.
+                rows.append({
+                    "id": f"leak_wet_{slug}",
+                    "title": f"{name} leak sensor still wet",
+                    "detail": "Won't cut the power again until it dries",
+                    "icon": "mdi:water-alert",
+                    "level": LEVEL_ATTENTION,
+                })
+
             # Deliberately independent of the leak: the sensor stays wet long
             # after the floor is dealt with, and the cycle still has to be
             # finished. "It is off" stays true and stays worth saying.
