@@ -722,6 +722,19 @@ after the floor has been dealt with, and the cycle still has to be finished —
 so `leak` and `powered` are never inferred from each other, and nothing here
 stops power being restored while the sensor is still wet.
 
+What *does* change when power is restored is whether the leak is still a
+job. `leak_alarm` is the pad being wet **and** nobody having switched the
+plug back on since it went wet; that, not `leak`, raises the critical
+`Needs you` row and turns the Cleaning tab red. Only a real off → on counts,
+so a plug the cutoff never reached keeps the alarm — and the row then says
+the power is still on rather than claiming a cut. The pad going wet again
+re-arms it.
+
+Stood down is not the same as quiet. The cutoff fires only on the pad
+*going* wet, so while it stays wet a second leak would cut nothing. Until it
+dries there is an `attention` row, "leak sensor still wet", and the Cleaning
+tab is amber. It clears itself when the pad dries.
+
 ### A dryer only tumbles, and says so
 
 The washer's phase bands were measured on the washer, off one wash, so
