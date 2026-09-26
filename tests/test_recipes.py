@@ -150,7 +150,7 @@ async def test_a_new_recipe_is_created_then_filled_in(
     ], "a pasted list's own numbers were kept, so Mealie would number them twice"
     assert patch["recipeServings"] == 4
     assert patch["totalTime"] == "1 hour"
-    assert answer == {"slug": "nanas-curry", "recipe_id": "rid-2", "name": "Nana's curry"}
+    assert answer == {"slug": "nanas-curry", "recipe_id": "rid-2", "name": "Nana's curry", "tags": []}
 
 
 async def test_a_rename_answers_with_the_new_slug(

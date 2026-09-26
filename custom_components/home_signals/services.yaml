@@ -126,6 +126,20 @@ save_recipe:
       selector:
         text:
           multiline: true
+    tags:
+      name: Tags
+      description: >-
+        Tag names, replacing the recipe's tags. Tags Mealie does not have yet
+        are created. Matched ignoring case.
+      example: "Dinner, Quick, Chicken"
+      selector:
+        text:
+          multiple: true
+    favourite:
+      name: Favourite
+      description: Whether it is a favourite of the Mealie user whose token this is.
+      selector:
+        boolean:
     config_entry_id:
       name: Mealie
       description: Which Mealie, if there is more than one.
@@ -168,6 +182,45 @@ delete_recipe:
       required: true
       selector:
         text:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+recipe_index:
+  name: Recipe index
+  description: >-
+    Every recipe in Mealie with what a picker filters on: tags, ingredient
+    lines, the day it was last made, the day it was added and whether it is
+    a favourite. Each full recipe is read once and kept until Mealie says it
+    changed, so a repeat is quick.
+  fields:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+mark_made:
+  name: Mark made
+  description: >-
+    Record that a recipe was eaten on a day, today unless a date is given.
+    Never moves the date backwards.
+  fields:
+    recipe:
+      name: Recipe
+      description: The slug or id of the recipe.
+      required: true
+      selector:
+        text:
+    date:
+      name: Date
+      description: The day it was eaten.
+      selector:
+        date:
     config_entry_id:
       name: Mealie
       description: Which Mealie, if there is more than one.
