@@ -46,6 +46,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    TABS,
     APPLIANCE_RUNNING,
     ATTR_HOURS,
     ATTR_ITEM_ID,
@@ -96,6 +97,7 @@ BATTERY_ROWS_MAX = 2
 
 # Diagnostic entities go unavailable constantly and nobody acts on them.
 _NOISY_DOMAINS = {"update", "button", "scene", "script", "automation"}
+
 
 
 def _area_of(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -388,6 +390,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # start again at every reboot and a tracker quiet since breakfast
         # would never get past it.
         self._dark_since: dict[str, datetime] = {}
+        self._levels: dict[str, str | None] = {f"tab_{tab}": None for tab in TABS}
         # Set by the platform. The door is decided in one place -- the
         # grace, the jam, the blip-proof clock -- and this only reads it.
         self.security: SecurityStatusSensor | None = None
@@ -488,12 +491,42 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             c for c in candidates
             if c.get("sticky") or not self._is_suppressed(c["id"])
         ]
+        self._levels = self._levels_of(candidates)
 
         # Clean up suppressions whose item is gone, so the dict cannot grow
         # without bound across months of restarts.
         live = {c["id"] for c in candidates}
         for stale in [k for k in self._suppressed if k not in live]:
             del self._suppressed[stale]
+
+    def _levels_of(self, candidates: list[dict[str, Any]]) -> dict[str, str | None]:
+        """The level each tab and each card wears: the highest of its rows.
+
+        This is the ONE place a card's outline and a tab's rail button get
+        their level, so neither can disagree with the rows -- which is what
+        happened while each worked its own out: the tab skipped a dead plug
+        whenever a pad was wet, a silent lock coloured the door with no row,
+        and bins, overdue chores and a lost phone had rows that coloured
+        nothing.
+
+        A snoozed row still counts. Snooze puts the reminder off; it does not
+        make the thing untrue, and the card goes on saying so. A dismissed
+        row -- "Done" -- does not count: the person has said the job is done.
+        """
+        levels: dict[str, str | None] = {
+            f"tab_{tab}": None for tab in TABS
+        }
+        for c in candidates:
+            if c["id"] in self._suppressed and self._suppressed[c["id"]] is None \
+                    and not c.get("sticky"):
+                continue
+            level = c.get("level")
+            for key in (f"tab_{c.get('tab')}", f"card_{c.get('card')}"):
+                if key.endswith("_None"):
+                    continue
+                if LEVEL_LOUDNESS.get(level, 0) > LEVEL_LOUDNESS.get(levels.get(key), 0):
+                    levels[key] = level
+        return levels
 
     # --- the providers ------------------------------------------------
 
@@ -526,6 +559,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 "detail": f"Unlocked since {when}" if when else "Unlocked",
                 "icon": door["icon"],
                 "level": level,
+                "tab": "security",
+                "card": "doors",
                 "sticky": True,
                 "action_label": "Lock",
                 "action": {"service": "lock.lock",
@@ -540,6 +575,23 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 "detail": f"Open since {when}" if when else "Open",
                 "icon": door["icon"],
                 "level": level,
+                "tab": "security",
+                "card": "doors",
+                "sticky": True,
+            })
+        # A lock or door that has stopped reporting. The status already
+        # goes amber for it -- not proof of a problem, not proof of safety
+        # -- so the card and the tab were coloured with no row to say why.
+        # The row takes the same level they do.
+        for door in self.security.not_reporting:
+            rows.append({
+                "id": f"silent_{door['entity_id']}",
+                "title": f"{door['name']} not reporting",
+                "detail": "Can't tell whether it is shut",
+                "icon": door["icon"],
+                "level": level,
+                "tab": "security",
+                "card": "doors",
                 "sticky": True,
             })
         return rows
@@ -576,6 +628,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "detail": detail,
             "icon": "mdi:trash-can-outline",
             "level": LEVEL_ATTENTION,
+            "tab": "cleaning",
+            "card": "bins",
             "action_label": "Done",
             "action": _dismiss(f"bin_{collection.isoformat()}"),
         }]
@@ -594,6 +648,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "detail": _name_of(state),
             "icon": "mdi:clipboard-alert-outline",
             "level": LEVEL_ATTENTION,
+            "tab": "lists",
+            "card": "tasks",
             "action_label": "Snooze",
             "action": _snooze("tasks_overdue"),
         }]
@@ -630,6 +686,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             # The row appearing at all is the signal. Splitting it into
             # two colours spent the loudest one in the house on a chore.
             "level": LEVEL_ATTENTION,
+            "tab": "maintenance",
+            "card": "softener",
             # No snooze, and not suppressible at all.
             #
             # Everything else on this list can be put off because
@@ -670,6 +728,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                           if len(flat) > 3 else names,
                 "icon": "mdi:battery-alert-variant-outline",
                 "level": LEVEL_ATTENTION,
+                "tab": "maintenance",
+                "card": "batteries",
                 "action_label": "Snooze",
             }]
 
@@ -683,6 +743,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 "detail": f"{level:.0f}%" + (f" · {area}" if area else ""),
                 "icon": "mdi:battery-alert-variant-outline",
                 "level": LEVEL_ATTENTION,
+                "tab": "maintenance",
+                "card": "batteries",
                 "action_label": "Snooze",
             })
         return rows
@@ -755,6 +817,9 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             attrs = state.attributes
             name = _name_of(state)
             slug = attrs.get("slug") or entity_id
+            # Every row this machine raises colours its own card and the
+            # Cleaning tab -- see `_levels`.
+            where = {"tab": "cleaning", "card": slug}
 
             # `leak_alarm`, not `leak`. Once somebody has switched the plug
             # back on over a wet pad they have looked at the floor and
@@ -764,6 +829,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             if attrs.get("leak_alarm", attrs.get("leak")):
                 powered = attrs.get("powered", True)
                 rows.append({
+                    **where,
                     "id": f"leak_{slug}",
                     "title": f"{name} is leaking",
                     # Never claim the cut: this row also fires when the
@@ -786,6 +852,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 # a real job -- dry the pad -- and it keeps, so attention.
                 # Cleared by the pad drying, which is the only true answer.
                 rows.append({
+                    **where,
                     "id": f"leak_wet_{slug}",
                     "title": f"{name} leak sensor still wet",
                     "detail": "Won't cut the power again until it dries",
@@ -798,6 +865,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             # finished. "It is off" stays true and stays worth saying.
             if not attrs.get("powered", True):
                 rows.append({
+                    **where,
                     "id": f"unpowered_{slug}",
                     "title": f"{name} has no power",
                     "detail": "Switched off at the plug",
@@ -820,6 +888,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             # clear one row is how the row and the world drift apart.
             if attrs.get("drum_full"):
                 rows.append({
+                    **where,
                     "id": f"drum_{slug}",
                     "title": f"{name} needs emptying",
                     "detail": self._drum_detail(attrs),
@@ -837,6 +906,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 if not isinstance(load, dict) or not load.get("id"):
                     continue
                 rows.append({
+                    **where,
                     "id": load["id"],
                     "title": "Laundry needs hanging",
                     "detail": self._load_detail(load),
@@ -910,6 +980,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 ),
                 "icon": "mdi:map-marker-question",
                 "level": LEVEL_ATTENTION,
+                "tab": "security",
+                "card": "people",
                 "action_label": "Snooze",
                 "action": _snooze(f"dark_{entity_id}", hours=12),
             })
@@ -953,6 +1025,8 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             # pushed the Maintenance tile red every morning, which is how
             # a red stops meaning anything.
             "level": LEVEL_ATTENTION,
+            "tab": "maintenance",
+            "card": "devices",
             "action_label": "Snooze",
         }]
 
@@ -960,6 +1034,9 @@ class NeedsYouSensor(_Derived, RestoreEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "items": list(self._items),
+            # `tab_<tab>` and `card_<card>`: the level each wears. Flat keys
+            # rather than one dict, so a card can read one directly.
+            **self._levels,
             "suppressed": {
                 item_id: (until.isoformat() if until else None)
                 for item_id, until in self._suppressed.items()
@@ -1216,6 +1293,10 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
     @property
     def opened(self) -> list[dict[str, Any]]:
         return list(self._open)
+
+    @property
+    def not_reporting(self) -> list[dict[str, Any]]:
+        return list(self._unreadable)
 
     async def async_added_to_hass(self) -> None:
         """Restore when the house stopped being shut, so red survives a restart.

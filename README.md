@@ -195,6 +195,29 @@ row came to claim an alarm by naming a hue. A Needs-you row publishes
 `level` and never `accent`, and `tests/test_levels.py` asserts both halves
 over every state the washer can be in.
 
+### One level, worked out once
+
+Every row names the **tab** and the **card** it belongs to, and
+`sensor.needs_you` publishes the loudest level each is owed as flat
+attributes — `tab_cleaning`, `tab_security`, `tab_lists`,
+`tab_maintenance`, and `card_<card>` (`card_washing_machine`,
+`card_tumble_dryer`, `card_bins`, `card_doors`, `card_people`,
+`card_tasks`, `card_softener`, `card_batteries`, `card_devices`). A tab
+with nothing waiting is `None`; a card with nothing waiting is absent.
+
+Card outlines and rail buttons read these and nothing else. When each
+worked its own level out, they drifted: the Cleaning tab skipped a dead
+plug whenever a pad was wet, a silent lock coloured the door with no row to
+say why, and bins, overdue chores and a lost phone had rows that coloured
+nothing.
+
+**A snoozed row still colours its card and tab** — snooze puts the
+reminder off, it does not make the thing untrue. **A dismissed row does
+not** — "Done" says the job is done.
+
+A lock or door that stops reporting is its own row, `silent_<entity>`, at
+the level the door already wears.
+
 ### What left when the levels arrived
 
 **The overnight-baseline row.** "Something was on overnight" reported a
