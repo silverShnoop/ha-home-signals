@@ -59,11 +59,7 @@ from .const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
     APPLIANCE_RUNNING,
-    CLEANING_CLEAR,
     DOMAIN,
-    LEVEL_ATTENTION,
-    LEVEL_CRITICAL,
-    LEVEL_WAITING,
     PHASE_FILL,
     PHASE_HEAT,
     PHASE_SPIN,
@@ -1186,99 +1182,3 @@ class AppliancePressSensor(SensorEntity, RestoreEntity):
         whose id ends in `_button` is a button.
         """
         return {"kind": KIND_BUTTON}
-
-
-class CleaningStatusSensor(SensorEntity):
-    """Is anything in the utility corner asking for attention, as a level.
-
-    The state is `critical` (water on the floor), `waiting` (a machine left
-    without power), `attention` (washing to hang, a drum to empty, a leak
-    pad still wet) or `clear` -- the same names the Needs-you rows and the
-    cards use, so the tab cannot say a different thing from either.
-    """
-
-    _attr_should_poll = False
-    _attr_has_entity_name = False
-    _attr_name = "Cleaning status"
-    _attr_icon = "mdi:washing-machine"
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = [CLEANING_CLEAR, LEVEL_ATTENTION, LEVEL_WAITING, LEVEL_CRITICAL]
-
-    def __init__(self, entry: ConfigEntry, sensors: list[ApplianceCycleSensor]) -> None:
-        self._entry = entry
-        self._sensors = sensors
-        self._attr_unique_id = f"{entry.entry_id}_cleaning_status"
-        for sensor in sensors:
-            sensor.add_listener(self)
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            async_track_time_interval(self.hass, self._async_tick, SCAN_INTERVAL)
-        )
-
-    @callback
-    def refresh(self) -> None:
-        """An appliance changed. Everything this reads is read on demand."""
-        if self.hass is not None:
-            self.async_write_ha_state()
-
-    @callback
-    def _async_tick(self, _now: datetime) -> None:
-        self.async_write_ha_state()
-
-    def _read(self) -> tuple[str, str | None]:
-        leaking: list[str] = []
-        unpowered: list[str] = []
-        still_wet: list[str] = []
-        full: list[str] = []
-        waiting = 0
-        for sensor in self._sensors:
-            attrs = sensor.extra_state_attributes
-            # The alarm, not the raw pad: see `leak_alarm`.
-            if attrs.get("leak_alarm", attrs.get("leak")):
-                leaking.append(sensor.name or sensor.slug)
-            elif attrs.get("leak"):
-                # Stood down, but still wet: the cutoff cannot fire again
-                # until the pad dries.
-                still_wet.append(sensor.name or sensor.slug)
-            # Not an elif. A dead plug is its own row at `waiting`, leak or
-            # no leak, and a wet pad after the power came back is only
-            # `attention` -- so skipping the plug whenever the pad was wet
-            # put the tab a level below the row it was summarising.
-            if not attrs.get("powered", True):
-                unpowered.append(sensor.name or sensor.slug)
-            waiting += int(attrs.get("pending_count") or 0)
-            # Every appliance has this one, and the door clears it on both.
-            if attrs.get("drum_full"):
-                full.append(sensor.name or sensor.slug)
-
-        # The state IS the level. It used to be a colour, and "amber"
-        # covered two levels -- a machine left without power is `waiting`,
-        # a load to hang is `attention` -- so the level had to ride
-        # alongside it and anything reading the colour got it wrong.
-        if leaking:
-            return f"{leaking[0]} leaking", LEVEL_CRITICAL
-        if unpowered:
-            return f"{unpowered[0]} has no power", LEVEL_WAITING
-        if still_wet:
-            return f"{still_wet[0]} leak sensor still wet", LEVEL_ATTENTION
-        if waiting:
-            plural = "s" if waiting > 1 else ""
-            return f"{waiting} load{plural} to hang", LEVEL_ATTENTION
-        if full:
-            return f"{full[0]} to empty", LEVEL_ATTENTION
-        # No level at all, not the quietest one. Nothing is waiting, so
-        # nothing wants doing, and the tile goes back to its own accent.
-        return "Nothing waiting", None
-
-    @property
-    def native_value(self) -> str:
-        return self._read()[1] or CLEANING_CLEAR
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        detail, level = self._read()
-        # `level` stays as an attribute, None when clear, so a reader that
-        # already maps it keeps working unchanged.
-        return {"detail": detail, "level": level}

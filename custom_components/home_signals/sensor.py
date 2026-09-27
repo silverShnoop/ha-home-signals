@@ -93,7 +93,6 @@ from .const import (
 from .appliance import (
     AppliancePressSensor,
     ApplianceCycleSensor,
-    CleaningStatusSensor,
 )
 from .derived import (
     BatteriesStatusSensor,
@@ -102,7 +101,6 @@ from .derived import (
     PeopleStatusSensor,
     SecurityStatusSensor,
     SoftenerStatusSensor,
-    SystemHealthSensor,
     TasksStatusSensor,
 )
 from .devices import DevicesSensor
@@ -235,7 +233,6 @@ async def async_setup_entry(
     entities: list[SensorEntity] = [
         ActivityFeedSensor(entry),
         needs_you,
-        SystemHealthSensor(entry),
         EnergyDaySensor(entry),
         *owners,
     ]
@@ -256,7 +253,6 @@ async def async_setup_entry(
             cycle.add_listener(needs_you)
         entities.extend(cycles)
         entities.extend(presses)
-        entities.append(CleaningStatusSensor(entry, cycles))
 
     entities.extend(_done_today_sensors(hass, entry))
 

@@ -53,7 +53,6 @@ from .const import (
     ATTR_ITEM_ID,
     ATTR_LOAD_ID,
     ATTR_SOURCE,
-    ACCENT_INFO,
     LEVEL_ATTENTION,
     LEVEL_CRITICAL,
     LEVEL_LOUDNESS,
@@ -194,6 +193,22 @@ def _snooze(item_id: str, hours: int = 8) -> dict[str, Any]:
     """
     return {"service": f"{DOMAIN}.{SERVICE_SNOOZE}",
             "data": {ATTR_ITEM_ID: item_id, ATTR_HOURS: hours}}
+
+
+def _tab_summary(jobs: list[dict[str, Any]]) -> str:
+    """One line for a rail button: the loudest job, and how many more.
+
+    "Laundry needs hanging ×2", "Washing machine is leaking · +1 more".
+    """
+    if not jobs:
+        return "Nothing waiting"
+    top = loudest(job.get("level") for job in jobs)
+    first = next(job for job in jobs if job.get("level") == top) if top else jobs[0]
+    title = first.get("title") or ""
+    same = sum(1 for job in jobs if job.get("title") == title)
+    text = f"{title} \u00d7{same}" if same > 1 else title
+    rest = len(jobs) - same
+    return f"{text} \u00b7 +{rest} more" if rest else text
 
 
 def loudest(levels: Any) -> str | None:
@@ -760,6 +775,47 @@ class BatteriesStatusSensor(_Owner):
         super().__init__(entry)
         self._attr_unique_id = f"{entry.entry_id}_batteries_status"
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The card's own data as well as its level and jobs.
+
+        Every battery, not just the flat ones, so the Batteries card can say
+        how the rest stand. `low` is decided here, on the same threshold as
+        the jobs, rather than by the card drawing a line of its own: two
+        places holding the line is how a card comes to call a battery fine
+        that Needs you is asking somebody to change.
+        """
+        threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
+        readings = self._battery_readings() if self.hass is not None else []
+        low = [
+            {
+                "entity_id": state.entity_id,
+                "name": _name_of(state),
+                "area": _area_of(self.hass, state.entity_id),
+                # "percent", not "level": a level is one of the three names
+                # a job carries.
+                "percent": percent,
+            }
+            for state, percent in readings
+            if percent <= threshold
+        ]
+        return {
+            **super().extra_state_attributes,
+            "batteries": [
+                {
+                    "entity_id": state.entity_id,
+                    "name": _battery_label(state),
+                    "area": _area_of(self.hass, state.entity_id),
+                    "percent": percent,
+                    "low": percent <= threshold,
+                }
+                for state, percent in readings
+            ],
+            "low_batteries": low,
+            "battery_count": len(low),
+            "battery_threshold": threshold,
+        }
+
     def _jobs_now(self) -> list[dict[str, Any]]:
         """A row each while that is still a list, one row once it is a job.
 
@@ -1031,9 +1087,16 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # the cards' own levels, not from these rows, so a snoozed row goes
         # on colouring its tab exactly as it goes on colouring its card.
         self._levels = {f"tab_{tab}": None for tab in TABS}
-        for tab, level, _ in owned:
+        by_tab: dict[str, list[dict[str, Any]]] = {tab: [] for tab in TABS}
+        for tab, level, rows in owned:
             key = f"tab_{tab}"
             self._levels[key] = loudest([self._levels.get(key), level])
+            by_tab.setdefault(tab, []).extend(rows)
+        # What the rail button says under its name. Taken from every job on
+        # the tab, snoozed ones included, for the same reason the level is:
+        # the words and the colour describe the same thing.
+        for tab, rows in by_tab.items():
+            self._levels[f"summary_{tab}"] = _tab_summary(rows)
 
         # Clean up suppressions whose item is gone, so the dict cannot grow
         # without bound across months of restarts.
@@ -1087,192 +1150,14 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         return {
             "items": list(self._items),
             # `tab_<tab>`: the loudest card level on each tab, for its rail
-            # button. Flat keys, so a button can read one directly.
+            # button, and `summary_<tab>`: what the button says. Flat keys,
+            # so a button can read one directly.
             **self._levels,
             "suppressed": {
                 item_id: (until.isoformat() if until else None)
                 for item_id, until in self._suppressed.items()
             },
         }
-
-
-class SystemHealthSensor(_Derived):
-    """What is wrong with the house's plumbing, as opposed to its jobs.
-
-    Separate from `Needs you` on purpose: this is ambient status and stays
-    true for as long as it is true. It carries the raw lists as well as the
-    rows, because an agent asking "what is offline?" wants entity ids, not a
-    sentence assembled for a card.
-    """
-
-    _attr_name = "System health"
-    _attr_icon = "mdi:heart-pulse"
-    _attr_native_unit_of_measurement = "issues"
-
-    def __init__(self, entry: ConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = f"{entry.entry_id}_system_health"
-        self._batteries: list[dict[str, Any]] = []
-        self._all_batteries: list[dict[str, Any]] = []
-        self._threshold = DEFAULT_BATTERY_THRESHOLD
-        self._offline: list[dict[str, Any]] = []
-        self._updates: list[dict[str, Any]] = []
-        self._salt: list[tuple[str, float]] = []
-
-    def _recompute(self) -> None:
-        threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
-        self._threshold = threshold
-        # Every battery, not just the flat ones, so the Batteries card can
-        # say how the rest stand. `low` is decided here rather than by the
-        # card comparing against a threshold of its own: two places holding
-        # the line is how a card comes to call a battery fine that Needs
-        # you is asking somebody to change.
-        self._all_batteries = [
-            {
-                "entity_id": state.entity_id,
-                "name": _battery_label(state),
-                "area": _area_of(self.hass, state.entity_id),
-                "percent": percent,
-                "low": percent <= threshold,
-            }
-            for state, percent in self._battery_readings()
-        ]
-        self._batteries = [
-            {
-                "entity_id": state.entity_id,
-                "name": _name_of(state),
-                "area": _area_of(self.hass, state.entity_id),
-                # "percent", not "level". A level is now one of the three
-                # names a job can carry, and a dict published to a card
-                # with a level key meaning 41.0 is a trap waiting for the
-                # first person who renders low_batteries as rows.
-                "percent": percent,
-            }
-            for state, percent in self._batteries_below(threshold)
-        ]
-        self._offline = [
-            {
-                "entity_id": state.entity_id,
-                "name": _name_of(state),
-                "area": _area_of(self.hass, state.entity_id),
-            }
-            for state in self._unavailable()
-        ]
-        self._updates = [
-            {
-                "entity_id": state.entity_id,
-                "name": _name_of(state),
-                "installed": state.attributes.get("installed_version"),
-                "latest": state.attributes.get("latest_version"),
-            }
-            for state in sorted(self.hass.states.async_all("update"), key=_name_of)
-            if state.state == STATE_ON
-        ]
-
-        rows: list[dict[str, Any]] = []
-        if self._batteries:
-            worst = self._batteries[0]
-            rows.append({
-                "id": "batteries",
-                "name": "Low batteries",
-                "sub": f"{worst['name']} at {worst['percent']:.0f}%",
-                "value": str(len(self._batteries)),
-                "icon": "mdi:battery-alert-variant-outline",
-                "level": LEVEL_ATTENTION,
-            })
-        # The softener lives on the Maintenance tab, so its salt is part of
-        # what this sensor says about the tab: a row here, and the level the
-        # tab's rail button wears. The Water softener card's outline reads
-        # `salt_level` below. All three come from `_salt_low`, which is also
-        # where the Needs you row comes from, so card, tab and row agree --
-        # the same three-way obligation the batteries already keep.
-        self._salt = self._salt_low()
-        if self._salt:
-            rows.append({
-                "id": "softener_salt",
-                "name": "Softener salt",
-                "sub": _salt_detail(self._salt),
-                "value": f"{min(level for _, level in self._salt):.0f}%",
-                "icon": "mdi:shaker-outline",
-                "level": LEVEL_ATTENTION,
-            })
-        # The row counts devices, from the same scan as the Devices card
-        # and the Needs you row; `offline` below stays the raw entity list,
-        # because an agent asking "what is offline?" wants entity ids.
-        from .devices import scan_devices  # the devices module builds on this one
-
-        if devices := scan_devices(self.hass, self._ignored())[0]:
-            rows.append({
-                "id": "offline",
-                "name": "Offline",
-                "sub": devices[0]["name"],
-                "value": str(len(devices)),
-                "icon": "mdi:lan-disconnect",
-                "level": LEVEL_ATTENTION,
-            })
-        if self._updates:
-            rows.append({
-                "id": "updates",
-                "name": "Updates pending",
-                "sub": self._updates[0]["name"],
-                "value": str(len(self._updates)),
-                "icon": "mdi:package-up",
-                # No level, deliberately. An update pending needs no
-                # doing today or tomorrow, nothing is paused on it, and
-                # nothing is accruing -- so it fails every one of the
-                # three timelines. It is information on a card, and it
-                # takes a decorative accent like any other fact.
-                "accent": ACCENT_INFO,
-            })
-        self._items = rows
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        return {
-            "items": list(self._items),
-            # The worst thing in the list, so a tab tile can wear the
-            # level of what is actually there instead of a fixed one.
-            # The Maintenance tile was hardcoded ochre and so was yellow
-            # on a morning with nothing wrong -- and yellow is now one of
-            # the three colours that promise something wants doing.
-            #
-            # None when nothing carries a level, so the tile goes back to
-            # its own accent rather than to the quietest alarm.
-            "level": self._worst(),
-            "low_batteries": list(self._batteries),
-            "batteries": list(self._all_batteries),
-            "battery_threshold": self._threshold,
-            # The level the Batteries card wears, named rather than left
-            # for the card to derive from a count. It is exactly the level
-            # the batteries row above carries, and the Needs you rows for
-            # the same batteries carry, so card, tab and row agree.
-            "battery_level": LEVEL_ATTENTION if self._batteries else None,
-            # The level the Water softener card wears, for the same reason
-            # and on the same terms: exactly the level of the salt row above
-            # and of the Needs you row for the same softener.
-            "salt_level": LEVEL_ATTENTION if self._salt else None,
-            "offline": list(self._offline),
-            "updates_pending": list(self._updates),
-            "battery_count": len(self._batteries),
-            "offline_count": len(self._offline),
-            "update_count": len(self._updates),
-        }
-
-    def _worst(self) -> str | None:
-        """The most serious level among the rows, or None for none.
-
-        Rows carrying no level are skipped rather than ranked last: a
-        card full of information is a card with nothing wrong, and a
-        tile that colours for it is a tile that is always on.
-        """
-        worst = None
-        for row in self._items:
-            level = row.get("level")
-            if level not in LEVEL_LOUDNESS:
-                continue
-            if worst is None or LEVEL_LOUDNESS[level] > LEVEL_LOUDNESS[worst]:
-                worst = level
-        return worst
 
 
 @callback
