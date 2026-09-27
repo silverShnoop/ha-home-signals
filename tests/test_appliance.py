@@ -869,6 +869,28 @@ async def test_the_cleaning_light_carries_the_level_not_just_the_colour(
     assert light.extra_state_attributes["level"] == LEVEL_CRITICAL
 
 
+async def test_a_dead_plug_over_a_handled_leak_is_waiting_on_the_tab(
+    hass: HomeAssistant, machine: Machine
+) -> None:
+    """The rows are attention (pad still wet) and waiting (no power). The
+    tab used to skip the plug whenever the pad was wet and say attention."""
+    from custom_components.home_signals.appliance import CleaningStatusSensor
+
+    light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
+    light.hass = hass
+    light.entity_id = "sensor.cleaning_status"
+
+    machine.set(LEAK, "on")
+    machine.set(PLUG, "off")
+    await hass.async_block_till_done()
+    machine.set(PLUG, "on")
+    await hass.async_block_till_done()
+    machine.set(PLUG, "off")
+    await hass.async_block_till_done()
+    assert machine.attrs["leak_alarm"] is False
+    assert light.native_value == LEVEL_WAITING
+
+
 async def test_a_full_drum_is_attention_on_the_tab(
     hass: HomeAssistant, machine: Machine
 ) -> None:
