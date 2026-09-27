@@ -200,7 +200,7 @@ over every state the washer can be in.
 Every row names the **tab** and the **card** it belongs to, and
 `sensor.needs_you` publishes the loudest level each is owed as flat
 attributes — `tab_cleaning`, `tab_security`, `tab_lists`,
-`tab_maintenance`, and `card_<card>` (`card_washing_machine`,
+`tab_maintenance`, `tab_kitchen`, and `card_<card>` (`card_meals`, `card_washing_machine`,
 `card_tumble_dryer`, `card_bins`, `card_doors`, `card_people`,
 `card_tasks`, `card_softener`, `card_batteries`, `card_devices`). A tab
 with nothing waiting is `None`; a card with nothing waiting is absent.
@@ -1113,6 +1113,9 @@ It is stored in Mealie itself, so the recipe still reads properly there: the
 prep steps are moved to the front under a "Prep ahead" section heading and
 the rest go under "To cook", and the timings live in the recipe's `extras`
 as `prep`. The recipe index carries the split back as each recipe's `prep`.
+An unchecked split can also carry `original`, the method as it was, so a
+person who would rather keep it in order gets it back exactly; checking the
+split drops it.
 
 ## Prep sessions: `sensor.meal_prep`
 
@@ -1138,6 +1141,9 @@ matters:
 
 - `attention` -- due today and not done;
 - `waiting` -- past due, not done, and a meal it was for is still ahead.
+
+The row belongs to the Kitchen tab and its meals card, so it is published
+as `tab_kitchen` and `card_meals` on `sensor.needs_you` like any other row.
 
 Once its meals have passed it takes no level at all, and a day later it is
 forgotten (the task stays on the list).

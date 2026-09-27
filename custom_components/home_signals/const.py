@@ -182,7 +182,7 @@ LEVEL_CRITICAL = "critical"
 
 # The tabs a Needs-you row can colour. Home is deliberately absent: it
 # surfaces other tabs' cards and never wears a level of its own.
-TABS = ("cleaning", "security", "lists", "maintenance")
+TABS = ("cleaning", "security", "lists", "maintenance", "kitchen")
 
 # How loud each level is, for picking the worst in a list. Ordered by
 # what the level means, never by anything incidental about its name.

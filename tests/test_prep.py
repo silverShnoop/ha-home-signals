@@ -152,6 +152,10 @@ async def test_due_today_is_attention_late_with_a_meal_ahead_is_waiting(
     assert prep.extra_state_attributes["level"] == LEVEL_ATTENTION
     (row,) = rows()
     assert row["level"] == LEVEL_ATTENTION
+    # It belongs to the Kitchen: its tab and its meals card wear it.
+    assert (row["tab"], row["card"]) == ("kitchen", "meals")
+    assert needs.extra_state_attributes["tab_kitchen"] == LEVEL_ATTENTION
+    assert needs.extra_state_attributes["card_meals"] == LEVEL_ATTENTION
     assert row["detail"] == "By 16:00 · for Tue dinner"
     assert row["action"]["data"] == {"id": out["id"]}
 
