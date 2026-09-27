@@ -69,6 +69,7 @@ from .const import (
     PHASE_SPIN,
     PHASE_TUMBLE,
 )
+from .derived import appliance_jobs, loudest
 from .money import money as _money
 
 LOGGER = logging.getLogger(__name__)
@@ -1056,7 +1057,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             if _ran_today(h) or h.get("id") in hanging_ids
         ]
 
-        return {
+        attrs: dict[str, Any] = {
             "slug": self._slug,
             # Whether a finished load leaves a second job behind it after
             # the drum is emptied. Needs you reads state attributes rather
@@ -1125,7 +1126,14 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "start_watts": float(self._cfg("start_watts", 8)),
             "idle_watts": float(self._cfg("idle_watts", 4)),
         }
-
+        # The machine owns its jobs and so its level: the card's outline
+        # reads `level` here, Needs you shows `jobs`, and the Cleaning tab
+        # wears the loudest `level` on it. Nothing downstream decides one.
+        jobs = appliance_jobs(self.name or self._slug, self.entity_id or "", attrs)
+        attrs["tab"] = "cleaning"
+        attrs["jobs"] = jobs
+        attrs["level"] = loudest(row.get("level") for row in jobs)
+        return attrs
 
 class AppliancePressSensor(SensorEntity, RestoreEntity):
     """When the appliance's own button was last pressed.

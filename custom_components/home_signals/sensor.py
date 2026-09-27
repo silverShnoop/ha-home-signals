@@ -95,7 +95,16 @@ from .appliance import (
     ApplianceCycleSensor,
     CleaningStatusSensor,
 )
-from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
+from .derived import (
+    BatteriesStatusSensor,
+    BinsStatusSensor,
+    NeedsYouSensor,
+    PeopleStatusSensor,
+    SecurityStatusSensor,
+    SoftenerStatusSensor,
+    SystemHealthSensor,
+    TasksStatusSensor,
+)
 from .devices import DevicesSensor
 from .energy import EnergyDaySensor
 from .prep import MealPrepSensor, async_register_prep_services
@@ -206,19 +215,29 @@ async def async_setup_entry(
     """Set up the derived signal sensors."""
     needs_you = NeedsYouSensor(entry)
     security = SecurityStatusSensor(entry)
-    security.add_listener(needs_you)
-    needs_you.security = security
     prep = MealPrepSensor(entry)
-    prep.add_listener(needs_you)
-    needs_you.prep = prep
+    # Every card that owns a need has its own sensor, which decides the
+    # card's level and the jobs behind it. Needs you only collects them.
+    # (The washing machines are owners too, found by their state.)
+    owners = [
+        security,
+        prep,
+        DevicesSensor(entry),
+        BinsStatusSensor(entry),
+        TasksStatusSensor(entry),
+        PeopleStatusSensor(entry),
+        SoftenerStatusSensor(entry),
+        BatteriesStatusSensor(entry),
+    ]
+    for owner in owners:
+        owner.add_listener(needs_you)
+    needs_you.owners = owners
     entities: list[SensorEntity] = [
         ActivityFeedSensor(entry),
         needs_you,
         SystemHealthSensor(entry),
-        DevicesSensor(entry),
-        security,
         EnergyDaySensor(entry),
-        prep,
+        *owners,
     ]
 
     specs = _appliance_specs(entry)

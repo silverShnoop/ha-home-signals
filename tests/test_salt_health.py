@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.home_signals.const import DOMAIN, LEVEL_ATTENTION
+from tests.owners import attach, owner
 from custom_components.home_signals.derived import NeedsYouSensor, SystemHealthSensor
 
 LEFT = "sensor.softener_salt_left_side_percentage"
@@ -45,6 +46,7 @@ def _needs_you_has_salt(hass: HomeAssistant) -> bool:
     sensor = NeedsYouSensor(_entry(hass))
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
     sensor._recompute()  # noqa: SLF001
     return any(r["id"] == "softener_salt" for r in sensor.extra_state_attributes["items"])
 

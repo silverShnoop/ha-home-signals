@@ -33,7 +33,8 @@ from custom_components.home_signals.const import (
     LEVEL_CRITICAL,
     LEVEL_WAITING,
 )
-from custom_components.home_signals.derived import NeedsYouSensor
+from tests.owners import attach, owner
+from custom_components.home_signals.derived import NeedsYouSensor, PeopleStatusSensor
 
 CASEY = "person.casey"
 
@@ -53,6 +54,7 @@ def _sensor(hass: HomeAssistant, options: dict | None = None) -> NeedsYouSensor:
     sensor = NeedsYouSensor(entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
     return sensor
 
 
@@ -91,7 +93,7 @@ async def test_but_an_hour_of_silence_is(hass: HomeAssistant) -> None:
     # Backdate the moment we first saw them go quiet, which is what the
     # sensor measures from -- see the restart test for why it is not
     # read off the entity.
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(minutes=61)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(minutes=61)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == ["Casey cannot be located"], _titles(sensor)
@@ -102,7 +104,7 @@ async def test_away_is_a_reading_and_not_a_job(hass: HomeAssistant) -> None:
     hass.states.async_set(CASEY, "not_home", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == [], "being out was treated as being untrackable"
@@ -115,7 +117,7 @@ async def test_coming_back_forgets_that_they_were_ever_dark(
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
     assert _titles(sensor) == ["Casey cannot be located"]
 
@@ -124,7 +126,7 @@ async def test_coming_back_forgets_that_they_were_ever_dark(
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == [], "the row survived the tracker coming back"
-    assert CASEY not in sensor._dark_since, (  # noqa: SLF001
+    assert CASEY not in owner(sensor, PeopleStatusSensor)._dark_since, (  # noqa: SLF001
         "the memory was kept, so the next blip would fire immediately"
     )
 
@@ -145,9 +147,9 @@ async def test_a_restart_does_not_restart_the_grace_period(
         hass,
         (
             State(
-                "sensor.needs_you",
-                "0",
-                {"items": [], "dark_since": {CASEY: quiet_since.isoformat()}},
+                "sensor.people_status",
+                "clear",
+                {"jobs": [], "dark_since": {CASEY: quiet_since.isoformat()}},
             ),
         ),
     )
@@ -155,6 +157,8 @@ async def test_a_restart_does_not_restart_the_grace_period(
     # last_changed is NOW, which is the lie.
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
+    # The memory lives on the Who's home card's own sensor now.
+    await owner(sensor, PeopleStatusSensor).async_added_to_hass()
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
 
@@ -168,7 +172,7 @@ async def test_watching_nobody_costs_nothing(hass: HomeAssistant) -> None:
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass, options={})
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == []
@@ -179,7 +183,7 @@ async def test_the_row_can_be_snoozed(hass: HomeAssistant) -> None:
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
     row = sensor.extra_state_attributes["items"][0]
     assert row["action_label"] == "Snooze", row
