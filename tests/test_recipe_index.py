@@ -309,3 +309,25 @@ async def test_prune_deletes_the_tags_nothing_uses(
 
     assert answer == {"deleted": ["'Quick'", "old"]}
     assert len(_calls(aioclient_mock, "DELETE", "/organizers/tags/t8")) == 1
+
+
+async def test_an_unchecked_split_keeps_the_method_as_it_came(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Until somebody looks, Keep in order must be able to put it back."""
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes/fajitas", json={**FAJITAS, "recipeInstructions": [
+        {"id": "s1", "title": "", "text": "Marinate."}, {"id": "s2", "title": "", "text": "Griddle."},
+    ]})
+    aioclient_mock.patch(f"{BASE}/recipes/fajitas", json=FAJITAS)
+    was = ["Marinate the chicken, then griddle it.", "  ", 7]
+
+    for checked in (False, True):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "fajitas", "prep": {
+                "mode": "split", "checked": checked, "steps": [{"ahead_max": 24}], "original": was}},
+            blocking=True, return_response=True,
+        )
+    unchecked, checked = (json.loads(_body(c)["extras"]["prep"]) for c in _calls(aioclient_mock, "PATCH", "/recipes/fajitas"))
+    assert unchecked["original"] == ["Marinate the chicken, then griddle it."]
+    assert "original" not in checked

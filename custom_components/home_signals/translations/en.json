@@ -123,7 +123,7 @@
         },
         "prep": {
           "name": "Prep and cook",
-          "description": "Split the method into prep ahead and to cook: {mode: split, steps: [timing of each prep step]} with the prep steps first in the method; {mode: none} for a recipe with nothing to do ahead; {mode: order} to take a split off."
+          "description": "Split the method into prep ahead and to cook: {mode: split, steps: [timing of each prep step]} with the prep steps first in the method; {mode: none} for a recipe with nothing to do ahead; {mode: order} to take a split off. An unchecked split may carry original, the method's lines as they were, kept until it is checked."
         },
         "config_entry_id": {
           "name": "Mealie",

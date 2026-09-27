@@ -322,7 +322,17 @@ def _prep_of(recipe: dict[str, Any]) -> dict[str, Any] | None:
     method = recipe.get("recipeInstructions") or []
     if not steps or len(steps) >= len(method) + 1:
         return None
-    return {"mode": "split", "steps": steps, "checked": bool(got.get("checked"))}
+    out = {"mode": "split", "steps": steps, "checked": bool(got.get("checked"))}
+    if original := _original(got.get("original")):
+        out["original"] = original
+    return out
+
+
+def _original(value: Any) -> list[str]:
+    """The method as it was before an unchecked split, as lines."""
+    if not isinstance(value, list):
+        return []
+    return [str(x).strip() for x in value if isinstance(x, str) and x.strip()]
 
 
 def _apply_prep(
@@ -350,9 +360,13 @@ def _apply_prep(
     steps[0]["title"] = PREP_TITLE
     if len(timing) < len(steps):
         steps[len(timing)]["title"] = COOK_TITLE
-    extras[ATTR_PREP] = json.dumps(
-        {"mode": "split", "steps": timing, "checked": bool(prep.get("checked"))}
-    )
+    stored: dict[str, Any] = {"mode": "split", "steps": timing, "checked": bool(prep.get("checked"))}
+    # Kept only until somebody has looked: "Keep in order" puts the
+    # method back as it came, which a split that moved or cut steps cannot
+    # otherwise know. A checked split has no use for it.
+    if not stored["checked"] and (original := _original(prep.get("original"))):
+        stored["original"] = original
+    extras[ATTR_PREP] = json.dumps(stored)
     return steps, extras
 
 
