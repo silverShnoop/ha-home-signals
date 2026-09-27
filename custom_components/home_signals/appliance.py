@@ -1234,10 +1234,11 @@ class CleaningStatusSensor(SensorEntity):
                 # Stood down, but still wet: the cutoff cannot fire again
                 # until the pad dries.
                 still_wet.append(sensor.name or sensor.slug)
-            elif not attrs.get("powered", True):
-                # Only worth saying while there is no leak: with water on the
-                # floor, "it has no power" is the automation working, not a
-                # second problem.
+            # Not an elif. A dead plug is its own row at `waiting`, leak or
+            # no leak, and a wet pad after the power came back is only
+            # `attention` -- so skipping the plug whenever the pad was wet
+            # put the tab a level below the row it was summarising.
+            if not attrs.get("powered", True):
                 unpowered.append(sensor.name or sensor.slug)
             waiting += int(attrs.get("pending_count") or 0)
             # Every appliance has this one, and the door clears it on both.

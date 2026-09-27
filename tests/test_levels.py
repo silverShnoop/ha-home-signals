@@ -177,6 +177,78 @@ async def test_every_row_carries_a_real_level_and_no_accent(
     for row in rows:
         assert row.get("level") in LEVEL_LOUDNESS, row
         assert "accent" not in row, row
+        # And it says where it is shown, or it colours nothing.
+        assert row.get("tab") == "cleaning", row
+        assert row.get("card") == "washing_machine", row
+
+
+# --- row, card and tab are one level -----------------------------------
+
+
+async def _levels(hass: HomeAssistant, sensor: NeedsYouSensor | None = None) -> dict:
+    sensor = sensor or _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+    attrs = sensor.extra_state_attributes
+    return {k: v for k, v in attrs.items() if k.startswith(("tab_", "card_"))}
+
+
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ({"leak": True}, LEVEL_CRITICAL),
+        ({"leak": True, "leak_alarm": False}, LEVEL_ATTENTION),
+        ({"powered": False}, LEVEL_WAITING),
+        # The one that drifted: a dead plug over a pad that is still wet
+        # after the power came back. Rows are attention + waiting.
+        ({"leak": True, "leak_alarm": False, "powered": False}, LEVEL_WAITING),
+        ({"leak": True, "powered": False, "drum_full": True}, LEVEL_CRITICAL),
+        ({"drum_full": True}, LEVEL_ATTENTION),
+    ],
+)
+async def test_the_card_and_tab_wear_the_loudest_row(
+    hass: HomeAssistant, attrs: dict, expected: str
+) -> None:
+    _machine(hass, **attrs)
+    sensor = _sensor(hass)
+    levels = await _levels(hass, sensor)
+    loudest = max(
+        (r["level"] for r in sensor.extra_state_attributes["items"]),
+        key=LEVEL_LOUDNESS.__getitem__,
+    )
+    assert loudest == expected
+    assert levels["card_washing_machine"] == expected
+    assert levels["tab_cleaning"] == expected
+
+
+async def test_nothing_waiting_is_no_level_anywhere(hass: HomeAssistant) -> None:
+    _machine(hass)
+    levels = await _levels(hass)
+    assert levels.get("card_washing_machine") is None
+    assert all(v is None for v in levels.values()), levels
+
+
+async def test_a_snoozed_row_still_colours_the_card(hass: HomeAssistant) -> None:
+    """Snooze puts the reminder off; it does not make the thing untrue."""
+    _machine(hass, powered=False)
+    sensor = _sensor(hass)
+    await _levels(hass, sensor)
+    sensor.suppress("unpowered_washing_machine", hours=4)
+    attrs = sensor.extra_state_attributes
+    assert not any(r["id"] == "unpowered_washing_machine" for r in attrs["items"])
+    assert attrs["card_washing_machine"] == LEVEL_WAITING
+    assert attrs["tab_cleaning"] == LEVEL_WAITING
+
+
+async def test_a_dismissed_row_does_not(hass: HomeAssistant) -> None:
+    """"Done" says the job is done, so nothing may go on asking for it."""
+    _machine(hass, powered=False)
+    sensor = _sensor(hass)
+    await _levels(hass, sensor)
+    sensor.suppress("unpowered_washing_machine")
+    attrs = sensor.extra_state_attributes
+    assert attrs.get("card_washing_machine") is None
+    assert attrs["tab_cleaning"] is None
 
 
 async def test_a_quiet_machine_raises_nothing(hass: HomeAssistant) -> None:
