@@ -22,6 +22,7 @@ from custom_components.home_signals.const import (
     LEVEL_CRITICAL,
     LEVEL_WAITING,
 )
+from tests.owners import attach, owner
 from custom_components.home_signals.derived import NeedsYouSensor
 
 LEFT = "sensor.softener_left"
@@ -40,6 +41,7 @@ def _sensor(hass: HomeAssistant) -> NeedsYouSensor:
     sensor = NeedsYouSensor(entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
     return sensor
 
 
@@ -123,6 +125,7 @@ async def test_other_rows_can_still_be_put_off(hass: HomeAssistant) -> None:
     sensor = NeedsYouSensor(entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
 

@@ -29,7 +29,13 @@ from custom_components.home_signals.const import (
     LEVEL_LOUDNESS,
     LEVEL_WAITING,
 )
-from custom_components.home_signals.derived import NeedsYouSensor
+from tests.owners import attach, owner
+from custom_components.home_signals.derived import (
+    BinsStatusSensor,
+    NeedsYouSensor,
+    appliance_jobs,
+    loudest,
+)
 
 WASHER = "sensor.washing_machine"
 
@@ -40,6 +46,7 @@ def _sensor(hass: HomeAssistant) -> NeedsYouSensor:
     sensor = NeedsYouSensor(entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
     return sensor
 
 
@@ -182,15 +189,24 @@ async def test_every_row_carries_a_real_level_and_no_accent(
         assert row.get("card") == "washing_machine", row
 
 
-# --- row, card and tab are one level -----------------------------------
+# --- the card decides; the row and the tab follow ----------------------
 
 
-async def _levels(hass: HomeAssistant, sensor: NeedsYouSensor | None = None) -> dict:
+async def _tabs(hass: HomeAssistant, sensor: NeedsYouSensor | None = None) -> dict:
     sensor = sensor or _sensor(hass)
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
     attrs = sensor.extra_state_attributes
-    return {k: v for k, v in attrs.items() if k.startswith(("tab_", "card_"))}
+    return {k: v for k, v in attrs.items() if k.startswith("tab_")}
+
+
+def _publish(hass: HomeAssistant, level: str | None, **attrs: Any) -> None:
+    """The machine as it now publishes itself: its own jobs and level."""
+    jobs = appliance_jobs("Washing machine", WASHER, {
+        "slug": "washing_machine", "powered": True, "leak": False,
+        "drum_full": False, "pending": [], **attrs,
+    })
+    _machine(hass, jobs=jobs, level=level, tab="cleaning", **attrs)
 
 
 @pytest.mark.parametrize(
@@ -206,48 +222,63 @@ async def _levels(hass: HomeAssistant, sensor: NeedsYouSensor | None = None) -> 
         ({"drum_full": True}, LEVEL_ATTENTION),
     ],
 )
-async def test_the_card_and_tab_wear_the_loudest_row(
-    hass: HomeAssistant, attrs: dict, expected: str
+async def test_the_machine_decides_its_level_from_its_own_jobs(
+    attrs: dict, expected: str
 ) -> None:
-    _machine(hass, **attrs)
-    sensor = _sensor(hass)
-    levels = await _levels(hass, sensor)
-    loudest = max(
-        (r["level"] for r in sensor.extra_state_attributes["items"]),
-        key=LEVEL_LOUDNESS.__getitem__,
-    )
-    assert loudest == expected
-    assert levels["card_washing_machine"] == expected
-    assert levels["tab_cleaning"] == expected
+    """The card's level is the loudest of the jobs the machine raises."""
+    jobs = appliance_jobs("Washing machine", WASHER, {"slug": "washing_machine", **attrs})
+    assert loudest(j["level"] for j in jobs) == expected
+
+
+async def test_the_tab_wears_the_card_level_not_the_rows(
+    hass: HomeAssistant,
+) -> None:
+    """The rail button follows the card. Here the card says waiting while
+    the only row it raises is attention -- the tab must say waiting."""
+    _publish(hass, LEVEL_WAITING, drum_full=True)
+    tabs = await _tabs(hass)
+    assert tabs["tab_cleaning"] == LEVEL_WAITING
 
 
 async def test_nothing_waiting_is_no_level_anywhere(hass: HomeAssistant) -> None:
-    _machine(hass)
-    levels = await _levels(hass)
-    assert levels.get("card_washing_machine") is None
-    assert all(v is None for v in levels.values()), levels
+    _publish(hass, None)
+    tabs = await _tabs(hass)
+    assert all(v is None for v in tabs.values()), tabs
 
 
-async def test_a_snoozed_row_still_colours_the_card(hass: HomeAssistant) -> None:
+async def test_a_snoozed_row_still_colours_the_tab(hass: HomeAssistant) -> None:
     """Snooze puts the reminder off; it does not make the thing untrue."""
-    _machine(hass, powered=False)
+    _publish(hass, LEVEL_WAITING, powered=False)
     sensor = _sensor(hass)
-    await _levels(hass, sensor)
+    await _tabs(hass, sensor)
     sensor.suppress("unpowered_washing_machine", hours=4)
     attrs = sensor.extra_state_attributes
     assert not any(r["id"] == "unpowered_washing_machine" for r in attrs["items"])
-    assert attrs["card_washing_machine"] == LEVEL_WAITING
     assert attrs["tab_cleaning"] == LEVEL_WAITING
 
 
-async def test_a_dismissed_row_does_not(hass: HomeAssistant) -> None:
-    """"Done" says the job is done, so nothing may go on asking for it."""
-    _machine(hass, powered=False)
-    sensor = _sensor(hass)
-    await _levels(hass, sensor)
-    sensor.suppress("unpowered_washing_machine")
+async def test_done_reaches_the_card_that_owns_the_job(hass: HomeAssistant) -> None:
+    """"Done" goes to the card's own sensor, so card, tab and row clear together."""
+    hass.states.async_set("sensor.bins", "Garden", {"daysTo": 1})
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={"bin_sensor": "sensor.bins"})
+    entry.add_to_hass(hass)
+    sensor = NeedsYouSensor(entry)
+    sensor.hass = hass
+    sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
+    bins = owner(sensor, BinsStatusSensor)
+    tabs = await _tabs(hass, sensor)
+    [row] = [r for r in sensor.extra_state_attributes["items"] if r["id"].startswith("bin_")]
+    assert bins.owner_level == LEVEL_ATTENTION
+    assert tabs["tab_cleaning"] == LEVEL_ATTENTION
+
+    sensor.suppress(row["id"])
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
     attrs = sensor.extra_state_attributes
-    assert attrs.get("card_washing_machine") is None
+    assert bins.owner_level is None
+    assert bins.extra_state_attributes["level"] is None
+    assert not any(r["id"] == row["id"] for r in attrs["items"])
     assert attrs["tab_cleaning"] is None
 
 

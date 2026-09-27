@@ -488,3 +488,36 @@ async def test_the_dryer_is_wired_for_one_phase_and_no_classifier(
     assert specs["washing_machine"].get("only_phase") is None, (
         "the washer would report one phase forever instead of classifying"
     )
+
+
+async def test_every_card_that_owns_a_need_has_its_own_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """The card decides its level; Needs you and the tab only read it."""
+    await _start(hass, OPTIONS)
+
+    for entity_id in (
+        "sensor.washing_machine",
+        "sensor.security_status",
+        "sensor.devices",
+        "sensor.bins_status",
+        "sensor.tasks_status",
+        "sensor.people_status",
+        "sensor.softener_status",
+        "sensor.batteries_status",
+    ):
+        state = hass.states.get(entity_id)
+        assert state is not None, f"{entity_id} did not appear"
+        assert "level" in state.attributes, entity_id
+        assert isinstance(state.attributes.get("jobs"), list), entity_id
+        assert state.attributes.get("tab"), entity_id
+
+    # A dead plug: the machine raises the job and decides the level; the
+    # row and the tab follow it.
+    hass.states.async_set("switch.washer_plug", "off")
+    await hass.async_block_till_done()
+    machine = hass.states.get("sensor.washing_machine").attributes
+    needs = hass.states.get("sensor.needs_you").attributes
+    assert machine["level"] == "waiting"
+    assert any(r["id"] == "unpowered_washing_machine" for r in needs["items"])
+    assert needs["tab_cleaning"] == machine["level"]

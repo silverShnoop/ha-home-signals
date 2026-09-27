@@ -328,13 +328,23 @@ class MealPrepSensor(SensorEntity):
             if not self.done(s) and any(self.meal_at(i) > now for i in s["items"])
         )
 
+    # The Meals card owns prep: its level is decided here, and Needs you and
+    # the Kitchen tab read it.
+    tab = "kitchen"
+
+    @property
+    def owner_level(self) -> str | None:
+        levels = [lv for s in self._sessions if (lv := self.level(s))]
+        return max(levels, key=LEVEL_LOUDNESS.get) if levels else None
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         sessions = [self._public(s) for s in sorted(self._sessions, key=lambda s: s["due"])]
-        levels = [s["level"] for s in sessions if s["level"]]
         return {
             "sessions": sessions,
-            "level": max(levels, key=LEVEL_LOUDNESS.get) if levels else None,
+            "level": self.owner_level,
+            "tab": self.tab,
+            "jobs": self.needs_you_rows(),
             ATTR_MEAL_TIMES: self.meal_times,
             ATTR_PREP_TIMES: self.prep_times,
             ATTR_TODO: self.todo,
