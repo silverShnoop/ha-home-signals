@@ -356,6 +356,8 @@ class MealPrepSensor(SensorEntity):
                 "detail": f"{when} · for {_meal_label(first)}",
                 "icon": "mdi:knife",
                 "level": level,
+                "tab": "kitchen",
+                "card": "meals",
                 "action_label": "Done",
                 "action": {
                     "service": f"{DOMAIN}.{SERVICE_PREP_DONE}",
