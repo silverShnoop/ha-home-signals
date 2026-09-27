@@ -391,6 +391,9 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # Set by the platform. The door is decided in one place -- the
         # grace, the jam, the blip-proof clock -- and this only reads it.
         self.security: SecurityStatusSensor | None = None
+        # Set by the platform, like the door: the prep sessions and their
+        # deadlines are decided in prep.py and this only reads the rows.
+        self.prep: Any = None
 
     async def async_added_to_hass(self) -> None:
         """Restore suppressions, then recompute so a restart does not un-dismiss.
@@ -469,6 +472,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         candidates.extend(self._security())
         candidates.extend(self._bins())
         candidates.extend(self._tasks())
+        candidates.extend(self._prep())
         candidates.extend(self._batteries())
         candidates.extend(self._salt())
         # No overnight-baseline row. It reported a night that had already
@@ -579,6 +583,12 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             "action_label": "Done",
             "action": _dismiss(f"bin_{collection.isoformat()}"),
         }]
+
+    def _prep(self) -> list[dict[str, Any]]:
+        """Meal prep due today, or late with the meal still ahead."""
+        if self.prep is None:
+            return []
+        return self.prep.needs_you_rows()
 
     def _tasks(self) -> list[dict[str, Any]]:
         """Overdue chores only — the full list lives in its own pop-up."""
