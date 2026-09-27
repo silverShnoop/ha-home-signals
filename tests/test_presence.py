@@ -196,68 +196,54 @@ async def test_the_row_can_be_snoozed(hass: HomeAssistant) -> None:
 #
 # Same rule from the other end. The Maintenance tile was hardcoded
 # ochre, so it was yellow on a morning with nothing wrong -- promising
-# a job that did not exist. It now takes its colour from the worst
-# thing System health is carrying.
+# a job that did not exist. A tab now wears the loudest level of the
+# cards on it, worked out by `loudest`, and says what it is in words.
 
-from custom_components.home_signals.derived import SystemHealthSensor  # noqa: E402
-
-
-def _health(hass: HomeAssistant, rows: list[dict]) -> SystemHealthSensor:
-    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
-    entry.add_to_hass(hass)
-    sensor = SystemHealthSensor(entry)
-    sensor.hass = hass
-    sensor.entity_id = "sensor.system_health"
-    sensor._items = rows  # noqa: SLF001
-    return sensor
+from custom_components.home_signals.derived import _tab_summary, loudest  # noqa: E402
 
 
-async def test_nothing_wrong_is_not_a_colour(hass: HomeAssistant) -> None:
-    assert _health(hass, []).extra_state_attributes["level"] is None, (
+async def test_nothing_wrong_is_not_a_colour() -> None:
+    assert loudest([]) is None, (
         "the tile would be coloured on a morning with nothing wrong"
     )
+    assert _tab_summary([]) == "Nothing waiting"
 
 
-async def test_information_alone_is_not_a_level(hass: HomeAssistant) -> None:
+async def test_information_alone_is_not_a_level() -> None:
     """Seven pending updates is worth knowing and is not a job.
 
-    It carries a decorative accent and no level at all, so the tile has
-    nothing to wear -- which is the point. A row that needs no doing
-    must not be able to colour a tab.
+    It carries no level, so the tile has nothing to wear -- which is the
+    point. Something that needs no doing must not be able to colour a tab.
     """
-    sensor = _health(hass, [{"id": "updates", "accent": ACCENT_INFO}])
-    assert sensor.extra_state_attributes["level"] is None, (
+    assert loudest([None, ACCENT_INFO]) is None, (
         "information coloured the tile, so it was ranked rather than skipped"
     )
 
 
-async def test_the_worst_thing_wins_not_the_last_one(
-    hass: HomeAssistant,
-) -> None:
-    sensor = _health(hass, [
-        {"id": "leak", "level": LEVEL_CRITICAL},
-        {"id": "updates", "accent": ACCENT_INFO},
-        {"id": "batteries", "level": LEVEL_ATTENTION},
-    ])
-    assert sensor.extra_state_attributes["level"] == LEVEL_CRITICAL, (
+async def test_the_worst_thing_wins_not_the_last_one() -> None:
+    assert loudest([LEVEL_CRITICAL, None, LEVEL_ATTENTION]) == LEVEL_CRITICAL, (
         "a critical row was drowned out by what was listed after it"
     )
 
 
-async def test_loudness_is_the_meaning_not_the_name(
-    hass: HomeAssistant,
-) -> None:
+async def test_loudness_is_the_meaning_not_the_name() -> None:
     """The trap the numbers used to set, in its new clothes.
 
     Ordered any incidental way -- alphabetically, say -- "attention"
     comes first and would outrank "waiting". The order has to come from
     what the levels mean.
     """
-    sensor = _health(hass, [
-        {"id": "batteries", "level": LEVEL_ATTENTION},
-        {"id": "unpowered", "level": LEVEL_WAITING},
-    ])
-    assert sensor.extra_state_attributes["level"] == LEVEL_WAITING, (
+    assert loudest([LEVEL_ATTENTION, LEVEL_WAITING]) == LEVEL_WAITING, (
         "attention outranked waiting, so something other than the "
         "meaning was being compared"
     )
+
+
+async def test_the_rail_says_the_loudest_job_and_how_many_more() -> None:
+    jobs = [
+        {"title": "Laundry needs hanging", "level": LEVEL_ATTENTION},
+        {"title": "Washing machine has no power", "level": LEVEL_WAITING},
+        {"title": "Laundry needs hanging", "level": LEVEL_ATTENTION},
+    ]
+    assert _tab_summary(jobs) == "Washing machine has no power \u00b7 +2 more"
+    assert _tab_summary([jobs[0], jobs[2]]) == "Laundry needs hanging \u00d72"

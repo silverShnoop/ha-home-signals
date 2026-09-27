@@ -64,7 +64,11 @@ async def test_a_configured_washer_produces_its_entities(hass: HomeAssistant) ->
     assert hass.states.get("sensor.washing_machine") is not None, (
         "the cycle sensor did not appear"
     )
-    assert hass.states.get("sensor.cleaning_status") is not None
+    # The Cleaning tab's level and words now come from Needs you.
+    needs = hass.states.get("sensor.needs_you").attributes
+    assert "tab_cleaning" in needs and "summary_cleaning" in needs
+    assert hass.states.get("sensor.cleaning_status") is None
+    assert hass.states.get("sensor.system_health") is None
     assert hass.states.get("sensor.washing_machine_button") is not None
     assert hass.services.has_service(DOMAIN, SERVICE_LAUNDRY_HUNG)
 

@@ -1,11 +1,9 @@
-"""Salt on the Maintenance tab: the card, the rail button and the row agree.
+"""Salt on the Maintenance tab: the card decides, the row and the tab follow.
 
-A level is a three-way obligation. While `Needs you` carries the softener
-row, the Water softener card is outlined (from `salt_level`) and the
-Maintenance tab's rail button wears the same level (from `level`). Once the
-row clears, all three go quiet together. Both halves are tested here against
-the same readings as the Needs you row, because the way this goes wrong is
-two copies of one threshold drifting apart.
+The Water softener card's own sensor decides its level and raises the job;
+Needs you shows the job and the Maintenance rail button wears the level.
+Tested against the same readings, because the way this goes wrong is two
+copies of one threshold drifting apart.
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.home_signals.const import DOMAIN, LEVEL_ATTENTION
 from tests.owners import attach, owner
-from custom_components.home_signals.derived import NeedsYouSensor, SystemHealthSensor
+from custom_components.home_signals.derived import NeedsYouSensor, SoftenerStatusSensor
 
 LEFT = "sensor.softener_salt_left_side_percentage"
 RIGHT = "sensor.softener_salt_right_side_percentage"
@@ -28,27 +26,15 @@ OPTIONS = {
 }
 
 
-def _entry(hass: HomeAssistant) -> MockConfigEntry:
+def _needs(hass: HomeAssistant) -> NeedsYouSensor:
     entry = MockConfigEntry(domain=DOMAIN, data={}, options=OPTIONS)
     entry.add_to_hass(hass)
-    return entry
-
-
-def _health(hass: HomeAssistant) -> dict:
-    sensor = SystemHealthSensor(_entry(hass))
-    sensor.hass = hass
-    sensor.entity_id = "sensor.system_health"
-    sensor._recompute()  # noqa: SLF001
-    return sensor.extra_state_attributes
-
-
-def _needs_you_has_salt(hass: HomeAssistant) -> bool:
-    sensor = NeedsYouSensor(_entry(hass))
+    sensor = NeedsYouSensor(entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
     attach(hass, sensor)
     sensor._recompute()  # noqa: SLF001
-    return any(r["id"] == "softener_salt" for r in sensor.extra_state_attributes["items"])
+    return sensor
 
 
 def _salt(hass: HomeAssistant, left: str, right: str) -> None:
@@ -58,31 +44,32 @@ def _salt(hass: HomeAssistant, left: str, right: str) -> None:
 
 async def test_low_salt_outlines_the_card_and_the_tab(hass: HomeAssistant) -> None:
     _salt(hass, "30", "0")
-    attrs = _health(hass)
+    needs = _needs(hass)
+    card = owner(needs, SoftenerStatusSensor).extra_state_attributes
+    attrs = needs.extra_state_attributes
 
-    assert attrs["salt_level"] == LEVEL_ATTENTION
-    assert attrs["level"] == LEVEL_ATTENTION, "the rail button stayed quiet"
+    assert card["level"] == LEVEL_ATTENTION
+    assert attrs["tab_maintenance"] == LEVEL_ATTENTION, "the rail button stayed quiet"
     row = next(r for r in attrs["items"] if r["id"] == "softener_salt")
     assert row["level"] == LEVEL_ATTENTION
-    assert row["sub"] == "Left 30%, Right 0%"
-    assert row["value"] == "0%"
+    assert attrs["summary_maintenance"] == row["title"]
 
 
 async def test_full_salt_says_nothing(hass: HomeAssistant) -> None:
     _salt(hass, "80", "60")
-    attrs = _health(hass)
+    needs = _needs(hass)
+    attrs = needs.extra_state_attributes
 
-    assert attrs["salt_level"] is None
-    assert attrs["level"] is None, "a full softener coloured the tab"
-    assert not any(r["id"] == "softener_salt" for r in attrs["items"])
+    assert owner(needs, SoftenerStatusSensor).owner_level is None
+    assert attrs["tab_maintenance"] is None, "a full softener coloured the tab"
+    assert attrs["summary_maintenance"] == "Nothing waiting"
 
 
 async def test_no_reading_is_not_low(hass: HomeAssistant) -> None:
     _salt(hass, "unavailable", "unknown")
-    attrs = _health(hass)
-
-    assert attrs["salt_level"] is None
-    assert not any(r["id"] == "softener_salt" for r in attrs["items"])
+    needs = _needs(hass)
+    assert owner(needs, SoftenerStatusSensor).owner_level is None
+    assert not any(r["id"] == "softener_salt" for r in needs.extra_state_attributes["items"])
 
 
 @pytest.mark.parametrize(
@@ -100,8 +87,9 @@ async def test_card_tab_and_row_agree(
     hass: HomeAssistant, left: str, right: str
 ) -> None:
     _salt(hass, left, right)
-    row = _needs_you_has_salt(hass)
-    attrs = _health(hass)
+    needs = _needs(hass)
+    attrs = needs.extra_state_attributes
+    row = any(r["id"] == "softener_salt" for r in attrs["items"])
 
-    assert (attrs["salt_level"] == LEVEL_ATTENTION) is row
-    assert (attrs["level"] == LEVEL_ATTENTION) is row
+    assert (owner(needs, SoftenerStatusSensor).owner_level == LEVEL_ATTENTION) is row
+    assert (attrs["tab_maintenance"] == LEVEL_ATTENTION) is row

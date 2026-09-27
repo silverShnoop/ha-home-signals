@@ -51,3 +51,40 @@ def attach(hass: HomeAssistant, needs: NeedsYouSensor, *extra: Any) -> list[Any]
 
 def owner(needs: NeedsYouSensor, kind: type) -> Any:
     return next(o for o in needs.owners if isinstance(o, kind))
+
+
+class Tab:
+    """What a tab's rail button reads: its level and its words.
+
+    Stands where the old per-tab status sensors stood in the tests, so the
+    assertions about what the Cleaning tab says carry straight over.
+    """
+
+    def __init__(self, hass: HomeAssistant, tab: str = "cleaning") -> None:
+        from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+        from custom_components.home_signals.const import DOMAIN
+
+        entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+        entry.add_to_hass(hass)
+        self.needs = NeedsYouSensor(entry)
+        self.needs.hass = hass
+        self.needs.entity_id = "sensor.needs_you"
+        attach(hass, self.needs)
+        self.tab = tab
+
+    def _attrs(self) -> dict[str, Any]:
+        self.needs._recompute()  # noqa: SLF001
+        return self.needs.extra_state_attributes
+
+    @property
+    def native_value(self) -> str:
+        return self._attrs()[f"tab_{self.tab}"] or "clear"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs = self._attrs()
+        return {
+            "level": attrs[f"tab_{self.tab}"],
+            "detail": attrs[f"summary_{self.tab}"],
+        }

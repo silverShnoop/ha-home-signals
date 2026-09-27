@@ -17,15 +17,16 @@ from custom_components.home_signals.const import (
     DOMAIN,
     LEVEL_ATTENTION,
 )
-from custom_components.home_signals.derived import SystemHealthSensor
+from custom_components.home_signals.derived import BatteriesStatusSensor
 
 
-def _health(hass: HomeAssistant, **options) -> SystemHealthSensor:
+def _health(hass: HomeAssistant, **options) -> BatteriesStatusSensor:
+    """The Batteries card's own sensor, which carries its data and level."""
     entry = MockConfigEntry(domain=DOMAIN, data={}, options=options)
     entry.add_to_hass(hass)
-    sensor = SystemHealthSensor(entry)
+    sensor = BatteriesStatusSensor(entry)
     sensor.hass = hass
-    sensor.entity_id = "sensor.system_health"
+    sensor.entity_id = "sensor.batteries_status"
     sensor._recompute()  # noqa: SLF001
     return sensor
 
@@ -55,7 +56,7 @@ async def test_low_follows_the_configured_line(hass: HomeAssistant) -> None:
     attrs = _health(hass, **{CONF_BATTERY_THRESHOLD: 35}).extra_state_attributes
 
     assert attrs["batteries"][0]["low"] is True
-    assert attrs["battery_level"] == LEVEL_ATTENTION
+    assert attrs["level"] == LEVEL_ATTENTION
     assert len(attrs["low_batteries"]) == 1, (
         "the card and the low list disagree about where the line is"
     )
@@ -63,7 +64,7 @@ async def test_low_follows_the_configured_line(hass: HomeAssistant) -> None:
 
 async def test_no_flat_battery_is_no_level(hass: HomeAssistant) -> None:
     _battery(hass, "hall", "Hall Sensor Battery", "71")
-    assert _health(hass).extra_state_attributes["battery_level"] is None, (
+    assert _health(hass).extra_state_attributes["level"] is None, (
         "the card would be yellow with nothing to change"
     )
 
@@ -80,4 +81,4 @@ async def test_ignored_and_unreadable_batteries_are_left_out(
     ).extra_state_attributes
 
     assert [b["entity_id"] for b in attrs["batteries"]] == ["sensor.hall"]
-    assert attrs["battery_level"] is None
+    assert attrs["level"] is None
