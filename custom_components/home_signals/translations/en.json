@@ -121,6 +121,10 @@
           "name": "Favourite",
           "description": "Whether it is a favourite of the Mealie user whose token this is."
         },
+        "prep": {
+          "name": "Prep and cook",
+          "description": "Split the method into prep ahead and to cook: {mode: split, steps: [timing of each prep step]} with the prep steps first in the method; {mode: none} for a recipe with nothing to do ahead; {mode: order} to take a split off."
+        },
         "config_entry_id": {
           "name": "Mealie",
           "description": "Which Mealie, if there is more than one."
@@ -204,6 +208,62 @@
         "folder": {
           "name": "Folder",
           "description": "Where under local media/home_signals to keep it."
+        }
+      }
+    },
+    "save_prep_session": {
+      "name": "Save prep session",
+      "description": "Plan one sitting of meal prep: when it has to be done by, and which meals' ahead-of-time steps it covers. Kept as one Home Tasks item with that deadline, created or updated. Give no items to remove the session.",
+      "fields": {
+        "id": {
+          "name": "Session",
+          "description": "The session to change. Leave out to start a new one."
+        },
+        "due": {
+          "name": "Due",
+          "description": "When the prep has to be done by."
+        },
+        "items": {
+          "name": "Meals",
+          "description": "One per meal: date, entry_type, name, and optionally recipe_id, slug, steps (the prep steps as text) and minutes."
+        },
+        "title": {
+          "name": "Title",
+          "description": "The task's name. Defaults to \"Prep:\" and the meals."
+        }
+      }
+    },
+    "remove_prep_session": {
+      "name": "Remove prep session",
+      "description": "Forget a prep session and remove its Home Tasks item.",
+      "fields": {
+        "id": {
+          "name": "Session"
+        }
+      }
+    },
+    "prep_done": {
+      "name": "Prep done",
+      "description": "Tick a prep session's Home Tasks item.",
+      "fields": {
+        "id": {
+          "name": "Session"
+        }
+      }
+    },
+    "prep_settings": {
+      "name": "Prep settings",
+      "description": "When meals are eaten, when prep usually happens, and which list holds it.",
+      "fields": {
+        "meal_times": {
+          "name": "Meal times"
+        },
+        "prep_times": {
+          "name": "Prep times",
+          "description": "Weekdays are 0 (Monday) to 6 (Sunday)."
+        },
+        "todo": {
+          "name": "List"
         }
       }
     }

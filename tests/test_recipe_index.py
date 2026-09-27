@@ -223,6 +223,76 @@ async def test_a_mangled_tag_is_found_by_its_slug_and_renamed(
     assert _body(patch)["tags"] == [{"id": "t9", "name": "Lunch", "slug": "lunch"}]
 
 
+async def test_a_split_puts_the_prep_first_and_its_timings_in_extras(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes/fajitas", json={**FAJITAS, "extras": {"other": "kept"}, "recipeInstructions": [
+        {"id": "s1", "title": "", "text": "Marinate the chicken."},
+        {"id": "s2", "title": "", "text": "Slice the peppers."},
+        {"id": "s3", "title": "", "text": "Griddle it all."},
+    ]})
+    aioclient_mock.patch(f"{BASE}/recipes/fajitas", json=FAJITAS)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "fajitas", "prep": {"mode": "split", "steps": [
+            {"ahead_max": 24, "ahead_min": 1, "keeps": "fridge", "minutes": 10, "source": "page"},
+            {"ahead_max": "48", "keeps": "fridge", "minutes": 10, "junk": "dropped"},
+        ]}},
+        blocking=True, return_response=True,
+    )
+
+    (patch,) = _calls(aioclient_mock, "PATCH", "/recipes/fajitas")
+    sent = _body(patch)
+    assert [s["title"] for s in sent["recipeInstructions"]] == ["Prep ahead", "", "To cook"]
+    assert [s["id"] for s in sent["recipeInstructions"]] == ["s1", "s2", "s3"], "the steps were rewritten"
+    assert sent["extras"]["other"] == "kept"
+    assert json.loads(sent["extras"]["prep"]) == {"mode": "split", "checked": False, "steps": [
+        {"ahead_max": 24, "ahead_min": 1, "minutes": 10, "keeps": "fridge", "source": "page"},
+        {"ahead_max": 48, "minutes": 10, "keeps": "fridge"},
+    ]}
+
+
+async def test_order_takes_a_split_off_and_none_says_there_is_nothing(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    split = json.dumps({"mode": "split", "steps": [{"ahead_max": 24}]})
+    aioclient_mock.get(f"{BASE}/recipes/fajitas", json={**FAJITAS, "extras": {"prep": split}, "recipeInstructions": [
+        {"id": "s1", "title": "Prep ahead", "text": "Marinate."}, {"id": "s2", "title": "To cook", "text": "Cook."},
+    ]})
+    aioclient_mock.patch(f"{BASE}/recipes/fajitas", json=FAJITAS)
+
+    for mode in ("order", "none"):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "fajitas", "prep": {"mode": mode}},
+            blocking=True, return_response=True,
+        )
+    order, none = (_body(c) for c in _calls(aioclient_mock, "PATCH", "/recipes/fajitas"))
+    assert [s["title"] for s in order["recipeInstructions"]] == ["", ""]
+    assert "prep" not in order["extras"]
+    assert json.loads(none["extras"]["prep"]) == {"mode": "none", "checked": False}
+
+
+async def test_the_index_carries_the_split(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(LISTING, json=SUMMARIES)
+    aioclient_mock.get(f"{BASE}/users/self/favorites", json={"ratings": []})
+    aioclient_mock.get(f"{BASE}/recipes/fajitas", json={**FAJITAS, "recipeInstructions": [{"text": "a"}, {"text": "b"}],
+        "extras": {"prep": json.dumps({"mode": "split", "steps": [{"ahead_max": 24, "keeps": "fridge"}], "checked": True})}})
+    aioclient_mock.get(f"{BASE}/recipes/oats", json={**OATS, "extras": {"prep": "not json"}})
+
+    answer = await hass.services.async_call(
+        DOMAIN, SERVICE_RECIPE_INDEX, {}, blocking=True, return_response=True,
+    )
+
+    fajitas, oats = answer["recipes"]
+    assert fajitas["prep"] == {"mode": "split", "steps": [{"ahead_max": 24, "keeps": "fridge"}], "checked": True}
+    assert oats["prep"] is None, "a broken split is read as none"
+
+
 async def test_prune_deletes_the_tags_nothing_uses(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:

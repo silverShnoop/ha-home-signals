@@ -140,6 +140,16 @@ save_recipe:
       description: Whether it is a favourite of the Mealie user whose token this is.
       selector:
         boolean:
+    prep:
+      name: Prep and cook
+      description: >-
+        Split the method into prep ahead and to cook. {mode: split, steps: [...]}
+        where the method's first steps are the prep, one timing each
+        (ahead_max and ahead_min in hours, keeps, minutes, source);
+        {mode: none} for nothing to do ahead; {mode: order} to take it off.
+      example: '{"mode": "split", "steps": [{"ahead_max": 24, "ahead_min": 1, "keeps": "fridge", "minutes": 10}]}'
+      selector:
+        object:
     config_entry_id:
       name: Mealie
       description: Which Mealie, if there is more than one.
@@ -261,3 +271,77 @@ save_photo:
       example: fridge
       selector:
         text:
+
+save_prep_session:
+  name: Save prep session
+  description: >-
+    Plan one sitting of meal prep: when it has to be done by, and which meals'
+    ahead-of-time steps it covers. Kept as one Home Tasks item with that
+    deadline, created or updated. Give no items to remove the session.
+  fields:
+    id:
+      name: Session
+      description: The session to change. Leave out to start a new one.
+      selector:
+        text:
+    due:
+      name: Due
+      description: When the prep has to be done by.
+      required: true
+      selector:
+        datetime:
+    items:
+      name: Meals
+      description: >-
+        One per meal: date, entry_type, name, and optionally recipe_id, slug,
+        steps (the prep steps as text) and minutes.
+      required: true
+      example: '[{"date": "2026-09-29", "entry_type": "dinner", "name": "Chilli", "steps": ["Chop the onions"], "minutes": 15}]'
+      selector:
+        object:
+    title:
+      name: Title
+      description: The task's name. Defaults to "Prep:" and the meals.
+      selector:
+        text:
+
+remove_prep_session:
+  name: Remove prep session
+  description: Forget a prep session and remove its Home Tasks item.
+  fields:
+    id:
+      name: Session
+      required: true
+      selector:
+        text:
+
+prep_done:
+  name: Prep done
+  description: Tick a prep session's Home Tasks item.
+  fields:
+    id:
+      name: Session
+      required: true
+      selector:
+        text:
+
+prep_settings:
+  name: Prep settings
+  description: When meals are eaten, when prep usually happens, and which list holds it.
+  fields:
+    meal_times:
+      name: Meal times
+      example: '{"breakfast": "07:00", "lunch": "12:00", "dinner": "17:00"}'
+      selector:
+        object:
+    prep_times:
+      name: Prep times
+      description: Weekdays are 0 (Monday) to 6 (Sunday).
+      example: '[{"label": "Sunday afternoon", "days": [6], "time": "16:00"}]'
+      selector:
+        object:
+    todo:
+      name: List
+      selector:
+        entity:
+          domain: todo

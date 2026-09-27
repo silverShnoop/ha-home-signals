@@ -98,6 +98,7 @@ from .appliance import (
 from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
 from .devices import DevicesSensor
 from .energy import EnergyDaySensor
+from .prep import MealPrepSensor, async_register_prep_services
 from .todo_done import TodoDoneTodaySensor
 
 LOGGER = logging.getLogger(__name__)
@@ -207,6 +208,9 @@ async def async_setup_entry(
     security = SecurityStatusSensor(entry)
     security.add_listener(needs_you)
     needs_you.security = security
+    prep = MealPrepSensor(entry)
+    prep.add_listener(needs_you)
+    needs_you.prep = prep
     entities: list[SensorEntity] = [
         ActivityFeedSensor(entry),
         needs_you,
@@ -214,6 +218,7 @@ async def async_setup_entry(
         DevicesSensor(entry),
         security,
         EnergyDaySensor(entry),
+        prep,
     ]
 
     specs = _appliance_specs(entry)
@@ -238,6 +243,7 @@ async def async_setup_entry(
 
     async_add_entities(entities)
     _async_register_services(hass, needs_you, cycles, presses)
+    async_register_prep_services(hass, prep)
 
 
 def _done_today_sensors(
