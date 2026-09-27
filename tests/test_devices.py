@@ -225,13 +225,12 @@ async def test_needs_you_counts_the_same_devices_as_the_card(
             model="Google Cast Group")
     _device(hass, src, "Bulb", {"light": "on"})
 
-    card = _sensor(hass).extra_state_attributes
-    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
-    entry.add_to_hass(hass)
-    needs_you = NeedsYouSensor(entry)
-    needs_you.hass = hass
-    [row] = needs_you._offline()  # noqa: SLF001
+    devices = _sensor(hass)
+    card = devices.extra_state_attributes
+    # The Devices card owns the offline job, so the row is the card's own.
+    [row] = card["jobs"]
 
+    assert card["level"] == row["level"]
     assert (card["offline"], card["partial"]) == (1, 1)
     assert row["title"] == "1 device offline, 1 partly", row["title"]
     assert row["detail"] == "Car, Speaker"

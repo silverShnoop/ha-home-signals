@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.helpers import (
     area_registry as ar,
@@ -29,7 +29,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import LEVEL_ATTENTION
-from .derived import _NOISY_DOMAINS, _Derived
+from .derived import _NOISY_DOMAINS, _count, _Derived, _snooze, loudest
 
 # The networks worth a bar of their own, in the order the card draws them.
 # Everything else talks to Home Assistant over the house Wi-Fi or a vendor's
@@ -166,6 +166,9 @@ def scan_devices(
 class DevicesSensor(_Derived, RestoreEntity):
     """Devices connected, offline and partly offline, by room and network."""
 
+    # The Devices card owns the offline job: its level is decided here and
+    # Needs you and the Maintenance tab read it.
+    tab = "maintenance"
     _attr_name = "Devices"
     _attr_icon = "mdi:lan-connect"
     _attr_native_unit_of_measurement = "devices"
@@ -183,6 +186,61 @@ class DevicesSensor(_Derived, RestoreEntity):
         # Whether the first real scan has happened. Until it has, every
         # quiet device predates this sensor and gets None, not "now".
         self._baselined = False
+        self._listeners: list[Any] = []
+
+    @callback
+    def add_listener(self, listener: Any) -> None:
+        self._listeners.append(listener)
+
+    @callback
+    def async_write_ha_state(self) -> None:
+        super().async_write_ha_state()
+        for listener in self._listeners:
+            listener.refresh()
+
+    @property
+    def owner_level(self) -> str | None:
+        return loudest(row.get("level") for row in self.needs_you_rows())
+
+    def needs_you_rows(self) -> list[dict[str, Any]]:
+        """One row for all of them, not one each, counted as devices.
+
+        Twenty-seven unavailable entities is one problem -- an integration
+        is down -- and twenty-seven rows would bury everything else. It is
+        counted from this sensor's own scan -- the one the card draws -- so
+        the row and the card say the same number: this row used to count
+        entities and read "31 offline" beside a card saying 7.
+        """
+        problems = self._items
+        if not problems:
+            return []
+        off = sum(1 for p in problems if p["state"] == OFFLINE)
+        part = len(problems) - off
+        if off and part:
+            title = f"{_count(off, 'device')} offline, {part} partly"
+        elif off:
+            title = f"{_count(off, 'device')} offline"
+        else:
+            title = f"{_count(part, 'device')} partly offline"
+        names = ", ".join(p["name"] for p in problems[:3])
+        if len(problems) > 3:
+            names += f" and {len(problems) - 3} more"
+        return [{
+            "id": "offline",
+            "action": _snooze("offline", 12),
+            "title": title,
+            "detail": names,
+            "icon": "mdi:lan-disconnect",
+            # Nothing is accruing damage and nothing is paused waiting
+            # for a person: a quiet device is an investigation for today
+            # or tomorrow. It was the loudest thing on the panel once and
+            # pushed the Maintenance tile red every morning, which is how
+            # a red stops meaning anything.
+            "level": LEVEL_ATTENTION,
+            "tab": "maintenance",
+            "card": "devices",
+            "action_label": "Snooze",
+        }]
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -238,9 +296,10 @@ class DevicesSensor(_Derived, RestoreEntity):
             "total": sum(self._counts.values()),
             "problems": list(self._items),
             "networks": list(self._networks),
-            # A device that has stopped answering is already a Needs you
-            # row (the offline row), so the card may wear its level.
-            "level": LEVEL_ATTENTION if self._items else None,
+            # The card's level, decided here from the offline job.
+            "level": self.owner_level,
+            "tab": self.tab,
+            "jobs": self.needs_you_rows(),
             "since": {
                 device_id: when.isoformat() if when else None
                 for device_id, when in self._since.items()

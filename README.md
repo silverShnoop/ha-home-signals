@@ -195,25 +195,37 @@ row came to claim an alarm by naming a hue. A Needs-you row publishes
 `level` and never `accent`, and `tests/test_levels.py` asserts both halves
 over every state the washer can be in.
 
-### One level, worked out once
+### The card decides; the row and the tab follow
 
-Every row names the **tab** and the **card** it belongs to, and
-`sensor.needs_you` publishes the loudest level each is owed as flat
-attributes — `tab_cleaning`, `tab_security`, `tab_lists`,
-`tab_maintenance`, `tab_kitchen`, and `card_<card>` (`card_meals`, `card_washing_machine`,
-`card_tumble_dryer`, `card_bins`, `card_doors`, `card_people`,
-`card_tasks`, `card_softener`, `card_batteries`, `card_devices`). A tab
-with nothing waiting is `None`; a card with nothing waiting is absent.
+The card is the thing that owns a need, so its sensor is where the level is
+worked out — once. Each card that can ask for something has its own sensor
+publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
+(the Needs-you rows behind it):
 
-Card outlines and rail buttons read these and nothing else. When each
-worked its own level out, they drifted: the Cleaning tab skipped a dead
-plug whenever a pad was wet, a silent lock coloured the door with no row to
-say why, and bins, overdue chores and a lost phone had rows that coloured
+| Card | Its sensor |
+| --- | --- |
+| Washing machine, Tumble dryer | `sensor.washing_machine`, `sensor.tumble_dryer` |
+| Front door | `sensor.security_status` |
+| Who's home | `sensor.people_status` |
+| Bin calendar | `sensor.bins_status` |
+| Home Tasks | `sensor.tasks_status` |
+| Water softener | `sensor.softener_status` |
+| Batteries | `sensor.batteries_status` |
+| Devices | `sensor.devices` |
+| Meals (prep) | the meal prep sensor |
+
+The card's outline reads its sensor's `level`. `sensor.needs_you` collects
+every card's `jobs` and works out no level of its own; it publishes
+`tab_<tab>` — the loudest card `level` on each tab — for the rail buttons.
+When each worked its own level out they drifted: the Cleaning tab skipped a
+dead plug whenever a pad was wet, a silent lock coloured the door with no
+row, and bins, overdue chores and a lost phone had rows that coloured
 nothing.
 
-**A snoozed row still colours its card and tab** — snooze puts the
-reminder off, it does not make the thing untrue. **A dismissed row does
-not** — "Done" says the job is done.
+**Snooze** is Needs you's business: it hides the row, and the card and tab
+stay coloured because the thing is still true. **Done** goes to the card
+that owns the job — "Bins out" tells `sensor.bins_status` — so the card, the
+tab and the row clear together.
 
 A lock or door that stops reporting is its own row, `silent_<entity>`, at
 the level the door already wears.

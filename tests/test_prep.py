@@ -20,6 +20,7 @@ from custom_components.home_signals.const import (
     LEVEL_ATTENTION,
     LEVEL_WAITING,
 )
+from tests.owners import attach, owner
 from custom_components.home_signals.derived import NeedsYouSensor
 from custom_components.home_signals.prep import (
     MealPrepSensor,
@@ -82,7 +83,7 @@ async def _setup(hass: HomeAssistant) -> tuple[MealPrepSensor, NeedsYouSensor, F
     needs = NeedsYouSensor(entry)
     needs.hass = hass
     needs.entity_id = "sensor.needs_you"
-    needs.prep = prep
+    attach(hass, needs, prep)
     await prep.async_added_to_hass()
     await needs.async_added_to_hass()
     async_register_prep_services(hass, prep)
@@ -155,7 +156,6 @@ async def test_due_today_is_attention_late_with_a_meal_ahead_is_waiting(
     # It belongs to the Kitchen: its tab and its meals card wear it.
     assert (row["tab"], row["card"]) == ("kitchen", "meals")
     assert needs.extra_state_attributes["tab_kitchen"] == LEVEL_ATTENTION
-    assert needs.extra_state_attributes["card_meals"] == LEVEL_ATTENTION
     assert row["detail"] == "By 16:00 · for Tue dinner"
     assert row["action"]["data"] == {"id": out["id"]}
 
