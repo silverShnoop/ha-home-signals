@@ -1072,6 +1072,53 @@ unless `date` is given). It never moves the date backwards, so marking an
 older meal after a newer one is harmless. The meal scripts call it each
 night for the day that has just gone.
 
+## Prep ahead: splitting a recipe
+
+`save_recipe` takes an optional `prep`, which says which of a recipe's steps
+can be done ahead of time and which have to happen at the stove. It is
+optional per recipe, and a recipe without one is simply cooked in order.
+
+- `{"mode": "split", "steps": [...]}` -- the first `len(steps)` steps of the
+  method are the prep, in order, and the rest are the cook. Each entry may
+  carry `ahead_max` and `ahead_min` (hours), `minutes`, `keeps` (e.g.
+  "fridge") and `source` ("page", "house" or "ai" -- where the split came
+  from).
+- `{"mode": "none"}` -- looked at, and there is nothing worth doing ahead.
+- `{"mode": "order"}` -- take the split off again.
+
+It is stored in Mealie itself, so the recipe still reads properly there: the
+prep steps are moved to the front under a "Prep ahead" section heading and
+the rest go under "To cook", and the timings live in the recipe's `extras`
+as `prep`. The recipe index carries the split back as each recipe's `prep`.
+
+## Prep sessions: `sensor.meal_prep`
+
+A session is one sitting in which the prep for one or more meals is done,
+and it is exactly **one Home Tasks item** with a deadline, named "Prep:" and
+the meals, with each meal's steps in its description. The house plans to do
+prep in as few sittings as it can, so one item per session rather than one
+per meal.
+
+| Action | What it does |
+| --- | --- |
+| `home_signals.save_prep_session` | Create or change a session (`id`, `due`, `items`) and its task. No items removes it. |
+| `home_signals.remove_prep_session` | Forget a session and remove its task. |
+| `home_signals.prep_done` | Tick the session's task. |
+| `home_signals.prep_settings` | Meal times (default 07:00, 12:00, 17:00), prep times (Sunday 16:00, weekday evenings 19:30) and the list. |
+
+The task is the job; the sensor keeps the plan behind it and reads the
+task's status back, so ticking it on a phone clears everything. Deleting the
+task counts as done too -- somebody has answered it.
+
+A session raises a `Needs you` row, and the sensor's `level`, only while it
+matters:
+
+- `attention` -- due today and not done;
+- `waiting` -- past due, not done, and a meal it was for is still ahead.
+
+Once its meals have passed it takes no level at all, and a day later it is
+forgotten (the task stays on the list).
+
 ## Recipe photos and saved photos
 
 **`GET /api/home_signals/recipe_image/<recipe_id>/<size>`** passes a recipe's

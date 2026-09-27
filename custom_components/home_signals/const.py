@@ -213,6 +213,7 @@ SERVICE_MARK_MADE = "mark_made"
 SERVICE_PRUNE_TAGS = "prune_tags"
 ATTR_TAGS = "tags"
 ATTR_FAVOURITE = "favourite"
+ATTR_PREP = "prep"
 ATTR_DATE = "date"
 ATTR_URL = "url"
 
@@ -340,3 +341,19 @@ ENERGY_BACKFILL_DAYS = 10
 # wants: a floor is the quietest number the house produces, so a norm built
 # from three of them is one odd night away from being wrong.
 ENERGY_MIN_DAYS_FOR_NORM = 5
+
+# --- Meal prep ---------------------------------------------------------
+#
+# Prep sessions: when the ahead-of-time steps of the week's meals get done,
+# each one a single Home Tasks item with a deadline. See prep.py.
+SERVICE_SAVE_PREP = "save_prep_session"
+SERVICE_REMOVE_PREP = "remove_prep_session"
+SERVICE_PREP_DONE = "prep_done"
+SERVICE_PREP_SETTINGS = "prep_settings"
+ATTR_SESSION_ID = "id"
+ATTR_DUE = "due"
+ATTR_ITEMS = "items"
+ATTR_MEAL_TIMES = "meal_times"
+ATTR_PREP_TIMES = "prep_times"
+ATTR_TODO = "todo"
+DEFAULT_PREP_TODO = "todo.home_tasks"

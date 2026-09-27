@@ -23,6 +23,16 @@ ingredient lines, when it was last made and whether it is a favourite.
 Mealie's recipe list carries no ingredients, so each full recipe is read
 once and kept until Mealie says it changed. ``mark_made`` records that a
 recipe was eaten, which is what "not had lately" is measured from.
+
+A recipe can also be split into prep and cook: the steps that can be done
+ahead, and the ones that happen at the stove. Mealie has no field for that,
+so it is kept in two places Mealie does have. The prep steps come first,
+under an instruction section titled "Prep ahead", and the cook steps
+follow under "To cook", so Mealie's own page shows the split. How far
+ahead each prep step can be done, and where it keeps, go in the recipe's
+``extras`` as ``prep``, by position: the first step's timing is first. By
+position rather than by step id, because a method saved as text gets new
+step ids every time and would lose its timings on the first typo fixed.
 """
 
 from __future__ import annotations
@@ -57,6 +67,7 @@ from .const import (
     ATTR_INGREDIENTS,
     ATTR_METHOD,
     ATTR_NAME,
+    ATTR_PREP,
     ATTR_RECIPE,
     ATTR_SERVINGS,
     ATTR_TAGS,
@@ -118,6 +129,7 @@ SAVE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_METHOD): vol.Any([cv.string], cv.string),
     vol.Optional(ATTR_TAGS): vol.Any([cv.string], cv.string),
     vol.Optional(ATTR_FAVOURITE): cv.boolean,
+    vol.Optional(ATTR_PREP): vol.Any(None, dict),
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
@@ -265,6 +277,85 @@ def _merge_steps(old: list[dict[str, Any]], lines: list[str]) -> list[dict[str, 
     return out
 
 
+PREP_TITLE = "Prep ahead"
+COOK_TITLE = "To cook"
+_PREP_MODES = ("split", "none", "order")
+_STEP_KEYS = ("ahead_max", "ahead_min", "minutes")
+
+
+def _prep_step(value: Any) -> dict[str, Any]:
+    """One prep step's timing, kept to the fields the house uses."""
+    raw = value if isinstance(value, dict) else {}
+    out: dict[str, Any] = {}
+    for key in _STEP_KEYS:
+        try:
+            number = float(raw.get(key))
+        except (TypeError, ValueError):
+            continue
+        if number >= 0:
+            out[key] = int(number) if number == int(number) else number
+    for key in ("keeps", "source"):
+        if raw.get(key):
+            out[key] = str(raw[key]).strip()
+    return out
+
+
+def _prep_of(recipe: dict[str, Any]) -> dict[str, Any] | None:
+    """The split a recipe carries, or None for one that was never split.
+
+    A split whose count no longer fits the method (steps deleted in
+    Mealie's own editor) is read as no split rather than a wrong one.
+    """
+    extras = recipe.get("extras") if isinstance(recipe.get("extras"), dict) else {}
+    raw = extras.get(ATTR_PREP)
+    if not raw:
+        return None
+    try:
+        got = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return None
+    if not isinstance(got, dict) or got.get("mode") not in ("split", "none"):
+        return None
+    if got["mode"] == "none":
+        return {"mode": "none", "checked": bool(got.get("checked"))}
+    steps = [_prep_step(s) for s in (got.get("steps") or [])]
+    method = recipe.get("recipeInstructions") or []
+    if not steps or len(steps) >= len(method) + 1:
+        return None
+    return {"mode": "split", "steps": steps, "checked": bool(got.get("checked"))}
+
+
+def _apply_prep(
+    instructions: list[dict[str, Any]], extras: dict[str, Any], prep: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Mark the split on the method and in extras; or take it off again."""
+    mode = prep.get("mode")
+    if mode not in _PREP_MODES:
+        raise ServiceValidationError("prep.mode is split, none or order.")
+    steps = [dict(s) for s in instructions]
+    for step in steps:
+        if str(step.get("title") or "").strip() in (PREP_TITLE, COOK_TITLE):
+            step["title"] = ""
+    extras = {k: v for k, v in (extras or {}).items() if k != ATTR_PREP}
+    if mode == "order":
+        return steps, extras
+    if mode == "none":
+        extras[ATTR_PREP] = json.dumps({"mode": "none", "checked": bool(prep.get("checked"))})
+        return steps, extras
+    timing = [_prep_step(s) for s in (prep.get("steps") or [])]
+    if not timing or len(timing) > len(steps):
+        raise ServiceValidationError(
+            "A split needs between one prep step and every step of the method."
+        )
+    steps[0]["title"] = PREP_TITLE
+    if len(timing) < len(steps):
+        steps[len(timing)]["title"] = COOK_TITLE
+    extras[ATTR_PREP] = json.dumps(
+        {"mode": "split", "steps": timing, "checked": bool(prep.get("checked"))}
+    )
+    return steps, extras
+
+
 async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     """Create a recipe, or change the one named. Returns where it now lives."""
     data = call.data
@@ -306,6 +397,13 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     if tags is not None:
         patch["tags"] = await _tags_for(api, tags)
 
+    # The split is applied to the method as it will be after this save: the
+    # new one when a method was sent, otherwise the one already there.
+    if data.get(ATTR_PREP) is not None:
+        method = patch.get("recipeInstructions", current.get("recipeInstructions") or [])
+        extras = current.get("extras") if isinstance(current.get("extras"), dict) else {}
+        patch["recipeInstructions"], patch["extras"] = _apply_prep(method, extras, data[ATTR_PREP])
+
     saved = current
     if patch:
         answer = await api.request("PATCH", f"/recipes/{slug}", patch)
@@ -320,6 +418,7 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
         "recipe_id": saved.get("id", current.get("id")),
         "name": saved.get("name", current.get("name")),
         "tags": [t.get("name") for t in (saved.get("tags") or []) if isinstance(t, dict)],
+        "prep": _prep_of(saved),
     }
 
 
@@ -486,22 +585,22 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
     except HomeAssistantError:
         pass
 
-    cache: dict[str, tuple[str, list[str]]] = hass.data.setdefault(_INDEX_CACHE, {})
+    cache: dict[str, tuple[str, list[str], Any]] = hass.data.setdefault(_INDEX_CACHE, {})
     gate = asyncio.Semaphore(_INDEX_PARALLEL)
 
-    async def lines(summary: dict[str, Any]) -> list[str]:
+    async def lines(summary: dict[str, Any]) -> tuple[list[str], Any]:
         slug = summary["slug"]
         stamp = str(summary.get("updatedAt") or summary.get("dateUpdated") or "")
         hit = cache.get(slug)
-        if hit and hit[0] == stamp:
-            return hit[1]
+        if hit and hit[0] == stamp and len(hit) == 3:
+            return hit[1], hit[2]
         async with gate:
             try:
                 full = await api.request("GET", f"/recipes/{slug}") or {}
             except HomeAssistantError:
-                return hit[1] if hit else []
-        got = _ingredient_lines(full)
-        cache[slug] = (stamp, got)
+                return (hit[1], hit[2] if len(hit) == 3 else None) if hit else ([], None)
+        got = (_ingredient_lines(full), _prep_of(full))
+        cache[slug] = (stamp, *got)
         return got
 
     all_lines = await asyncio.gather(*(lines(r) for r in summaries))
@@ -511,7 +610,7 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
 
     recipes = []
     tag_names: set[str] = set()
-    for summary, ingredients in zip(summaries, all_lines, strict=True):
+    for summary, (ingredients, prep) in zip(summaries, all_lines, strict=True):
         tags = [
             str(t.get("name")) for t in (summary.get("tags") or [])
             if isinstance(t, dict) and t.get("name")
@@ -531,6 +630,8 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
             # Where it came from, so a link shared a second time is known
             # before it is imported again.
             "source": summary.get("orgURL") or None,
+            # The prep split, or None for a recipe that was never split.
+            "prep": prep,
         })
     return {"recipes": recipes, "tags": sorted(tag_names, key=str.lower)}
 
