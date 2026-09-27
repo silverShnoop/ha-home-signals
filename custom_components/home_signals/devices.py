@@ -19,7 +19,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.const import STATE_UNAVAILABLE
+from homeassistant.const import STATE_ON, STATE_UNAVAILABLE
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
@@ -29,7 +29,15 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import LEVEL_ATTENTION
-from .derived import _NOISY_DOMAINS, _count, _Derived, _snooze, loudest
+from .derived import (
+    _NOISY_DOMAINS,
+    _area_of,
+    _count,
+    _Derived,
+    _name_of,
+    _snooze,
+    loudest,
+)
 
 # The networks worth a bar of their own, in the order the card draws them.
 # Everything else talks to Home Assistant over the house Wi-Fi or a vendor's
@@ -291,6 +299,16 @@ class DevicesSensor(_Derived, RestoreEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        updates = [
+            {
+                "entity_id": state.entity_id,
+                "name": _name_of(state),
+                "installed": state.attributes.get("installed_version"),
+                "latest": state.attributes.get("latest_version"),
+            }
+            for state in sorted(self.hass.states.async_all("update"), key=_name_of)
+            if state.state == STATE_ON
+        ] if self.hass is not None else []
         return {
             **self._counts,
             "total": sum(self._counts.values()),
@@ -300,6 +318,21 @@ class DevicesSensor(_Derived, RestoreEntity):
             "level": self.owner_level,
             "tab": self.tab,
             "jobs": self.needs_you_rows(),
+            # The raw lists, for an agent asking "what is offline?" or "what
+            # wants updating?", which wants entity ids rather than a
+            # sentence built for a card. Pending updates are a fact, not a
+            # job: nothing is paused on them and nothing is accruing, so
+            # they carry no level and raise no row.
+            "unavailable_entities": [
+                {
+                    "entity_id": state.entity_id,
+                    "name": _name_of(state),
+                    "area": _area_of(hass, state.entity_id),
+                }
+                for state in self._unavailable()
+            ] if (hass := self.hass) is not None else [],
+            "updates_pending": updates,
+            "update_count": len(updates),
             "since": {
                 device_id: when.isoformat() if when else None
                 for device_id, when in self._since.items()

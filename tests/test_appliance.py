@@ -22,6 +22,7 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.home_signals.appliance import ApplianceCycleSensor
 from custom_components.home_signals.money import money
+from tests.owners import Tab
 from custom_components.home_signals.const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
@@ -796,18 +797,17 @@ async def test_a_cycle_runs_normally_with_the_sensor_still_wet(
 
 
 async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None:
-    from custom_components.home_signals.appliance import CleaningStatusSensor
 
-    light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
-    light.hass = hass
-    light.entity_id = "sensor.cleaning_status"
+    light = Tab(hass)
 
     assert light.native_value == CLEANING_CLEAR
 
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
     assert light.native_value == LEVEL_ATTENTION
-    assert "1 load to hang" in light.extra_state_attributes["detail"]
+    # The drum is full and a load is waiting: both are on the tab, the
+    # first by name and the other counted.
+    assert "+1 more" in light.extra_state_attributes["detail"]
 
     machine.set(LEAK, "on")
     await hass.async_block_till_done()
@@ -840,11 +840,8 @@ async def test_the_cleaning_light_carries_the_level_not_just_the_colour(
     is `attention`. When the state was a colour both were "amber", and a
     reader mapping the colour could not tell them apart.
     """
-    from custom_components.home_signals.appliance import CleaningStatusSensor
 
-    light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
-    light.hass = hass
-    light.entity_id = "sensor.cleaning_status"
+    light = Tab(hass)
 
     # Nothing waiting takes no level at all -- not the quietest one, or
     # the tile is coloured on a morning with nothing wrong.
@@ -874,11 +871,8 @@ async def test_a_dead_plug_over_a_handled_leak_is_waiting_on_the_tab(
 ) -> None:
     """The rows are attention (pad still wet) and waiting (no power). The
     tab used to skip the plug whenever the pad was wet and say attention."""
-    from custom_components.home_signals.appliance import CleaningStatusSensor
 
-    light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
-    light.hass = hass
-    light.entity_id = "sensor.cleaning_status"
+    light = Tab(hass)
 
     machine.set(LEAK, "on")
     machine.set(PLUG, "off")
@@ -895,11 +889,8 @@ async def test_a_full_drum_is_attention_on_the_tab(
     hass: HomeAssistant, machine: Machine
 ) -> None:
     """Attention, and it keeps: the washing is dry and indoors."""
-    from custom_components.home_signals.appliance import CleaningStatusSensor
 
-    light = CleaningStatusSensor(FakeEntry(), [machine.sensor])
-    light.hass = hass
-    light.entity_id = "sensor.cleaning_status"
+    light = Tab(hass)
 
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
@@ -907,7 +898,7 @@ async def test_a_full_drum_is_attention_on_the_tab(
 
     assert machine.attrs["drum_full"] is True
     assert light.native_value == LEVEL_ATTENTION
-    assert "to empty" in light.extra_state_attributes["detail"]
+    assert "needs emptying" in light.extra_state_attributes["detail"]
     assert light.extra_state_attributes["level"] == LEVEL_ATTENTION
 
 

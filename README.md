@@ -176,18 +176,17 @@ thirty-one entities that had gone quiet.
 **Every levelled thing must have a row behind it**, or the colour is a
 lie: a job that exists only on the panel, that nobody can clear from a
 phone, and that no amount of doing the thing will make go away. That rule
-is why `_people` exists — the card draws an unlocatable person at a level,
-so the row has to be real — and why `system_health` publishes a `level`,
-so a tab tile wears the level of what is actually there instead of a fixed
-colour.
+is why `sensor.people_status` exists — the card draws an unlocatable
+person at a level, so the row has to be real — and why a tab tile wears
+the level of what is actually there instead of a fixed colour.
 
 **It cuts the other way too.** A thing that needs no doing takes no level.
 An open appliance door used to be drawn in ochre and has no row and never
 should: a machine spends half its life with the door open. That chip is
-neutral now. So are pending updates, which is why `system_health` gives
-that row a decorative accent and no level at all — and why
-`_worst()` skips unlevelled rows rather than ranking them last, so a card
-full of information leaves the tile uncoloured.
+neutral now. So are pending updates, which `sensor.devices` lists with no
+level at all — and `loudest()` skips anything that is not a level rather
+than ranking it last, so a card full of information leaves the tile
+uncoloured.
 
 **A level is not an accent.** An accent is decorative: it says which tab a
 card belongs to. The two used to be the same six numbers, which is how a
@@ -216,7 +215,8 @@ publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
 
 The card's outline reads its sensor's `level`. `sensor.needs_you` collects
 every card's `jobs` and works out no level of its own; it publishes
-`tab_<tab>` — the loudest card `level` on each tab — for the rail buttons.
+`tab_<tab>` — the loudest card `level` on each tab — and `summary_<tab>` —
+the loudest job and how many more — for the rail buttons.
 When each worked its own level out they drifted: the Cleaning tab skipped a
 dead plug whenever a pad was wet, a silent lock coloured the door with no
 row, and bins, overdue chores and a lost phone had rows that coloured
@@ -238,43 +238,21 @@ the one thing a row may not be: it did not need doing. The figures are
 still published on `sensor.energy_day`, where the Electricity card reads
 them and always did. What left is the claim that they were a job.
 
-## `sensor.system_health`
+## Where `sensor.system_health` went
 
-What is wrong with the house's plumbing, as opposed to its jobs. Ambient
-status, so it stays true for as long as it is true and is never dismissable.
+It summarised the Maintenance tab: a level, a row per problem, and the raw
+lists. Each piece now lives with the card it belongs to, so nothing works
+out a Maintenance level twice:
 
-- **State** — how many kinds of problem there are.
-- **`items`** — rows for a card.
-- **`level`** — the worst level among those rows, or `null` when none of
-  them carries one, so a tab tile can wear what is actually there instead
-  of a fixed colour.
-- **`low_batteries`, `offline`, `updates_pending`** — the raw lists, with
-  entity ids and areas, plus a count of each. A battery's charge is
-  `percent`, not `level`: `level` now names one of the three job levels,
-  and a dict published to a card with a `level` of `41.0` is a trap set
-  for whoever first renders `low_batteries` as rows.
-- **`batteries`** — every battery with a reading, worst first: the same
-  fields plus `low`, decided here against `battery_threshold` so the
-  Batteries card and `Needs you` can never draw the line in two places.
-  Ignored and unreadable batteries are left out.
-- **`battery_level`** — `attention` while any battery is low, else `null`.
-  The level the Batteries card wears, and the same one its `Needs you`
-  rows carry.
-- **`salt_level`** — `attention` while the softener needs salt, else `null`.
-  The level the Water softener card wears. It comes from the same rule as
-  the `Needs you` salt row, and while it is set there is also a
-  `Softener salt` row in `items`, so the Maintenance tab's `level` goes
-  yellow with it. Card, tab and row are raised together and clear together.
-
-The raw lists are the point. An agent asking "what is offline?" wants entity
-ids, not a sentence assembled for a card — and an agent never looks at a
-card. That is the whole reason both of these are entities rather than card
-logic: **a card is only true while somebody is watching it.**
-
-Entities in an entity category, and the `update`, `button`, `scene`, `script`
-and `automation` domains, are excluded from the offline count. They go
-unavailable constantly and nobody acts on it. Anything else noisy can be
-listed under "Never report these as offline".
+- **The Batteries card's data** — every battery with `low` decided on the
+  same threshold as the jobs, `low_batteries`, `battery_count`,
+  `battery_threshold` — is on `sensor.batteries_status`.
+- **Salt** is `sensor.softener_status`.
+- **The raw lists for an agent** — `unavailable_entities` and
+  `updates_pending` / `update_count` — are on `sensor.devices`. Pending
+  updates are a fact, not a job: no level, no row.
+- **The rail button** reads `tab_maintenance` and `summary_maintenance` on
+  `sensor.needs_you`.
 
 ## `sensor.devices`
 
@@ -852,27 +830,13 @@ become nothing, not the words.
 There is no configuration for this and no override. A panel earns the right
 to be believed about money by never being nearly right.
 
-## `sensor.cleaning_status`
+## Where `sensor.cleaning_status` went
 
-The Cleaning tab's level, as its state — the same names the `Needs you` rows
-and the cards use:
-
-- **`critical`** — water on the floor, and nobody has acted on it yet.
-- **`waiting`** — a machine left without power mid-cycle.
-- **`attention`** — a drum to empty, washing to hang, or a leak pad still
-  wet after the power was restored.
-- **`clear`** — nothing waiting.
-
-`level` is also published as an attribute (`None` when clear), so a tile can
-read either. `detail` names the thing, e.g. "1 load to hang".
-
-The state used to be a colour — green, amber or red. "Amber" then covered
-two different levels (`waiting` and `attention`) and was a second name for
-the same yellow the rows and cards wear, so a reader translating the colour
-into a level was a second place the levels had to be kept right. That is
-what drifted before: the dock button's map named decorative accent slots,
-and once those hues left the palette a load to hang painted the tab
-bone-white and a leak painted it tan.
+It gave the Cleaning tab a level and a line of text, worked out from the
+washing machines alone — so bins on the same tab never showed. The rail
+button now reads `tab_cleaning` (the loudest card level on the tab) and
+`summary_cleaning` (the loudest job, and how many more) on
+`sensor.needs_you`, which covers every card on the tab.
 
 ## Laundry in `Needs you`
 

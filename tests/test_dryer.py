@@ -21,8 +21,8 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.home_signals.appliance import (
     ApplianceCycleSensor,
-    CleaningStatusSensor,
 )
+from tests.owners import Tab
 from custom_components.home_signals.const import (
     APPLIANCE_IDLE,
     APPLIANCE_RUNNING,
@@ -216,7 +216,7 @@ async def test_a_full_dryer_puts_the_cleaning_tab_at_attention(
     pending count and never will, so a light that only reads that one would
     stay green with a full drum sitting in the garage.
     """
-    status = CleaningStatusSensor(FakeEntry(), [dryer.sensor])
+    status = Tab(hass)
     assert status.native_value == CLEANING_CLEAR
 
     await dryer.run_a_load()
