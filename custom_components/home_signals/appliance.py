@@ -190,6 +190,10 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._leak_was_wet = False
         self._plug_was_on: bool | None = None
         self._leak_handled = False
+        # When the pad went wet, so the card and the rows can say for how
+        # long -- how long water may have been on the floor is the thing
+        # that decides how worried to be. Held across a restart.
+        self._leak_since: datetime | None = None
         # Things to poke when this changes. Needs you and the cleaning light
         # are both derived from `pending`, which lives in here rather than in
         # any entity they could subscribe to — a state subscription would
@@ -237,6 +241,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self.async_on_remove(
             async_track_time_interval(self.hass, self._async_tick, SCAN_INTERVAL)
         )
+        # "Wet for 12 min" has to count up while nothing else changes, and
+        # the five-minute tick would let it lag. Only publishes while wet.
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass, self._async_wet_tick, timedelta(minutes=1)
+            )
+        )
         if watched := self._watched():
             self.async_on_remove(
                 async_track_state_change_event(self.hass, watched, self._async_changed)
@@ -269,6 +280,8 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # turn their decision back into an alarm.
         self._leak_handled = bool(attrs.get("leak_handled"))
         self._leak_was_wet = self._leak_handled
+        since = attrs.get("leak_since")
+        self._leak_since = dt_util.parse_datetime(since) if since else None
         # A cycle in flight is not resumed, so the re-wash it was part of
         # is over as far as we can tell. Put the fullness back rather
         # than lose it: the washing is still in the drum either way.
@@ -300,6 +313,11 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._sync_leak()
         self._evaluate()
         self._publish()
+
+    @callback
+    def _async_wet_tick(self, _now: datetime) -> None:
+        if self._leak_since is not None:
+            self._publish()
 
     @callback
     def _async_tick(self, _now: datetime) -> None:
@@ -371,9 +389,14 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
 
         if not wet:
             self._leak_handled = False
+            self._leak_since = None
         elif not self._leak_was_wet:
             # Went wet just now: new, whatever anybody decided last time.
             self._leak_handled = False
+            # Unless this is a restart finding the pad still wet: then the
+            # restored time is the real one, and "now" would be a lie.
+            if self._leak_since is None:
+                self._leak_since = dt_util.utcnow()
         elif plug_on and self._plug_was_on is False:
             self._leak_handled = True
 
@@ -1068,6 +1091,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             # after the floor is dry and somebody has chosen to carry on.
             "leak_alarm": leak and not self._leak_handled,
             "leak_handled": leak and self._leak_handled,
+            "leak_since": (
+                self._leak_since.isoformat() if leak and self._leak_since else None
+            ),
             "door_open": door_open,
             # Whether there is washing in the drum. Not the same question as
             # whether there is washing to hang, and cleared by a different
