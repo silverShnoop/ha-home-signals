@@ -148,11 +148,21 @@ save_recipe:
         ahead: n (its number in the method, from 1), ahead_max and ahead_min
         in hours, keeps, minutes, source, and where the step does two things
         ahead (the half done ahead) and cook (the half left for the stove);
-        if_ahead for a line that only applies when it was made ahead. A part
-        of the dish made ahead can carry reheat and reheat_at. {mode: none}
-        for nothing to do ahead; {mode: order} to take it off. A split with
-        no n is the older kind, whose prep steps come first.
-      example: '{"mode": "split", "steps": [{"n": 1, "ahead_max": 24, "keeps": "Fridge", "minutes": 10, "if_ahead": "Cover and chill."}]}'
+        store for how to keep it when made ahead (said at the prep), and
+        if_ahead for what that changes on the night (said at the stove). A
+        part of the dish made ahead can carry reheat and reheat_at. {mode:
+        none} for nothing to do ahead; {mode: order} to take it off. A split
+        with no n is the older kind, whose prep steps come first.
+      example: '{"mode": "split", "steps": [{"n": 1, "ahead_max": 24, "keeps": "Fridge", "minutes": 10, "store": "Cover and chill.", "if_ahead": "Take it out 20 mins before cooking."}]}'
+      selector:
+        object:
+    sections:
+      name: Sections
+      description: >-
+        Titles for the method's groups of steps, as Mealie keeps them: [{n,
+        title}], each title on the step its group starts at (numbers from 1).
+        Every other title is cleared; [] clears them all.
+      example: '[{"n": 1, "title": "The chicken"}, {"n": 3, "title": "The sauce"}]'
       selector:
         object:
     source:

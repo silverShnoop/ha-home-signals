@@ -80,6 +80,7 @@ from .const import (
     ATTR_PREP,
     ATTR_AI,
     ATTR_RECIPE,
+    ATTR_SECTIONS,
     ATTR_SERVINGS,
     ATTR_SOURCE,
     ATTR_TAGS,
@@ -146,6 +147,7 @@ SAVE_SCHEMA = vol.Schema({
     # module's docstring.
     vol.Optional(ATTR_SOURCE): dict,
     vol.Optional(ATTR_AI): dict,
+    vol.Optional(ATTR_SECTIONS): vol.Any(None, [dict]),
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
@@ -298,10 +300,47 @@ COOK_TITLE = "To cook"
 _PREP_MODES = ("split", "none", "order")
 _STEP_KEYS = ("ahead_max", "ahead_min", "minutes")
 # The words a step's note can carry: the half done ahead and the half left
-# for the stove, where one step does both, and a line that only applies
-# when it was made ahead.
-_TEXT_KEYS = ("ahead", "cook", "if_ahead")
+# for the stove, where one step does both; how to keep it when it is made
+# ahead (store, said at the prep); and what that changes on the night
+# (if_ahead, said at the stove).
+_TEXT_KEYS = ("ahead", "cook", "store", "if_ahead")
 _TEXT_MAX = 600
+_TITLE_MAX = 80
+
+
+def _sections_of(instructions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The method's section titles, as the step each one starts at."""
+    return [
+        {"n": i, "title": str(step.get("title")).strip()}
+        for i, step in enumerate(instructions, start=1)
+        if isinstance(step, dict) and str(step.get("title") or "").strip()
+        and str(step.get("title")).strip() not in (PREP_TITLE, COOK_TITLE)
+    ]
+
+
+def _apply_sections(
+    instructions: list[dict[str, Any]], sections: list[Any]
+) -> list[dict[str, Any]]:
+    """Title the method's groups of steps, Mealie's own way: each title on
+    the step its group starts at. Every other title is cleared, so the
+    sections given are all there are."""
+    titles: dict[int, str] = {}
+    for item in sections:
+        if not isinstance(item, dict):
+            raise ServiceValidationError("Each section is {n, title}.")
+        try:
+            n = int(item.get("n"))
+        except (TypeError, ValueError) as err:
+            raise ServiceValidationError("Each section names the step it starts at, by its number from 1.") from err
+        title = str(item.get("title") or "").strip()[:_TITLE_MAX]
+        if not 1 <= n <= len(instructions):
+            raise ServiceValidationError(f"There is no step {n} for a section to start at.")
+        if title:
+            titles[n] = title
+    steps = [dict(s) for s in instructions]
+    for i, step in enumerate(steps, start=1):
+        step["title"] = titles.get(i, "")
+    return steps
 
 
 def _prep_step(value: Any) -> dict[str, Any]:
@@ -621,6 +660,9 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
         method = patch.get("recipeInstructions", current.get("recipeInstructions") or [])
         patch["recipeInstructions"], extras = _apply_prep(method, extras, data[ATTR_PREP])
         extras_changed = True
+    if data.get(ATTR_SECTIONS) is not None:
+        method = patch.get("recipeInstructions", current.get("recipeInstructions") or [])
+        patch["recipeInstructions"] = _apply_sections(method, data[ATTR_SECTIONS])
 
     # Where it came from, and what AI did: kept with it, and a step a person
     # rewrote gives up its mark.
@@ -662,6 +704,7 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
         "name": saved.get("name", current.get("name")),
         "tags": [t.get("name") for t in (saved.get("tags") or []) if isinstance(t, dict)],
         "prep": _prep_of(saved),
+        "sections": _sections_of(saved.get("recipeInstructions") or []),
         "provenance": _provenance_of(saved),
     }
 
@@ -846,21 +889,22 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
     except HomeAssistantError:
         pass
 
-    cache: dict[str, tuple[str, list[str], Any, Any]] = hass.data.setdefault(_INDEX_CACHE, {})
+    cache: dict[str, tuple[str, list[str], Any, Any, Any]] = hass.data.setdefault(_INDEX_CACHE, {})
     gate = asyncio.Semaphore(_INDEX_PARALLEL)
 
-    async def lines(summary: dict[str, Any]) -> tuple[list[str], Any, Any]:
+    async def lines(summary: dict[str, Any]) -> tuple[list[str], Any, Any, Any]:
         slug = summary["slug"]
         stamp = str(summary.get("updatedAt") or summary.get("dateUpdated") or "")
         hit = cache.get(slug)
-        if hit and hit[0] == stamp and len(hit) == 4:
-            return hit[1], hit[2], hit[3]
+        if hit and hit[0] == stamp and len(hit) == 5:
+            return hit[1], hit[2], hit[3], hit[4]
         async with gate:
             try:
                 full = await api.request("GET", f"/recipes/{slug}") or {}
             except HomeAssistantError:
-                return (hit[1], hit[2], hit[3]) if hit and len(hit) == 4 else ([], None, None)
-        got = (_ingredient_lines(full), _prep_of(full), _provenance_of(full))
+                return (hit[1], hit[2], hit[3], hit[4]) if hit and len(hit) == 5 else ([], None, None, [])
+        got = (_ingredient_lines(full), _prep_of(full), _provenance_of(full),
+               _sections_of(full.get("recipeInstructions") or []))
         cache[slug] = (stamp, *got)
         return got
 
@@ -871,7 +915,7 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
 
     recipes = []
     tag_names: set[str] = set()
-    for summary, (ingredients, prep, provenance) in zip(summaries, all_lines, strict=True):
+    for summary, (ingredients, prep, provenance, sections) in zip(summaries, all_lines, strict=True):
         tags = [
             str(t.get("name")) for t in (summary.get("tags") or [])
             if isinstance(t, dict) and t.get("name")
@@ -895,6 +939,8 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
             "prep": prep,
             # Where it came from and what AI did to it.
             "provenance": provenance,
+            # The method's groups of steps: each title, at the step it starts.
+            "sections": sections,
         })
     return {"recipes": recipes, "tags": sorted(tag_names, key=str.lower)}
 
