@@ -12,6 +12,7 @@ it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -26,6 +27,7 @@ from custom_components.home_signals.const import (
     SERVICE_IMPORT_RECIPE,
     SERVICE_SAVE_RECIPE,
 )
+from custom_components.home_signals import recipes
 from custom_components.home_signals.recipes import (
     _add_event,
     _apply_prep,
@@ -107,6 +109,35 @@ async def test_an_edit_keeps_the_parse_of_every_line_it_did_not_touch(
     )
     assert garlic["quantity"] == 0, "Mealie would show a stray 1 in front of it"
     assert "recipeInstructions" not in patch, "a method nobody sent was rewritten"
+
+
+async def test_two_saves_to_one_recipe_take_turns(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An import tags and splits the recipe side by side. Mealie rewrites a
+    recipe's lines on every save, so two saves at once left each line twice:
+    the second must not read the recipe until the first has written it."""
+    await _start(hass)
+    seen: list[str] = []
+
+    async def request(self, method, path, body=None, **kwargs):
+        if path == "/recipes/sea-bass":
+            seen.append(method)
+        await asyncio.sleep(0.01)
+        return dict(RECIPE)
+
+    monkeypatch.setattr(recipes._Mealie, "request", request)
+
+    await asyncio.gather(*(
+        hass.services.async_call(
+            DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "sea-bass", "tags": []} if i else
+            {"recipe": "sea-bass", "prep": {"mode": "none"}},
+            blocking=True, return_response=True,
+        )
+        for i in range(2)
+    ))
+
+    assert seen == ["GET", "PATCH", "GET", "PATCH"], seen
 
 
 async def test_the_token_is_borrowed_from_the_mealie_integration(
