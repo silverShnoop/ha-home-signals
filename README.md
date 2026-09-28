@@ -846,7 +846,8 @@ button now reads `tab_cleaning` (the loudest card level on the tab) and
 
 Every action an appliance can ask of you is a Needs you row, and only a Needs
 you row. The card states facts and offers one optional control; it never
-carries a to-do. Two loads are two rows, so hanging one leaves the other.
+carries a to-do. Waiting loads are one row per machine — "3 loads need
+hanging" — and its Hung clears the oldest, so the count drops by one.
 
 `home_signals.laundry_hung` clears one load — with a `load_id` for a specific
 one, or without for the oldest, which is what the wall button sends. It is
