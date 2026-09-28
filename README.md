@@ -1071,27 +1071,44 @@ unless `date` is given). It never moves the date backwards, so marking an
 older meal after a newer one is harmless. The meal scripts call it each
 night for the day that has just gone.
 
-## Prep ahead: splitting a recipe
+## Prep ahead: noting what can be done early
 
 `save_recipe` takes an optional `prep`, which says which of a recipe's steps
-can be done ahead of time and which have to happen at the stove. It is
-optional per recipe, and a recipe without one is simply cooked in order.
+can be done ahead of time. Prepping is optional, so the method itself is
+never moved or rewritten: the notes sit beside it, by step number.
 
-- `{"mode": "split", "steps": [...]}` -- the first `len(steps)` steps of the
-  method are the prep, in order, and the rest are the cook. Each entry may
-  carry `ahead_max` and `ahead_min` (hours), `minutes`, `keeps` (e.g.
-  "fridge") and `source` ("page", "house" or "ai" -- where the split came
-  from).
+- `{"mode": "split", "steps": [...]}` -- one note per step that can go
+  ahead: `n` (its number in the method, from 1), `ahead_max` and
+  `ahead_min` (hours), `minutes`, `keeps` (e.g. "Fridge") and `source`
+  ("page" or "house"). A step that does two things names its halves:
+  `ahead` (done early) and `cook` (left for the stove). `if_ahead` is a line
+  that only applies when it was made ahead ("Cover and chill"). A part of
+  the dish made ahead as a whole can carry `reheat`, and `reheat_at`, the
+  step it takes the place of on the night.
 - `{"mode": "none"}` -- looked at, and there is nothing worth doing ahead.
-- `{"mode": "order"}` -- take the split off again.
+- `{"mode": "order"}` -- take the notes off again.
 
-It is stored in Mealie itself, so the recipe still reads properly there: the
-prep steps are moved to the front under a "Prep ahead" section heading and
-the rest go under "To cook", and the timings live in the recipe's `extras`
-as `prep`. The recipe index carries the split back as each recipe's `prep`.
-An unchecked split can also carry `original`, the method as it was, so a
-person who would rather keep it in order gets it back exactly; checking the
-split drops it.
+They live in the recipe's `extras` as `prep`, and the recipe index carries
+them back as each recipe's `prep`. A split saved before this, with no `n`,
+moved its prep steps to the front of the method; it is still read, by its
+order.
+
+## Where a recipe came from
+
+Each recipe keeps, in `extras` as `provenance`, where it came from and what
+AI did to it. `save_recipe` takes both:
+
+- `source`: `{kind, url, from}`, kind being `page`, `video`, `photo`,
+  `said`, `typed` or `written` (by AI, from a name). A new recipe with
+  nothing said is `typed`. `import_recipe` records the page or video it read,
+  and a video's steps are marked as read by Mealie's own AI.
+- `ai`: `{what, by, model, note, mark, steps}` records one event -- `read`,
+  `wrote`, `split`, `tagged` or `checked` -- with the time. `mark`
+  (`interpreted`, `created` or `enhanced`) goes on the steps listed, or all
+  of them. A step a person rewrites loses its mark.
+
+The index carries it as each recipe's `provenance`: `{source, events,
+marks}`, marks keyed by step number.
 
 ## Prep sessions: `sensor.meal_prep`
 

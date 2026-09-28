@@ -143,13 +143,34 @@ save_recipe:
     prep:
       name: Prep and cook
       description: >-
-        Split the method into prep ahead and to cook. {mode: split, steps: [...]}
-        where the method's first steps are the prep, one timing each
-        (ahead_max and ahead_min in hours, keeps, minutes, source);
-        {mode: none} for nothing to do ahead; {mode: order} to take it off.
-        An unchecked split may carry original, the method's lines as they
-        were, kept until it is checked.
-      example: '{"mode": "split", "steps": [{"ahead_max": 24, "ahead_min": 1, "keeps": "fridge", "minutes": 10}]}'
+        What can be done ahead, noted on the method without moving it.
+        {mode: split, steps: [...]} with one note per step that can go
+        ahead: n (its number in the method, from 1), ahead_max and ahead_min
+        in hours, keeps, minutes, source, and where the step does two things
+        ahead (the half done ahead) and cook (the half left for the stove);
+        if_ahead for a line that only applies when it was made ahead. A part
+        of the dish made ahead can carry reheat and reheat_at. {mode: none}
+        for nothing to do ahead; {mode: order} to take it off. A split with
+        no n is the older kind, whose prep steps come first.
+      example: '{"mode": "split", "steps": [{"n": 1, "ahead_max": 24, "keeps": "Fridge", "minutes": 10, "if_ahead": "Cover and chill."}]}'
+      selector:
+        object:
+    source:
+      name: Where it came from
+      description: >-
+        {kind, url, from}: kind is page, video, photo, said, typed or written
+        (by AI, from a name). Kept once; the first time it is given.
+      example: '{"kind": "written", "from": "Shepherd''s pie"}'
+      selector:
+        object:
+    ai:
+      name: What AI did
+      description: >-
+        Records something AI did to the recipe: {what, by, model, note, mark,
+        steps}. what is read, wrote, split, tagged or checked; mark is
+        interpreted, created or enhanced, given to the steps listed (numbers
+        from 1) or all of them. A step a person rewrites later loses its mark.
+      example: '{"what": "read", "by": "Anthropic: Claude Sonnet 5", "model": "ai_task.anthropic_claude_sonnet_5", "mark": "interpreted"}'
       selector:
         object:
     config_entry_id:

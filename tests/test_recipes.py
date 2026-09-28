@@ -26,7 +26,15 @@ from custom_components.home_signals.const import (
     SERVICE_IMPORT_RECIPE,
     SERVICE_SAVE_RECIPE,
 )
-from custom_components.home_signals.recipes import _lines
+from custom_components.home_signals.recipes import (
+    _add_event,
+    _apply_prep,
+    _follow_marks,
+    _lines,
+    _prep_of,
+    _provenance_of,
+    _source_of_url,
+)
 
 BASE = "http://mealie.local:9000/api"
 
@@ -150,7 +158,11 @@ async def test_a_new_recipe_is_created_then_filled_in(
     ], "a pasted list's own numbers were kept, so Mealie would number them twice"
     assert patch["recipeServings"] == 4
     assert patch["totalTime"] == "1 hour"
-    assert answer == {"slug": "nanas-curry", "recipe_id": "rid-2", "name": "Nana's curry", "tags": [], "prep": None}
+    assert {k: v for k, v in answer.items() if k != "provenance"} == {
+        "slug": "nanas-curry", "recipe_id": "rid-2", "name": "Nana's curry", "tags": [], "prep": None,
+    }
+    stored = json.loads(patch["extras"]["provenance"])
+    assert stored["source"]["kind"] == "typed", "a new recipe with nothing said about it was typed in"
 
 
 async def test_a_rename_answers_with_the_new_slug(
@@ -213,8 +225,10 @@ async def test_an_import_answers_with_where_the_recipe_lives(
     aioclient_mock.post(f"{BASE}/recipes/create/url", text='"spaghetti-puttanesca"', status=201)
     aioclient_mock.get(
         f"{BASE}/recipes/spaghetti-puttanesca",
-        json={"id": "rid-3", "slug": "spaghetti-puttanesca", "name": "Spaghetti Puttanesca"},
+        json={"id": "rid-3", "slug": "spaghetti-puttanesca", "name": "Spaghetti Puttanesca",
+              "recipeInstructions": [{"text": "Crush the garlic."}, {"text": "Add the tomatoes."}]},
     )
+    aioclient_mock.patch(f"{BASE}/recipes/spaghetti-puttanesca", json={})
 
     answer = await hass.services.async_call(
         DOMAIN, SERVICE_IMPORT_RECIPE,
@@ -228,6 +242,15 @@ async def test_an_import_answers_with_where_the_recipe_lives(
     assert answer == {
         "slug": "spaghetti-puttanesca", "recipe_id": "rid-3", "name": "Spaghetti Puttanesca",
     }
+    # A video is read by Mealie's own AI: the source says so, and every step
+    # it wrote is marked as read by AI.
+    (patch,) = _sent(aioclient_mock, "PATCH")
+    stored = json.loads(patch["extras"]["provenance"])
+    assert stored["source"]["kind"] == "video"
+    assert stored["source"]["url"] == "https://www.youtube.com/shorts/ekOjr2XP_zU"
+    assert [e["what"] for e in stored["events"]] == ["read"]
+    assert stored["events"][0]["by"] == "Mealie"
+    assert stored["marks"] == {"1": {"mark": "interpreted", "event": 1}, "2": {"mark": "interpreted", "event": 1}}
 
 
 async def test_an_import_with_no_recipe_says_so(
@@ -249,3 +272,109 @@ def test_lines_from_text_or_a_list() -> None:
     assert _lines(["2 onions", "1.5 kg potatoes"]) == ["2 onions", "1.5 kg potatoes"], (
         "a quantity is not a list number"
     )
+
+
+def test_a_web_page_is_a_page_and_a_video_is_a_video() -> None:
+    assert _source_of_url("https://www.bbcgoodfood.com/recipes/chicken-katsu-curry") == "page"
+    assert _source_of_url("https://youtu.be/abc") == "video"
+    assert _source_of_url("https://m.youtube.com/watch?v=1") == "video"
+    assert _source_of_url("https://www.instagram.com/reel/x/") == "video"
+    assert _source_of_url("https://notyoutube.com.example/x") == "page"
+
+
+FAJITAS = [
+    {"text": "Marinate the chicken."},
+    {"text": "Fry the onion wedges; add the peppers."},
+    {"text": "Griddle the chicken."},
+]
+
+
+def test_prep_noted_in_place_leaves_the_method_alone() -> None:
+    steps, extras = _apply_prep(FAJITAS, {}, {
+        "mode": "split", "checked": False,
+        "steps": [
+            {"n": 2, "ahead_max": 48, "keeps": "Fridge", "ahead": "Cut the onion into wedges and the peppers into strips.",
+             "cook": "Fry the onion wedges; add the peppers."},
+            {"n": 1, "ahead_max": 24, "keeps": "Fridge", "if_ahead": "Cover and chill."},
+        ],
+    })
+    assert [s["text"] for s in steps] == [s["text"] for s in FAJITAS], "the method stays as it is"
+    assert not any(s.get("title") for s in steps), "no Prep ahead / To cook sections"
+    got = _prep_of({"recipeInstructions": steps, "extras": extras})
+    assert got["in_place"] is True
+    assert [s["n"] for s in got["steps"]] == [1, 2], "kept in the method's order"
+    assert got["steps"][0]["if_ahead"] == "Cover and chill."
+    assert got["steps"][1]["ahead"].startswith("Cut the onion")
+
+
+def test_a_whole_part_made_ahead_carries_its_reheat() -> None:
+    method = [{"text": f"Step {i}."} for i in range(1, 8)]
+    _, extras = _apply_prep(method, {}, {
+        "mode": "split", "checked": True, "reheat": "Reheat the sauce until piping hot.", "reheat_at": 3,
+        "steps": [{"n": 3, "ahead_max": 72}, {"n": 4, "ahead_max": 72}, {"n": 5, "ahead_max": 72}],
+    })
+    got = _prep_of({"recipeInstructions": method, "extras": extras})
+    assert got["reheat"] == "Reheat the sauce until piping hot."
+    assert got["reheat_at"] == 3
+
+
+def test_a_note_on_a_step_that_is_not_there_is_refused_or_ignored() -> None:
+    with pytest.raises(ServiceValidationError):
+        _apply_prep(FAJITAS, {}, {"mode": "split", "steps": [{"n": 9, "ahead_max": 24}]})
+    with pytest.raises(ServiceValidationError):
+        _apply_prep(FAJITAS, {}, {"mode": "split", "steps": [{"n": 1}, {"n": 1}]})
+    # Steps deleted in Mealie's own editor since: read as no split.
+    stale = {"prep": json.dumps({"mode": "split", "steps": [{"n": 3, "ahead_max": 24}]})}
+    assert _prep_of({"recipeInstructions": FAJITAS[:2], "extras": stale}) is None
+
+
+def test_an_older_split_is_still_read_by_its_order() -> None:
+    extras = {"prep": json.dumps({"mode": "split", "checked": True, "steps": [{"ahead_max": 24}]})}
+    got = _prep_of({"recipeInstructions": FAJITAS, "extras": extras})
+    assert got["steps"] == [{"ahead_max": 24}]
+    assert "in_place" not in got
+
+
+def test_what_ai_did_is_recorded_and_a_rewritten_step_loses_its_mark() -> None:
+    prov = _provenance_of({"createdAt": "2026-09-27T20:00:00"})
+    assert prov == {"source": {"added": "2026-09-27T20:00:00"}, "events": [], "marks": {}}
+    _add_event(prov, {"what": "wrote", "by": "Anthropic: Claude Sonnet 5", "model": "ai_task.x", "mark": "created"}, 3)
+    _add_event(prov, {"what": "tagged", "by": "Anthropic: Claude Sonnet 5"}, 3)
+    assert [e["id"] for e in prov["events"]] == [1, 2]
+    assert set(prov["marks"]) == {"1", "2", "3"}
+    assert all(m == {"mark": "created", "event": 1} for m in prov["marks"].values())
+    # Step 2 rewritten by a person, and a new step put in front.
+    before = ["Boil the potatoes.", "Fry the mince.", "Bake for 30 mins."]
+    after = ["Heat the oven.", "Boil the potatoes.", "Fry the lamb mince.", "Bake for 30 mins."]
+    marks = _follow_marks(prov["marks"], before, after)
+    assert marks == {"2": {"mark": "created", "event": 1}, "4": {"mark": "created", "event": 1}}
+    # Read back, the marks survive and an unknown event's are dropped.
+    stored = {"extras": {"provenance": json.dumps({
+        "source": {"kind": "written"}, "events": prov["events"],
+        "marks": {"1": {"mark": "created", "event": 1}, "2": {"mark": "created", "event": 9}},
+    })}}
+    back = _provenance_of(stored)
+    assert back["source"]["kind"] == "written"
+    assert back["marks"] == {"1": {"mark": "created", "event": 1}}
+    with pytest.raises(ServiceValidationError):
+        _add_event(prov, {"what": "guessed"}, 3)
+
+
+async def test_saving_with_ai_records_it(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes/sea-bass", json=dict(RECIPE, extras={}))
+    aioclient_mock.patch(f"{BASE}/recipes/sea-bass", json=dict(RECIPE))
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SAVE_RECIPE,
+        {"recipe": "sea-bass", "source": {"kind": "photo"},
+         "ai": {"what": "read", "by": "Anthropic: Claude Sonnet 5", "model": "ai_task.anthropic_claude_sonnet_5", "mark": "interpreted"}},
+        blocking=True, return_response=True,
+    )
+    (patch,) = _sent(aioclient_mock, "PATCH")
+    stored = json.loads(patch["extras"]["provenance"])
+    assert stored["source"]["kind"] == "photo"
+    assert stored["events"][0]["model"] == "ai_task.anthropic_claude_sonnet_5"
+    assert stored["marks"] == {"1": {"mark": "interpreted", "event": 1}}
