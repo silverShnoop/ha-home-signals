@@ -627,6 +627,24 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
         if not slug:
             raise HomeAssistantError("Mealie created the recipe but did not say where.")
 
+    async with _recipe_lock(hass, slug):
+        return await _save_to(api, slug, data)
+
+
+def _recipe_lock(hass: HomeAssistant, slug: str) -> asyncio.Lock:
+    """One write at a time to a recipe.
+
+    A save reads the recipe and writes it back. Mealie writes a recipe's
+    ingredients and steps by deleting and re-adding them, so two saves at
+    once both add theirs: an import's tagging and its split, which run
+    side by side, left every line of a recipe twice, and the second save's
+    extras overwrote the first's.
+    """
+    locks: dict[str, asyncio.Lock] = hass.data.setdefault(f"{DOMAIN}_recipe_locks", {})
+    return locks.setdefault(str(slug), asyncio.Lock())
+
+
+async def _save_to(api: _Mealie, slug: str, data: Any) -> dict[str, Any]:
     current = await api.request("GET", f"/recipes/{slug}") or {}
     patch: dict[str, Any] = {}
     if ATTR_NAME in data and str(data[ATTR_NAME]).strip():
