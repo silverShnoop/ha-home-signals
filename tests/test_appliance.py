@@ -780,6 +780,29 @@ async def test_the_pad_going_wet_again_rearms_the_alarm(
     assert machine.attrs["leak_alarm"] is True, "a new leak was taken as handled"
 
 
+async def test_it_remembers_how_long_the_pad_has_been_wet(
+    machine: Machine, freezer
+) -> None:
+    """How long water may have been on the floor, carried through the stand-down."""
+    machine.set(PLUG, "on")
+    machine.set(LEAK, "on")
+    await machine.hass.async_block_till_done()
+    since = machine.attrs["leak_since"]
+    assert since is not None
+
+    freezer.tick(timedelta(minutes=7))
+    machine.set(PLUG, "off")
+    await machine.hass.async_block_till_done()
+    machine.set(PLUG, "on")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak_alarm"] is False
+    assert machine.attrs["leak_since"] == since, "restoring power reset the clock"
+
+    machine.set(LEAK, "off")
+    await machine.hass.async_block_till_done()
+    assert machine.attrs["leak_since"] is None
+
+
 async def test_a_cycle_runs_normally_with_the_sensor_still_wet(
     machine: Machine,
 ) -> None:

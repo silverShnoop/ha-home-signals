@@ -230,6 +230,32 @@ def _load_detail(load: dict[str, Any]) -> str:
     return "Finished " + dt_util.as_local(parsed).strftime("%H:%M")
 
 
+def _duration(seconds: float) -> str:
+    """How long, as a person says it: "4 min", "2h 10m", "3d 5h"."""
+    minutes = max(1, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h" if hours else f"{days}d"
+
+
+def _wet_for(attrs: dict[str, Any], rest: str) -> str:
+    """Put how long the pad has been wet in front of a leak row's detail.
+
+    How long, not since when: how long water may have been on the floor is
+    what decides how worried to be.
+    """
+    since = attrs.get("leak_since")
+    parsed = dt_util.parse_datetime(since) if since else None
+    if parsed is None:
+        return rest
+    wet = _duration((dt_util.utcnow() - parsed).total_seconds())
+    return f"Wet for {wet} \u00b7 {rest}"
+
+
 def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dict[str, Any]]:
     """Water on the floor, a machine left dead, a full drum, washing to hang.
 
@@ -267,11 +293,11 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             "title": f"{name} is leaking",
             # Never claim the cut: this row also fires when the
             # cutoff has not happened, which is the worse case.
-            "detail": (
+            "detail": _wet_for(attrs, (
                 "Power still on \u00b7 check the floor"
                 if powered
                 else "Power cut at the plug \u00b7 check the floor"
-            ),
+            )),
             "icon": "mdi:water-alert",
             "level": LEVEL_CRITICAL,
             "action_label": "Snooze",
@@ -288,7 +314,7 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             **where,
             "id": f"leak_wet_{slug}",
             "title": f"{name} leak sensor still wet",
-            "detail": "Won't cut the power again until it dries",
+            "detail": _wet_for(attrs, "Won't cut the power again until it dries"),
             "icon": "mdi:water-alert",
             "level": LEVEL_ATTENTION,
         })
