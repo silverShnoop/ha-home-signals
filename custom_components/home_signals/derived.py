@@ -355,25 +355,35 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             "level": LEVEL_ATTENTION,
         })
 
-    # One row per load, keyed to the cycle that produced it, so
-    # clearing one leaves the other alone and next week's wash is
-    # never silenced by last week's dismissal.
+    # One row for however many loads are waiting, as the wall button
+    # sees it: "Hung" clears the oldest, and the count drops by one.
+    # The Hung action names that load rather than asking for "the
+    # oldest", so a double tap on a stale row cannot clear two.
+    #
+    # The id is the newest load's. A snooze then holds while loads
+    # are hung one by one, and lifts when another wash finishes --
+    # new washing is new information -- so next week's load is never
+    # silenced by last week's snooze.
     pending = attrs.get("pending")
     if not isinstance(pending, list):
         return rows
-    for load in pending:
-        if not isinstance(load, dict) or not load.get("id"):
-            continue
-        rows.append({
-            **where,
-            "id": load["id"],
-            "title": "Laundry needs hanging",
-            "detail": _load_detail(load),
-            "icon": "mdi:hanger",
-            "level": LEVEL_ATTENTION,
-            "action_label": "Hung",
-            "action": _hung(load["id"]),
-        })
+    loads = [load for load in pending if isinstance(load, dict) and load.get("id")]
+    if not loads:
+        return rows
+    count = len(loads)
+    detail = _load_detail(loads[0])
+    rows.append({
+        **where,
+        "id": f"hang_{loads[-1]['id']}",
+        "title": ("Laundry needs hanging" if count == 1
+                  else f"{count} loads need hanging"),
+        "detail": detail if count == 1 else "Oldest " + detail.lower(),
+        "icon": "mdi:hanger",
+        "level": LEVEL_ATTENTION,
+        "count": count,
+        "action_label": "Hung",
+        "action": _hung(loads[0]["id"]),
+    })
     return rows
 
 
