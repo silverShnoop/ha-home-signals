@@ -1081,10 +1081,18 @@ never moved or rewritten: the notes sit beside it, by step number.
   ahead: `n` (its number in the method, from 1), `ahead_max` and
   `ahead_min` (hours), `minutes`, `keeps` (e.g. "Fridge") and `source`
   ("page" or "house"). A step that does two things names its halves:
-  `ahead` (done early) and `cook` (left for the stove). `if_ahead` is a line
-  that only applies when it was made ahead ("Cover and chill"). A part of
-  the dish made ahead as a whole can carry `reheat`, and `reheat_at`, the
-  step it takes the place of on the night.
+  `ahead` (done early) and `cook` (left for the stove). What only applies
+  when it was made ahead is two lines, because it is said at two times:
+  `store`, how to keep it, said at the prep ("Cover and chill"), and
+  `if_ahead`, what that changes on the night, said at the stove ("Take it
+  out 20 mins before cooking"). A part of the dish made ahead as a whole
+  can carry `reheat`, and `reheat_at`, the step it takes the place of on
+  the night; its storing goes in the `store` of its last step.
+- `sections` (a separate field) titles the method's groups of steps, the
+  way Mealie keeps them: `[{"n": 1, "title": "The chicken"}, {"n": 3,
+  "title": "The sauce"}]`, each title on the step its group starts at. The
+  titles given are all there are; `[]` clears them. The index carries them
+  back as each recipe's `sections`.
 - `{"mode": "none"}` -- looked at, and there is nothing worth doing ahead.
 - `{"mode": "order"}` -- take the notes off again.
 

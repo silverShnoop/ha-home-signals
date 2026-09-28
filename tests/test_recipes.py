@@ -29,7 +29,9 @@ from custom_components.home_signals.const import (
 from custom_components.home_signals.recipes import (
     _add_event,
     _apply_prep,
+    _apply_sections,
     _follow_marks,
+    _sections_of,
     _lines,
     _prep_of,
     _provenance_of,
@@ -160,6 +162,7 @@ async def test_a_new_recipe_is_created_then_filled_in(
     assert patch["totalTime"] == "1 hour"
     assert {k: v for k, v in answer.items() if k != "provenance"} == {
         "slug": "nanas-curry", "recipe_id": "rid-2", "name": "Nana's curry", "tags": [], "prep": None,
+        "sections": [],
     }
     stored = json.loads(patch["extras"]["provenance"])
     assert stored["source"]["kind"] == "typed", "a new recipe with nothing said about it was typed in"
@@ -305,6 +308,30 @@ def test_prep_noted_in_place_leaves_the_method_alone() -> None:
     assert [s["n"] for s in got["steps"]] == [1, 2], "kept in the method's order"
     assert got["steps"][0]["if_ahead"] == "Cover and chill."
     assert got["steps"][1]["ahead"].startswith("Cut the onion")
+
+
+def test_storing_it_and_the_night_are_two_lines() -> None:
+    _, extras = _apply_prep(FAJITAS, {}, {
+        "mode": "split", "steps": [{"n": 1, "ahead_max": 24, "store": "Cover and chill.",
+                                    "if_ahead": "Take it out 20 mins before griddling."}],
+    })
+    step = _prep_of({"recipeInstructions": FAJITAS, "extras": extras})["steps"][0]
+    assert step["store"] == "Cover and chill."
+    assert step["if_ahead"] == "Take it out 20 mins before griddling."
+
+
+def test_sections_title_groups_of_steps_the_way_mealie_does() -> None:
+    steps = _apply_sections(FAJITAS, [{"n": 1, "title": "The chicken"}, {"n": 2, "title": " The veg "}])
+    assert [s["title"] for s in steps] == ["The chicken", "The veg", ""]
+    assert _sections_of(steps) == [{"n": 1, "title": "The chicken"}, {"n": 2, "title": "The veg"}]
+    # The sections given are all there are: an empty list clears them.
+    assert not any(s["title"] for s in _apply_sections(steps, []))
+    # The old Prep ahead / To cook headings are not sections.
+    assert _sections_of([{"text": "a", "title": "Prep ahead"}, {"text": "b", "title": "To cook"}]) == []
+    with pytest.raises(ServiceValidationError):
+        _apply_sections(FAJITAS, [{"n": 4, "title": "Nowhere"}])
+    with pytest.raises(ServiceValidationError):
+        _apply_sections(FAJITAS, [{"title": "No step"}])
 
 
 def test_a_whole_part_made_ahead_carries_its_reheat() -> None:
