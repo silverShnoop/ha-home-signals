@@ -178,7 +178,7 @@ class MealPrepSensor(SensorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = False
     _attr_name = "Meal prep"
-    _attr_icon = "mdi:knife"
+    _attr_icon = "mdi:calendar-clock"
     _attr_native_unit_of_measurement = "sessions"
 
     def __init__(self, entry: ConfigEntry) -> None:
@@ -364,7 +364,7 @@ class MealPrepSensor(SensorEntity):
                 "id": f"prep_{session['id']}_{due.date().isoformat()}",
                 "title": session["title"],
                 "detail": f"{when} · for {_meal_label(first)}",
-                "icon": "mdi:knife",
+                "icon": "mdi:calendar-clock",
                 "level": level,
                 "tab": "kitchen",
                 "card": "meals",
