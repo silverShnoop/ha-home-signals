@@ -121,6 +121,28 @@ async def test_a_leak_row_never_claims_a_cut_that_did_not_happen(
     assert "cut" not in row["detail"].lower()
 
 
+async def test_a_leak_row_says_how_long_the_pad_has_been_wet(
+    hass: HomeAssistant,
+) -> None:
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    since = (dt_util.utcnow() - timedelta(minutes=12)).isoformat()
+    _machine(hass, leak=True, leak_alarm=True, powered=False, leak_since=since)
+    assert (await _row(hass, "leak_"))["detail"].startswith("Wet for 12 min")
+
+
+async def test_so_does_the_still_wet_row(hass: HomeAssistant) -> None:
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    since = (dt_util.utcnow() - timedelta(hours=2, minutes=5)).isoformat()
+    _machine(hass, leak=True, leak_alarm=False, leak_since=since)
+    assert (await _row(hass, "leak_wet_"))["detail"].startswith("Wet for 2h 5m")
+
+
 async def test_a_dead_plug_is_waiting_not_an_errand(
     hass: HomeAssistant,
 ) -> None:

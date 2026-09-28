@@ -743,6 +743,10 @@ so a plug the cutoff never reached keeps the alarm — and the row then says
 the power is still on rather than claiming a cut. The pad going wet again
 re-arms it.
 
+`leak_since` is when the pad went wet, kept across a restart and cleared
+when it dries. Both leak rows lead with how long — "Wet for 12 min" — because
+how long water may have been on the floor is what decides how worried to be.
+
 Stood down is not the same as quiet. The cutoff fires only on the pad
 *going* wet, so while it stays wet a second leak would cut nothing. Until it
 dries there is an `attention` row, "leak sensor still wet", and the Cleaning
