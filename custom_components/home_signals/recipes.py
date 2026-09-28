@@ -24,15 +24,25 @@ Mealie's recipe list carries no ingredients, so each full recipe is read
 once and kept until Mealie says it changed. ``mark_made`` records that a
 recipe was eaten, which is what "not had lately" is measured from.
 
-A recipe can also be split into prep and cook: the steps that can be done
-ahead, and the ones that happen at the stove. Mealie has no field for that,
-so it is kept in two places Mealie does have. The prep steps come first,
-under an instruction section titled "Prep ahead", and the cook steps
-follow under "To cook", so Mealie's own page shows the split. How far
-ahead each prep step can be done, and where it keeps, go in the recipe's
-``extras`` as ``prep``, by position: the first step's timing is first. By
-position rather than by step id, because a method saved as text gets new
-step ids every time and would lose its timings on the first typo fixed.
+A recipe can also say what can be done ahead. The method stays the
+recipe's own, in its own order -- prepping is optional, and a method
+rewritten prep-first reads wrongly to anybody cooking it all on the night.
+Each step that can be done ahead is noted in the recipe's ``extras`` as
+``prep``, by its place in the method (``n``, from 1): how far ahead, where
+it keeps, and, where a step does two things, which half goes ahead and
+which stays at the stove, and any line that only applies when it was made
+ahead ("cover and chill"). By place rather than by step id, because a
+method saved as text gets new step ids every time and would lose its notes
+on the first typo fixed. An older split moved the prep steps to the front
+under "Prep ahead" and "To cook" section titles, with no ``n``; those are
+still read, by their order.
+
+Where a recipe came from, and what AI did to it, is kept in ``extras`` as
+``provenance``: the source (a page, a video, a photo, something said,
+typed, or written by AI from a name), and a list of events -- read,
+written, split, tagged -- each with the model and when. A step AI read,
+wrote or changed carries a mark naming the event. A step a person edits
+loses its mark, because it is theirs now.
 """
 
 from __future__ import annotations
@@ -68,8 +78,10 @@ from .const import (
     ATTR_METHOD,
     ATTR_NAME,
     ATTR_PREP,
+    ATTR_AI,
     ATTR_RECIPE,
     ATTR_SERVINGS,
+    ATTR_SOURCE,
     ATTR_TAGS,
     ATTR_TOTAL_TIME,
     ATTR_URL,
@@ -130,6 +142,10 @@ SAVE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_TAGS): vol.Any([cv.string], cv.string),
     vol.Optional(ATTR_FAVOURITE): cv.boolean,
     vol.Optional(ATTR_PREP): vol.Any(None, dict),
+    # Where the recipe came from, and something AI just did to it. See the
+    # module's docstring.
+    vol.Optional(ATTR_SOURCE): dict,
+    vol.Optional(ATTR_AI): dict,
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
@@ -281,12 +297,27 @@ PREP_TITLE = "Prep ahead"
 COOK_TITLE = "To cook"
 _PREP_MODES = ("split", "none", "order")
 _STEP_KEYS = ("ahead_max", "ahead_min", "minutes")
+# The words a step's note can carry: the half done ahead and the half left
+# for the stove, where one step does both, and a line that only applies
+# when it was made ahead.
+_TEXT_KEYS = ("ahead", "cook", "if_ahead")
+_TEXT_MAX = 600
 
 
 def _prep_step(value: Any) -> dict[str, Any]:
-    """One prep step's timing, kept to the fields the house uses."""
+    """One prep step's note, kept to the fields the house uses."""
     raw = value if isinstance(value, dict) else {}
     out: dict[str, Any] = {}
+    try:
+        n = int(raw.get("n"))
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 1:
+        out["n"] = n
+    for key in _TEXT_KEYS:
+        text = str(raw.get(key) or "").strip()
+        if text:
+            out[key] = text[:_TEXT_MAX]
     for key in _STEP_KEYS:
         try:
             number = float(raw.get(key))
@@ -323,9 +354,34 @@ def _prep_of(recipe: dict[str, Any]) -> dict[str, Any] | None:
     if not steps or len(steps) >= len(method) + 1:
         return None
     out = {"mode": "split", "steps": steps, "checked": bool(got.get("checked"))}
+    if _in_place(steps):
+        # Noted in place: every note names a step that is still there.
+        if not _places_fit(steps, len(method)):
+            return None
+        out["in_place"] = True
+        reheat = str(got.get("reheat") or "").strip()
+        if reheat:
+            out["reheat"] = reheat[:_TEXT_MAX]
+            try:
+                at = int(got.get("reheat_at"))
+            except (TypeError, ValueError):
+                at = steps[0]["n"]
+            out["reheat_at"] = at if 1 <= at <= len(method) else steps[0]["n"]
+        return out
     if original := _original(got.get("original")):
         out["original"] = original
     return out
+
+
+def _in_place(steps: list[dict[str, Any]]) -> bool:
+    """Whether a split names its steps' places, rather than moving them."""
+    return bool(steps) and all("n" in s for s in steps)
+
+
+def _places_fit(steps: list[dict[str, Any]], count: int) -> bool:
+    """Each note on a different step of the method, in its order."""
+    places = [s["n"] for s in steps]
+    return all(1 <= n <= count for n in places) and places == sorted(set(places))
 
 
 def _original(value: Any) -> list[str]:
@@ -357,6 +413,23 @@ def _apply_prep(
         raise ServiceValidationError(
             "A split needs between one prep step and every step of the method."
         )
+    if _in_place(timing):
+        # Noted in place: the method is left exactly as it is.
+        timing.sort(key=lambda s: s["n"])
+        if not _places_fit(timing, len(steps)):
+            raise ServiceValidationError(
+                "Each prep note names a different step of the method, by its number from 1."
+            )
+        stored = {"mode": "split", "steps": timing, "checked": bool(prep.get("checked"))}
+        reheat = str(prep.get("reheat") or "").strip()
+        if reheat:
+            stored["reheat"] = reheat[:_TEXT_MAX]
+            try:
+                stored["reheat_at"] = int(prep.get("reheat_at"))
+            except (TypeError, ValueError):
+                stored["reheat_at"] = timing[0]["n"]
+        extras[ATTR_PREP] = json.dumps(stored)
+        return steps, extras
     steps[0]["title"] = PREP_TITLE
     if len(timing) < len(steps):
         steps[len(timing)]["title"] = COOK_TITLE
@@ -368,6 +441,135 @@ def _apply_prep(
         stored["original"] = original
     extras[ATTR_PREP] = json.dumps(stored)
     return steps, extras
+
+
+# ---- where a recipe came from ----
+
+PROVENANCE = "provenance"
+_SOURCES = ("page", "video", "photo", "said", "typed", "written")
+_MARKS = ("interpreted", "created", "enhanced")
+_EVENTS = ("read", "wrote", "split", "tagged", "checked")
+# A recipe read from a video is transcribed by Mealie's own AI first.
+_VIDEO_HOSTS = ("youtube.com", "youtu.be", "instagram.com", "tiktok.com", "facebook.com", "fb.watch")
+
+
+def _now() -> str:
+    return dt_util.now().replace(microsecond=0).isoformat()
+
+
+def _provenance_of(recipe: dict[str, Any]) -> dict[str, Any]:
+    """Where a recipe came from and what AI did to it, as stored.
+
+    Always answers: a recipe with nothing stored has an empty history and
+    the date Mealie says it was added.
+    """
+    extras = recipe.get("extras") if isinstance(recipe.get("extras"), dict) else {}
+    raw = extras.get(PROVENANCE)
+    try:
+        got = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except ValueError:
+        got = {}
+    got = got if isinstance(got, dict) else {}
+    source = got.get("source") if isinstance(got.get("source"), dict) else {}
+    out_source: dict[str, Any] = {}
+    if source.get("kind") in _SOURCES:
+        out_source["kind"] = source["kind"]
+    for key in ("url", "added", "from"):
+        if source.get(key):
+            out_source[key] = str(source[key])[:300]
+    if "added" not in out_source:
+        added = recipe.get("createdAt") or recipe.get("dateAdded")
+        if added:
+            out_source["added"] = str(added)
+    events = []
+    for e in got.get("events") or []:
+        if not isinstance(e, dict) or e.get("what") not in _EVENTS:
+            continue
+        try:
+            eid = int(e.get("id"))
+        except (TypeError, ValueError):
+            continue
+        event = {"id": eid, "what": e["what"]}
+        for key in ("by", "model", "at", "note"):
+            if e.get(key):
+                event[key] = str(e[key])[:200]
+        events.append(event)
+    known = {e["id"] for e in events}
+    marks = {}
+    raw_marks = got.get("marks") if isinstance(got.get("marks"), dict) else {}
+    for key, m in raw_marks.items():
+        if not isinstance(m, dict) or m.get("mark") not in _MARKS:
+            continue
+        try:
+            n = int(key)
+            eid = int(m.get("event"))
+        except (TypeError, ValueError):
+            continue
+        if n >= 1 and eid in known:
+            marks[str(n)] = {"mark": m["mark"], "event": eid}
+    return {"source": out_source, "events": events, "marks": marks}
+
+
+def _texts(instructions: list[dict[str, Any]]) -> list[str]:
+    return [str(s.get("text") or "").strip() for s in instructions if isinstance(s, dict)]
+
+
+def _follow_marks(marks: dict[str, Any], before: list[str], after: list[str]) -> dict[str, Any]:
+    """A method saved again keeps each step's mark only where the step's
+    words are unchanged, wherever it now sits. A step a person rewrote is
+    theirs, and loses it."""
+    out: dict[str, Any] = {}
+    used: set[int] = set()
+    for key, mark in marks.items():
+        i = int(key) - 1
+        if i < 0 or i >= len(before):
+            continue
+        for j, text in enumerate(after):
+            if j not in used and text == before[i]:
+                used.add(j)
+                out[str(j + 1)] = mark
+                break
+    return out
+
+
+def _add_event(prov: dict[str, Any], ai: dict[str, Any], count: int) -> None:
+    """Record something AI did, and mark the steps it did it to."""
+    what = str(ai.get("what") or "").strip()
+    if what not in _EVENTS:
+        raise ServiceValidationError(f"ai.what is one of {', '.join(_EVENTS)}.")
+    eid = max([e["id"] for e in prov["events"]] + [0]) + 1
+    event: dict[str, Any] = {"id": eid, "what": what, "at": _now()}
+    for key in ("by", "model", "note"):
+        if ai.get(key):
+            event[key] = str(ai[key]).strip()[:200]
+    prov["events"].append(event)
+    mark = ai.get("mark")
+    if mark is None:
+        return
+    if mark not in _MARKS:
+        raise ServiceValidationError(f"ai.mark is one of {', '.join(_MARKS)}.")
+    steps = ai.get("steps", "all")
+    if steps == "all":
+        places = range(1, count + 1)
+    else:
+        places = []
+        for n in steps if isinstance(steps, list) else [steps]:
+            try:
+                places.append(int(n))
+            except (TypeError, ValueError):
+                continue
+    for n in places:
+        if 1 <= n <= count:
+            prov["marks"][str(n)] = {"mark": mark, "event": eid}
+
+
+def _stored_provenance(prov: dict[str, Any]) -> str:
+    return json.dumps({"source": prov["source"], "events": prov["events"], "marks": prov["marks"]})
+
+
+def _source_of_url(url: str) -> str:
+    host = re.sub(r"^https?://(www\.|m\.)?", "", url.lower()).split("/")[0]
+    return "video" if any(host == h or host.endswith("." + h) for h in _VIDEO_HOSTS) else "page"
 
 
 async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
@@ -413,10 +615,37 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
 
     # The split is applied to the method as it will be after this save: the
     # new one when a method was sent, otherwise the one already there.
+    extras = dict(current.get("extras")) if isinstance(current.get("extras"), dict) else {}
+    extras_changed = False
     if data.get(ATTR_PREP) is not None:
         method = patch.get("recipeInstructions", current.get("recipeInstructions") or [])
-        extras = current.get("extras") if isinstance(current.get("extras"), dict) else {}
-        patch["recipeInstructions"], patch["extras"] = _apply_prep(method, extras, data[ATTR_PREP])
+        patch["recipeInstructions"], extras = _apply_prep(method, extras, data[ATTR_PREP])
+        extras_changed = True
+
+    # Where it came from, and what AI did: kept with it, and a step a person
+    # rewrote gives up its mark.
+    prov = _provenance_of(current)
+    had = json.dumps(prov, sort_keys=True)
+    after = _texts(patch.get("recipeInstructions", current.get("recipeInstructions") or []))
+    if "recipeInstructions" in patch:
+        prov["marks"] = _follow_marks(prov["marks"], _texts(current.get("recipeInstructions") or []), after)
+    source = data.get(ATTR_SOURCE)
+    if isinstance(source, dict) and source.get("kind") in _SOURCES:
+        kept = {"kind": source["kind"], "added": prov["source"].get("added") or _now()}
+        for key in ("url", "from"):
+            if source.get(key):
+                kept[key] = str(source[key])[:300]
+        prov["source"] = kept
+    elif not data.get(ATTR_RECIPE) and "kind" not in prov["source"]:
+        # A new recipe with nothing said about it was typed in.
+        prov["source"] = {"kind": "typed", "added": _now()}
+    if isinstance(data.get(ATTR_AI), dict):
+        _add_event(prov, data[ATTR_AI], len(after))
+    if json.dumps(prov, sort_keys=True) != had:
+        extras[PROVENANCE] = _stored_provenance(prov)
+        extras_changed = True
+    if extras_changed:
+        patch["extras"] = extras
 
     saved = current
     if patch:
@@ -433,6 +662,7 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
         "name": saved.get("name", current.get("name")),
         "tags": [t.get("name") for t in (saved.get("tags") or []) if isinstance(t, dict)],
         "prep": _prep_of(saved),
+        "provenance": _provenance_of(saved),
     }
 
 
@@ -540,6 +770,23 @@ async def async_import_recipe(hass: HomeAssistant, call: ServiceCall) -> Service
     if not isinstance(slug, str) or not slug:
         raise HomeAssistantError("Mealie imported the recipe but did not say where.")
     saved = await api.request("GET", f"/recipes/{slug}") or {}
+    # Where it came from. A video is transcribed and read by Mealie's own
+    # AI, which does not say which model it used; every step it wrote is
+    # marked as read by AI.
+    kind = _source_of_url(url)
+    prov = _provenance_of(saved)
+    if "kind" not in prov["source"]:
+        prov["source"] = {"kind": kind, "url": url, "added": _now()}
+        if kind == "video":
+            _add_event(prov, {"what": "read", "by": "Mealie", "mark": "interpreted",
+                              "note": "Read from the video by Mealie's AI"},
+                       len(_texts(saved.get("recipeInstructions") or [])))
+        extras = dict(saved.get("extras")) if isinstance(saved.get("extras"), dict) else {}
+        extras[PROVENANCE] = _stored_provenance(prov)
+        try:
+            await api.request("PATCH", f"/recipes/{saved.get('slug', slug)}", {"extras": extras})
+        except HomeAssistantError:
+            pass
     return {
         "slug": saved.get("slug", slug),
         "recipe_id": saved.get("id"),
@@ -599,21 +846,21 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
     except HomeAssistantError:
         pass
 
-    cache: dict[str, tuple[str, list[str], Any]] = hass.data.setdefault(_INDEX_CACHE, {})
+    cache: dict[str, tuple[str, list[str], Any, Any]] = hass.data.setdefault(_INDEX_CACHE, {})
     gate = asyncio.Semaphore(_INDEX_PARALLEL)
 
-    async def lines(summary: dict[str, Any]) -> tuple[list[str], Any]:
+    async def lines(summary: dict[str, Any]) -> tuple[list[str], Any, Any]:
         slug = summary["slug"]
         stamp = str(summary.get("updatedAt") or summary.get("dateUpdated") or "")
         hit = cache.get(slug)
-        if hit and hit[0] == stamp and len(hit) == 3:
-            return hit[1], hit[2]
+        if hit and hit[0] == stamp and len(hit) == 4:
+            return hit[1], hit[2], hit[3]
         async with gate:
             try:
                 full = await api.request("GET", f"/recipes/{slug}") or {}
             except HomeAssistantError:
-                return (hit[1], hit[2] if len(hit) == 3 else None) if hit else ([], None)
-        got = (_ingredient_lines(full), _prep_of(full))
+                return (hit[1], hit[2], hit[3]) if hit and len(hit) == 4 else ([], None, None)
+        got = (_ingredient_lines(full), _prep_of(full), _provenance_of(full))
         cache[slug] = (stamp, *got)
         return got
 
@@ -624,7 +871,7 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
 
     recipes = []
     tag_names: set[str] = set()
-    for summary, (ingredients, prep) in zip(summaries, all_lines, strict=True):
+    for summary, (ingredients, prep, provenance) in zip(summaries, all_lines, strict=True):
         tags = [
             str(t.get("name")) for t in (summary.get("tags") or [])
             if isinstance(t, dict) and t.get("name")
@@ -646,6 +893,8 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
             "source": summary.get("orgURL") or None,
             # The prep split, or None for a recipe that was never split.
             "prep": prep,
+            # Where it came from and what AI did to it.
+            "provenance": provenance,
         })
     return {"recipes": recipes, "tags": sorted(tag_names, key=str.lower)}
 

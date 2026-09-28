@@ -220,6 +220,9 @@ ATTR_FAVOURITE = "favourite"
 ATTR_PREP = "prep"
 ATTR_DATE = "date"
 ATTR_URL = "url"
+# Where a recipe came from and what AI did to it. See recipes.py.
+ATTR_SOURCE = "source"
+ATTR_AI = "ai"
 
 # --- Photos ------------------------------------------------------------
 #
