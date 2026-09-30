@@ -1,16 +1,18 @@
-"""What can be put off, and what cannot.
+"""What can be put off, and for how long.
 
 Every row on `Needs you` can be dismissed or snoozed, because putting a
 job off is a real answer to it -- the bins come round again, the washing
-waits. Salt is the exception, and this file exists to keep it one.
+waits. Salt can only be snoozed, and this file exists to keep it that way.
 
-The softener row is only ever true when there is a bag to fetch from the
-garage or a bag to buy, and it clears itself the moment the level comes
-back up. Snoozing it does not make the softener wait: it passes hard
-water through the house until somebody notices the limescale.
+The softener reports late: its salt reading moves a day or more after
+the tank is filled, so the row needs a snooze to ride out that lag. But
+it is only ever true when there is a bag to fetch or a bag to buy, so it
+must come back when the snooze runs out -- never be dismissed for good.
 """
 
 from __future__ import annotations
+
+from datetime import timedelta
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -69,28 +71,32 @@ async def test_low_salt_is_a_row(hass: HomeAssistant) -> None:
     assert "salt" in row["title"].lower()
 
 
-async def test_it_offers_no_way_to_put_it_off(hass: HomeAssistant) -> None:
-    """No button. Snoozing does not make the softener wait."""
+async def test_it_offers_a_day_long_snooze(hass: HomeAssistant) -> None:
+    """The softener's reading lags the refill; Snooze covers the wait."""
     row = _salt(await _low(hass))
+    assert row is not None
+    assert row["action_label"] == "Snooze"
+    assert row["action"]["data"] == {"item_id": "softener_salt", "hours": 24}
 
-    assert "action" not in row, row.get("action")
-    assert "action_label" not in row, row.get("action_label")
+
+async def test_snoozing_hides_it_until_it_runs_out(
+    hass: HomeAssistant, freezer
+) -> None:
+    sensor = await _low(hass)
+    sensor.suppress("softener_salt", hours=24)
+    assert _salt(sensor) is None, "the snooze did not hide the row"
+
+    freezer.tick(timedelta(hours=25))
+    sensor._recompute()  # noqa: SLF001
+    assert _salt(sensor) is not None, "the salt row stayed snoozed"
 
 
-async def test_and_snoozing_it_anyway_does_nothing(hass: HomeAssistant) -> None:
-    """The button is not the only way in.
-
-    The service is there for anything to call -- an automation, a voice
-    command, a stale suppression restored from before the button went.
-    A row that cannot be cleared by hand must not be clearable by any
-    of those either, or "you cannot snooze it" is only true of the card.
+async def test_but_it_cannot_be_dismissed(hass: HomeAssistant) -> None:
+    """The service is there for anything to call -- an automation, a
+    voice command, a stale suppression. A forever-suppression must not
+    lose a row that stays true until somebody fills the tank.
     """
     sensor = await _low(hass)
-    assert _salt(sensor) is not None
-
-    sensor.suppress("softener_salt", hours=24)
-    assert _salt(sensor) is not None, "the salt row was snoozed away"
-
     sensor.suppress("softener_salt")  # a dismissal: no hours, forever
     assert _salt(sensor) is not None, "the salt row was dismissed away"
 
