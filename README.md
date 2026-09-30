@@ -1169,6 +1169,11 @@ URL, JPEG, PNG or WebP, under 3 MB) in local media under
 `ai_task.generate_data` attachment takes. Only the newest twelve per folder
 are kept.
 
+**`save_recipe` takes `image`**, the recipe's own photo in the same form
+(base64 or a data URL, JPEG, PNG or WebP, under 3 MB), and puts it on the
+recipe in Mealie in place of any photo it had. A photo that is not one is
+refused before anything is written, so a new recipe is never left half made.
+
 ## Setup
 
 Install through HACS, restart once so Home Assistant picks up the new
