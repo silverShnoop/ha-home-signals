@@ -74,6 +74,7 @@ from .const import (
     ATTR_DATE,
     ATTR_DESCRIPTION,
     ATTR_FAVOURITE,
+    ATTR_IMAGE,
     ATTR_INGREDIENTS,
     ATTR_METHOD,
     ATTR_NAME,
@@ -95,6 +96,7 @@ from .const import (
     SERVICE_RECIPE_INDEX,
     SERVICE_SAVE_RECIPE,
 )
+from .photos import decode_photo
 
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 # An import can take a minute. A page with no recipe data is read by
@@ -148,6 +150,9 @@ SAVE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_SOURCE): dict,
     vol.Optional(ATTR_AI): dict,
     vol.Optional(ATTR_SECTIONS): vol.Any(None, [dict]),
+    # The recipe's photo, as a base64 JPEG, PNG or WebP (a data URL is
+    # fine): the dish, cut from a cookbook page or taken on its own.
+    vol.Optional(ATTR_IMAGE): cv.string,
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
@@ -226,6 +231,22 @@ class _Mealie:
                     return json.loads(text)
                 except ValueError:
                     return text
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise HomeAssistantError(f"Could not reach Mealie: {err}") from err
+
+    async def set_image(self, slug: str, raw: bytes, ext: str, kind: str) -> None:
+        """Replace a recipe's photo. Mealie takes it as a form upload."""
+        form = aiohttp.FormData()
+        form.add_field("image", raw, filename=f"image.{ext}", content_type=kind)
+        form.add_field("extension", ext)
+        try:
+            async with self._session.put(
+                f"{self._base}/recipes/{slug}/image", data=form,
+                headers=self._headers, timeout=_TIMEOUT,
+            ) as resp:
+                if resp.status >= 400:
+                    detail = (await resp.text())[:300]
+                    raise HomeAssistantError(f"Mealie refused the photo: {resp.status} {detail}")
         except (aiohttp.ClientError, TimeoutError) as err:
             raise HomeAssistantError(f"Could not reach Mealie: {err}") from err
 
@@ -617,6 +638,10 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     api = _Mealie(hass, _mealie_entry(hass, data.get(ATTR_CONFIG_ENTRY_ID)))
     slug = data.get(ATTR_RECIPE)
 
+    # Refused before anything is written, so a bad photo cannot leave half
+    # a new recipe behind.
+    photo = decode_photo(data[ATTR_IMAGE]) if data.get(ATTR_IMAGE) else None
+
     if not slug:
         name = str(data.get(ATTR_NAME) or "").strip()
         if not name:
@@ -628,7 +653,11 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
             raise HomeAssistantError("Mealie created the recipe but did not say where.")
 
     async with _recipe_lock(hass, slug):
-        return await _save_to(api, slug, data)
+        saved = await _save_to(api, slug, data)
+        if photo:
+            await api.set_image(saved["slug"], *photo)
+            saved["image"] = True
+        return saved
 
 
 def _recipe_lock(hass: HomeAssistant, slug: str) -> asyncio.Lock:

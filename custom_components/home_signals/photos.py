@@ -54,7 +54,7 @@ SAVE_PHOTO_SCHEMA = vol.Schema({
 })
 
 
-def _decode(image: str) -> tuple[bytes, str, str]:
+def decode_photo(image: str) -> tuple[bytes, str, str]:
     """The photo's bytes, extension and content type, or a clear refusal."""
     try:
         raw = base64.b64decode(_DATA_URL.sub("", image.strip()), validate=True)
@@ -85,7 +85,7 @@ async def async_save_photo(hass: HomeAssistant, call: ServiceCall) -> ServiceRes
     folder = str(call.data[ATTR_FOLDER]).strip().lower()
     if not _FOLDER.match(folder):
         raise ServiceValidationError("A folder is letters, numbers, - and _ only.")
-    raw, ext, kind = _decode(call.data[ATTR_IMAGE])
+    raw, ext, kind = decode_photo(call.data[ATTR_IMAGE])
     media = hass.config.media_dirs.get("local")
     if not media:
         raise ServiceValidationError("Home Assistant has no local media folder.")

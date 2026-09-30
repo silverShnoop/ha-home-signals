@@ -436,3 +436,35 @@ async def test_saving_with_ai_records_it(
     assert stored["source"]["kind"] == "photo"
     assert stored["events"][0]["model"] == "ai_task.anthropic_claude_sonnet_5"
     assert stored["marks"] == {"1": {"mark": "interpreted", "event": 1}}
+
+
+JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2w=="
+
+
+async def test_a_photo_goes_onto_the_recipe(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes/sea-bass", json=RECIPE)
+    aioclient_mock.put(f"{BASE}/recipes/sea-bass/image", json={"image": "abc"})
+
+    answer = await hass.services.async_call(
+        DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "sea-bass", "image": JPEG},
+        blocking=True, return_response=True,
+    )
+
+    (put,) = [c for c in aioclient_mock.mock_calls if c[0] == "PUT"]
+    assert str(put[1]).endswith("/recipes/sea-bass/image")
+    assert answer["image"] is True
+
+
+async def test_a_photo_that_is_not_one_writes_nothing(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_SAVE_RECIPE, {"name": "Stew", "image": "bm90IGEgcGhvdG8="},
+            blocking=True, return_response=True,
+        )
+    assert not aioclient_mock.mock_calls, "a new recipe was made before the photo was refused"
