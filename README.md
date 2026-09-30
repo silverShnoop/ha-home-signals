@@ -127,23 +127,23 @@ It is dismissable and keyed to the night, because "I know what that was" is
 a real answer to it — and answering for Saturday must not silence Sunday.
 No snooze: a night is over, and there is nothing to come back to later.
 
-### Salt is the one row you cannot put off
-
-Every other row can be dismissed or snoozed, because putting a job off
-is a real answer to it: the bins come round again, the washing waits.
+### Salt can be snoozed, never dismissed
 
 Salt does not wait. It runs out, and then the softener passes hard water
 through the house until somebody notices the limescale. The row is only
 ever true when there is a bag to fetch from the garage or a bag to buy,
-and it clears itself the moment the level comes back up — so there is
-nothing a snooze could usefully do except hide it.
+and it clears itself the moment the level comes back up.
 
-It carries `sticky: True` rather than simply dropping its button,
-because the button is not the only way in. The `snooze` and `dismiss`
-services are there for anything to call, and a suppression restored from
-before the button went would still be sitting in the record. A row that
-cannot be cleared by hand must not be clearable by any of those either,
-or "you cannot snooze it" is only true of the card.
+But the softener reports late: its salt reading moves a day or more after
+the tank is filled, so the row went on asking for salt already in the
+machine. It offers a 24-hour **Snooze** to ride out that lag — long
+enough to cover it, short enough that a tank that really is low comes
+straight back. Like every snoozed row it still colours the card and the
+Maintenance tab, because the reading still says low.
+
+It carries `snooze_only: True`, so a dismissal — from the `dismiss`
+service, an automation, or a suppression restored from before — is
+ignored. Only a timed snooze hides it, and the snooze always runs out.
 
 ### Dismissing
 
