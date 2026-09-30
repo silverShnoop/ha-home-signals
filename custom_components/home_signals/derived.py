@@ -780,22 +780,21 @@ class SoftenerStatusSensor(_Owner):
             "level": LEVEL_ATTENTION,
             "tab": "maintenance",
             "card": "softener",
-            # No snooze, and not suppressible at all.
-            #
-            # Everything else on this list can be put off because
-            # putting it off costs nothing: the bins come round again,
-            # the washing waits. Salt does not wait -- it runs out,
+            # A snooze, because the softener reports late. Its salt
+            # reading moves a day or more after the tank is filled, so
+            # without one the row went on asking for salt that was
+            # already in the machine, with nothing to do about it but
+            # wait. A day is long enough to cover that lag and short
+            # enough that a tank that really is low comes straight back.
+            "action_label": "Snooze",
+            "action": _snooze("softener_salt", hours=24),
+            # Snooze, never dismiss. Salt does not wait -- it runs out,
             # and then the softener is passing hard water through the
-            # house until somebody notices limescale. The row is only
-            # ever true when there is a bag to fetch or a bag to buy,
-            # and it clears itself the moment the level comes back up.
-            #
-            # `sticky` rather than just dropping the button, because
-            # the button is not the only way in: the service is there
-            # for anything to call, and a row that cannot be cleared
-            # by hand should not be clearable by a stale suppression
-            # either.
-            "sticky": True,
+            # house until somebody notices limescale -- so a "Done", or
+            # a forever-suppression from anything else calling the
+            # service, must not be able to lose the row for good. It
+            # still clears itself the moment the level comes back up.
+            "snooze_only": True,
         }]
 
 
@@ -1101,6 +1100,20 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             return False
         return True
 
+    def _hides(self, row: dict[str, Any]) -> bool:
+        """Whether a suppression takes this row off the list.
+
+        `sticky` rows cannot be put off at all. `snooze_only` rows honour a
+        snooze but not a dismissal: a row that stays true until it is fixed
+        must come back when the snooze runs out.
+        """
+        if row.get("sticky"):
+            return False
+        item_id = row["id"]
+        if row.get("snooze_only") and self._suppressed.get(item_id, 0) is None:
+            return False
+        return self._is_suppressed(item_id)
+
     def _recompute(self) -> None:
         owned = self._owner_rows()
         candidates = [row for _, _, rows in owned for row in rows]
@@ -1116,7 +1129,7 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # what the date in the id is doing.
         self._items = [
             c for c in candidates
-            if c.get("sticky") or not self._is_suppressed(c["id"])
+            if not self._hides(c)
         ]
 
         # The rail button's level: the loudest card on each tab. Taken from
