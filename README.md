@@ -180,6 +180,14 @@ is why `sensor.people_status` exists — the card draws an unlocatable
 person at a level, so the row has to be real — and why a tab tile wears
 the level of what is actually there instead of a fixed colour.
 
+`sensor.people_status` also carries **`presence`**: for each watched
+person, where they are and since when. The Who's home card reads its
+"3h ago" from here rather than from the person's own `last_changed`,
+which Home Assistant resets on every restart. The time moves only when
+the person does. A restart keeps it, and so does a spell of silence
+shorter than `presence_grace_minutes` that ends in the same place.
+Unknown takes the same "quiet since" time as the Needs you row.
+
 **It cuts the other way too.** A thing that needs no doing takes no level.
 An open appliance door used to be drawn in ochre and has no row and never
 should: a machine spends half its life with the door open. That chip is

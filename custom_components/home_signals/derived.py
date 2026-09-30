@@ -912,9 +912,77 @@ class PeopleStatusSensor(_Owner, RestoreEntity):
         # start again at every reboot and a tracker quiet since breakfast
         # would never get past it.
         self._dark_since: dict[str, datetime] = {}
+        # person -> {"state", "since"}: where they are and since when, for
+        # the card's "3h ago". Held here for the same reason as
+        # `_dark_since` -- read off the person's own `last_changed`, every
+        # restart told the panel that everybody had just walked in.
+        self._at: dict[str, dict[str, Any]] = {}
+        # person -> where they were when their tracker went quiet, and when
+        # it did. A phone that drops out for ten minutes and comes back in
+        # the same place has not moved, and must not restart the clock.
+        self._before: dict[str, dict[str, Any]] = {}
 
     def _watched(self) -> list[str]:
         return super()._watched() + list(self._option(CONF_PEOPLE, []) or [])
+
+    def _grace(self) -> timedelta:
+        return timedelta(
+            minutes=float(
+                self._option(
+                    CONF_PRESENCE_GRACE_MINUTES, DEFAULT_PRESENCE_GRACE_MINUTES
+                )
+            )
+        )
+
+    def _recompute(self) -> None:
+        super()._recompute()
+        self._track_presence()
+
+    def _track_presence(self) -> None:
+        """Keep each person's "since" honest across restarts and blips.
+
+        Only a change of place moves the clock. A restart is not one: the
+        restored record already says where they were, and a person who is
+        still there keeps the time they arrived. Nor is a spell of silence
+        shorter than the presence grace period: the tunnel, the reboot, the
+        minute after Home Assistant starts when a tracker has not reported
+        yet. Coming back to the same place picks the old time back up.
+        """
+        now = dt_util.utcnow()
+        for entity_id in list(self._option(CONF_PEOPLE, []) or []):
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                continue
+            dark = state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+            where = STATE_UNKNOWN if dark else state.state
+            held = self._at.get(entity_id)
+            if held is not None and held["state"] == where:
+                # Quiet is quiet since whenever the job says, which may be
+                # older than this record: the job's memory can be restored
+                # after the first scan has already guessed "just now".
+                quiet = self._dark_since.get(entity_id) if dark else None
+                if quiet is not None and quiet < held["since"]:
+                    held["since"] = quiet
+                continue
+            before = self._before.pop(entity_id, None)
+            if (
+                held is not None
+                and held["state"] == STATE_UNKNOWN
+                and before is not None
+                and before["state"] == where
+                and now - before["left"] < self._grace()
+            ):
+                self._at[entity_id] = {"state": where, "since": before["since"]}
+                continue
+            if held is not None and dark:
+                self._before[entity_id] = {**held, "left": now}
+            # Quiet since when the job says so, which survives a restart;
+            # anything else since the change we just saw.
+            since = (
+                self._dark_since.get(entity_id, state.last_changed)
+                if dark else state.last_changed
+            )
+            self._at[entity_id] = {"state": where, "since": since}
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -926,6 +994,15 @@ class PeopleStatusSensor(_Owner, RestoreEntity):
                 parsed = dt_util.parse_datetime(when) if when else None
                 if parsed is not None:
                     self._dark_since[entity_id] = parsed
+        presence = last.attributes.get("presence")
+        if isinstance(presence, dict):
+            for entity_id, held in presence.items():
+                if not isinstance(held, dict) or not held.get("state"):
+                    continue
+                when = held.get("since")
+                parsed = dt_util.parse_datetime(when) if when else None
+                if parsed is not None:
+                    self._at[entity_id] = {"state": held["state"], "since": parsed}
         self._recompute()
 
     def _jobs_now(self) -> list[dict[str, Any]]:
@@ -946,13 +1023,7 @@ class PeopleStatusSensor(_Owner, RestoreEntity):
         watched = list(self._option(CONF_PEOPLE, []) or [])
         if not watched:
             return []
-        grace = timedelta(
-            minutes=float(
-                self._option(
-                    CONF_PRESENCE_GRACE_MINUTES, DEFAULT_PRESENCE_GRACE_MINUTES
-                )
-            )
-        )
+        grace = self._grace()
         now = dt_util.utcnow()
         rows: list[dict[str, Any]] = []
         for entity_id in watched:
@@ -990,6 +1061,11 @@ class PeopleStatusSensor(_Owner, RestoreEntity):
             "dark_since": {
                 entity_id: when.isoformat()
                 for entity_id, when in self._dark_since.items()
+            },
+            # What the Who's home card reads for "3h ago".
+            "presence": {
+                entity_id: {"state": held["state"], "since": held["since"].isoformat()}
+                for entity_id, held in self._at.items()
             },
         }
 

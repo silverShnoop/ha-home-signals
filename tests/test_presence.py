@@ -247,3 +247,128 @@ async def test_the_rail_says_the_loudest_job_and_how_many_more() -> None:
     ]
     assert _tab_summary(jobs) == "Washing machine has no power \u00b7 +2 more"
     assert _tab_summary([jobs[0], jobs[2]]) == "Laundry needs hanging \u00d72"
+
+
+# --- "Home 3h ago" survives a restart --------------------------------
+#
+# The card read each person's own `last_changed`, which Home Assistant
+# resets when it starts. So after every restart the panel said everyone
+# had arrived a minute ago. The time now lives on this sensor.
+
+JAMES = "person.james"
+_BOTH = {"people": [JAMES, JAINA], "presence_grace_minutes": 60}
+
+
+def _people(hass: HomeAssistant, options: dict | None = None) -> PeopleStatusSensor:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={}, options=_BOTH if options is None else options,
+    )
+    entry.add_to_hass(hass)
+    sensor = PeopleStatusSensor(entry)
+    sensor.hass = hass
+    sensor.entity_id = "sensor.people_status"
+    return sensor
+
+
+def _since(sensor: PeopleStatusSensor, who: str) -> str | None:
+    held = sensor.extra_state_attributes["presence"].get(who)
+    return held["since"] if held else None
+
+
+async def test_home_since_survives_a_restart(hass: HomeAssistant) -> None:
+    arrived = dt_util.utcnow() - timedelta(hours=3)
+    mock_restore_cache(
+        hass,
+        (
+            State(
+                "sensor.people_status",
+                "clear",
+                {"jobs": [], "presence": {
+                    JAMES: {"state": "home", "since": arrived.isoformat()},
+                }},
+            ),
+        ),
+    )
+    # Home Assistant has just come back: last_changed is NOW, the lie.
+    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    assert _since(sensor, JAMES) == arrived.isoformat(), (
+        "the restart told the panel James had just walked in"
+    )
+
+
+async def test_a_move_restarts_the_clock(hass: HomeAssistant) -> None:
+    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    sensor._at[JAMES]["since"] = dt_util.utcnow() - timedelta(hours=3)  # noqa: SLF001
+
+    hass.states.async_set(JAMES, "not_home", {"friendly_name": "James"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    held = sensor.extra_state_attributes["presence"][JAMES]
+    assert held["state"] == "not_home"
+    assert held["since"] == hass.states.get(JAMES).last_changed.isoformat()
+
+
+async def test_a_short_silence_is_not_a_move(hass: HomeAssistant) -> None:
+    """Out for ten minutes of no signal, then back where they were."""
+    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    arrived = dt_util.utcnow() - timedelta(hours=3)
+    sensor._at[JAMES]["since"] = arrived  # noqa: SLF001
+
+    hass.states.async_set(JAMES, "unknown", {"friendly_name": "James"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    assert _since(sensor, JAMES) == arrived.isoformat(), (
+        "a blip in the tracker restarted the clock"
+    )
+
+
+async def test_a_long_silence_then_home_is_a_new_arrival(hass: HomeAssistant) -> None:
+    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    arrived = dt_util.utcnow() - timedelta(hours=9)
+    sensor._at[JAMES]["since"] = arrived  # noqa: SLF001
+
+    hass.states.async_set(JAMES, "unknown", {"friendly_name": "James"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+    sensor._before[JAMES]["left"] = dt_util.utcnow() - timedelta(hours=2)  # noqa: SLF001
+    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    assert _since(sensor, JAMES) != arrived.isoformat()
+
+
+async def test_unknown_since_is_when_they_went_quiet(hass: HomeAssistant) -> None:
+    """The card's "for 2d" must agree with the Needs you row's "quiet since"."""
+    quiet_since = dt_util.utcnow() - timedelta(days=2)
+    mock_restore_cache(
+        hass,
+        (
+            State(
+                "sensor.people_status",
+                "attention",
+                {"jobs": [], "dark_since": {JAINA: quiet_since.isoformat()}},
+            ),
+        ),
+    )
+    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    assert _since(sensor, JAINA) == quiet_since.isoformat()
