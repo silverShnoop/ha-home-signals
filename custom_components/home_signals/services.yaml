@@ -156,6 +156,13 @@ save_recipe:
       example: '{"mode": "split", "steps": [{"n": 1, "ahead_max": 24, "keeps": "Fridge", "minutes": 10, "store": "Cover and chill.", "if_ahead": "Take it out 20 mins before cooking."}]}'
       selector:
         object:
+    image:
+      name: Photo
+      description: >-
+        The recipe's photo, as base64 JPEG, PNG or WebP (a data URL is fine),
+        under 3 MB. Replaces the photo Mealie has.
+      selector:
+        text:
     sections:
       name: Sections
       description: >-
