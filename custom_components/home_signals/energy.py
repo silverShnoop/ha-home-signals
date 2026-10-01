@@ -32,6 +32,7 @@ rather than passing it through.
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, datetime, timedelta
 import logging
 from typing import Any
@@ -61,6 +62,7 @@ from .const import (
     ENERGY_MIN_DAYS_FOR_AVERAGE,
     ENERGY_MIN_DAYS_FOR_NORM,
     ENERGY_MONTH_DAYS,
+    ENERGY_MONTHS,
     ENERGY_NORM_DAYS,
     ENERGY_SAME_PCT,
     ENERGY_SERIES_DAYS,
@@ -83,6 +85,13 @@ SCAN_INTERVAL = timedelta(minutes=30)
 # One half-hourly slot, in hours. Named because it appears in the middle of
 # arithmetic where `0.5` would read as a fudge.
 SLOT_HOURS = 0.5
+
+# Spelled out rather than taken from the locale, which on some installs is
+# not English and on the rest is whatever the container happened to set.
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December",
+)
 
 
 def _as_float(value: Any) -> float | None:
@@ -189,6 +198,11 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         # would mean losing the one comparison that works without a Home
         # Mini, every time Home Assistant updates.
         self._history: list[dict[str, Any]] = []
+        # Calendar-month totals, keyed "YYYY-MM". The history is five weeks,
+        # so a month is still wholly inside it for a few days after it ends
+        # and then starts falling out of the far end. This is where it is
+        # written down before that happens -- see `_fold_months`.
+        self._months: dict[str, dict[str, Any]] = {}
 
     def _option(self, key: str, default: Any = None) -> Any:
         return self._entry.options.get(key, self._entry.data.get(key, default))
@@ -239,7 +253,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         """
         rows = attrs.get("recent_days")
         if not isinstance(rows, list):
-            return
+            rows = []
         self._history = [
             dict(row)
             for row in rows
@@ -255,6 +269,26 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 for key in ("cost", "kwh", "baseline_watts")
             )
         ][:ENERGY_HISTORY_DAYS]
+
+        months = attrs.get("months")
+        for row in months if isinstance(months, list) else []:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("month")
+            days = row.get("days")
+            cost = _as_float(row.get("cost"))
+            kwh = _as_float(row.get("kwh"))
+            if (
+                isinstance(key, str)
+                and isinstance(days, int)
+                and days > 0
+                and cost is not None
+                and kwh is not None
+            ):
+                self._months[key] = {"cost": cost, "kwh": kwh, "days": days}
+        # A first start on a version that had no months still has five weeks
+        # of days to make them from.
+        self._fold_months()
 
     @callback
     def _async_started(self, _hass: HomeAssistant) -> None:
@@ -507,6 +541,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 row["baseline_watts"] = day["baseline_watts"]
                 row["block_kwh"] = day["block_kwh"]
                 row["block_cost"] = day["block_cost"]
+                self._fold_months()
                 return
         self._history.insert(0, {
             "day": stamp,
@@ -524,6 +559,88 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         })
         self._history.sort(key=lambda row: row["day"], reverse=True)
         del self._history[ENERGY_HISTORY_DAYS:]
+        self._fold_months()
+
+    def _fold_months(self) -> None:
+        """Total the history by calendar month, keeping the fuller count.
+
+        Recomputed from the days every time rather than added to as each one
+        arrives, so a day Octopus revises is revised in its month too, and a
+        day read twice is not counted twice.
+
+        The history only reaches back five weeks, though, so the first days
+        of a month fall out of it a few days after the month ends. A month
+        is therefore only replaced by a tally of at least as many days as it
+        already has -- which keeps it growing while it is current and frozen
+        once its days start leaving.
+        """
+        tally: dict[str, dict[str, Any]] = {}
+        for row in self._history:
+            month = tally.setdefault(
+                row["day"][:7], {"cost": 0.0, "kwh": 0.0, "days": 0}
+            )
+            month["cost"] += row["cost"]
+            month["kwh"] += row["kwh"]
+            month["days"] += 1
+        for key, month in tally.items():
+            kept = self._months.get(key)
+            if kept is None or month["days"] >= kept["days"]:
+                self._months[key] = {
+                    "cost": round(month["cost"], 2),
+                    "kwh": round(month["kwh"], 3),
+                    "days": month["days"],
+                }
+        for key in sorted(self._months)[:-ENERGY_MONTHS]:
+            del self._months[key]
+
+    def _month_rows(self) -> list[dict[str, Any]]:
+        """The last twelve calendar months, newest first, as list rows.
+
+        Every month is there whether or not anything has been written down
+        for it. A month with nothing says so rather than being left out, so
+        the card shows from the first day what it will fill in -- and a gap
+        in the middle of a year reads as a gap, not as a shorter year.
+
+        A month short of its days says how many it has. That is the current
+        month, which is "so far", and any month that was only partly
+        recorded, whose total is real but not the month's bill.
+        """
+        today = dt_util.now().date()
+        year, month = today.year, today.month
+        rows: list[dict[str, Any]] = []
+        for _ in range(ENERGY_MONTHS):
+            key = f"{year:04d}-{month:02d}"
+            length = calendar.monthrange(year, month)[1]
+            kept = self._months.get(key)
+            row: dict[str, Any] = {
+                "id": key,
+                "month": key,
+                "name": f"{_MONTH_NAMES[month - 1]} {year}",
+                "days_in_month": length,
+            }
+            if kept is None:
+                row.update(
+                    cost=None, kwh=None, days=0, complete=False,
+                    sub="Not filled yet", value=None,
+                )
+            else:
+                days = kept["days"]
+                complete = days >= length
+                parts = [f"{round(kept['kwh'])} kWh"]
+                if (year, month) == (today.year, today.month):
+                    parts.append(f"so far, {days} of {length} days")
+                elif not complete:
+                    parts.append(f"{days} of {length} days recorded")
+                row.update(
+                    cost=kept["cost"], kwh=kept["kwh"], days=days,
+                    complete=complete, sub=" · ".join(parts),
+                    value=money(kept["cost"]),
+                )
+            rows.append(row)
+            month -= 1
+            if month == 0:
+                year, month = year - 1, 12
+        return rows
 
     @callback
     def _recompute(self) -> None:
@@ -801,7 +918,11 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         day = self._day
         if day is None:
-            return {"days_of_history": len(self._history), **self._today()}
+            return {
+                "days_of_history": len(self._history),
+                "months": self._month_rows(),
+                **self._today(),
+            }
 
         late = self._days_late(day)
         if late > ENERGY_STALE_DAYS:
@@ -825,6 +946,10 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 "stale": True,
                 "recent_days": list(self._history),
                 "days_of_history": len(self._history),
+                # Kept for the same reason as `recent_days`, and because a
+                # finished month does not go stale: September's total is as
+                # true on Thursday as it was on Monday.
+                "months": self._month_rows(),
                 # Today is not stale. It comes from a different meter and
                 # is the freshest thing here; only the comparison against
                 # the settled day goes, because that is made of it.
@@ -954,6 +1079,10 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # quiet average look the same on a card and should not to an
             # assistant asked why there is no comparison yet.
             "days_of_history": len(self._history),
+            # Calendar months, newest first, already shaped as list rows.
+            # Also what `_restore` reads back: a month outlives the five
+            # weeks of days it was totalled from.
+            "months": self._month_rows(),
         }
 
         today = self._today()
