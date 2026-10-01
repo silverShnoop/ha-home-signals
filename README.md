@@ -321,6 +321,12 @@ card is the difference between one Python function and a template per tile.
 - **`week_*`, `month_*`, `vs_week_*`, `vs_month_*`** — the day against its
   own two windows; the comparison that works without a live meter.
 - **`recent_days`** — the rolling five weeks the windows are built from.
+- **`months`** — the last twelve calendar months, newest first, already
+  shaped as list rows (`name`, `sub`, `value`) beside the raw `cost`, `kwh`,
+  `days` and `days_in_month`. A month with nothing recorded is still listed,
+  as "Not filled yet"; one short of its days says how many it has. Totalled
+  from `recent_days` and kept past them, so a month outlives the five weeks
+  of days it was made from.
 - **`cost_series`, `kwh_series`, `baseline_series`, `series_labels`** — plain
   arrays, oldest first, for a chart to read straight off.
 - **`baseline_norm`, `baseline_excess_pct`, `baseline_trend_pct`,
@@ -457,7 +463,8 @@ underneath a state nobody reads, which is precisely the failure the
 staleness rule exists to prevent.
 
 Past that point the sensor publishes only what *explains* the silence:
-`for_day`, `for_date`, `days_late`, `stale`. Plus `recent_days`, which
+`for_day`, `for_date`, `days_late`, `stale`, and `months` — a finished
+month does not go stale. Plus `recent_days`, which
 nothing draws and the restore reads back — it is the one thing here that
 cannot be recomputed from a source sensor holding a single day, so throwing
 it away while Octopus is quiet would cost the house its history at the next
