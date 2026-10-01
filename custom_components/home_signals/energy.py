@@ -119,6 +119,20 @@ def _reading(hass: HomeAssistant, entity_id: str | None) -> float | None:
     return _as_float(state.state)
 
 
+def _blocks_or_none(value: Any) -> list[float] | None:
+    """One figure per block, or nothing -- never a short or ragged list.
+
+    A list of the wrong length would add into the wrong blocks, which is
+    worse than leaving a month without them.
+    """
+    if not isinstance(value, list) or len(value) != len(BLOCK_NAMES):
+        return None
+    out = [_as_float(v) for v in value]
+    if any(v is None for v in out):
+        return None
+    return out  # type: ignore[return-value]
+
+
 def _day_label(day: date) -> str:
     """`Sat 19 Sep` -- the weekday and the date, both.
 
@@ -285,7 +299,13 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 and cost is not None
                 and kwh is not None
             ):
-                self._months[key] = {"cost": cost, "kwh": kwh, "days": days}
+                self._months[key] = {
+                    "cost": cost,
+                    "kwh": kwh,
+                    "days": days,
+                    "block_cost": _blocks_or_none(row.get("block_cost")),
+                    "block_kwh": _blocks_or_none(row.get("block_kwh")),
+                }
         # A first start on a version that had no months still has five weeks
         # of days to make them from.
         self._fold_months()
@@ -574,21 +594,44 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         already has -- which keeps it growing while it is current and frozen
         once its days start leaving.
         """
+        width = len(BLOCK_NAMES)
         tally: dict[str, dict[str, Any]] = {}
         for row in self._history:
             month = tally.setdefault(
-                row["day"][:7], {"cost": 0.0, "kwh": 0.0, "days": 0}
+                row["day"][:7],
+                {
+                    "cost": 0.0, "kwh": 0.0, "days": 0,
+                    "block_cost": [0.0] * width, "block_kwh": [0.0] * width,
+                    "block_days": 0,
+                },
             )
             month["cost"] += row["cost"]
             month["kwh"] += row["kwh"]
             month["days"] += 1
+            cost = _blocks_or_none(row.get("block_cost"))
+            kwh = _blocks_or_none(row.get("block_kwh"))
+            if cost is not None and kwh is not None:
+                for i in range(width):
+                    month["block_cost"][i] += cost[i]
+                    month["block_kwh"][i] += kwh[i]
+                month["block_days"] += 1
         for key, month in tally.items():
             kept = self._months.get(key)
             if kept is None or month["days"] >= kept["days"]:
+                # A month whose days all predate the blocks has none, rather
+                # than four zeroes -- an empty stack under a real total would
+                # read as a month that cost nothing at any time of day.
+                blocked = month["block_days"] > 0
                 self._months[key] = {
                     "cost": round(month["cost"], 2),
                     "kwh": round(month["kwh"], 3),
                     "days": month["days"],
+                    "block_cost": (
+                        [round(v, 2) for v in month["block_cost"]] if blocked else None
+                    ),
+                    "block_kwh": (
+                        [round(v, 3) for v in month["block_kwh"]] if blocked else None
+                    ),
                 }
         for key in sorted(self._months)[:-ENERGY_MONTHS]:
             del self._months[key]
@@ -635,12 +678,74 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                     cost=kept["cost"], kwh=kept["kwh"], days=days,
                     complete=complete, sub=" · ".join(parts),
                     value=money(kept["cost"]),
+                    # Kept on the row so the restore brings them back: the
+                    # days they were summed from are gone by then.
+                    block_cost=kept.get("block_cost"),
+                    block_kwh=kept.get("block_kwh"),
                 )
             rows.append(row)
             month -= 1
             if month == 0:
                 year, month = year - 1, 12
         return rows
+
+    def _month_blocks(self) -> list[dict[str, Any]]:
+        """The same twelve months, oldest first, shaped like `block_days`.
+
+        So the stacked chart that draws a week of days draws a year of
+        months without knowing the difference: a column per entry, its four
+        blocks, and the two totals under it.
+
+        A month with nothing recorded is still an entry, with no blocks, so
+        the chart keeps its place and labels it rather than closing the gap.
+        A month short of its days carries a `note` saying how many it has --
+        a part-month column is otherwise just a short bar, which reads as a
+        cheap month.
+
+        The totals are the blocks', not the bill's: the standing charge is
+        not used at any time of day, so it has no segment to sit in, and a
+        figure under a bar that disagrees with the bar's height is worse than
+        either alone. `months` carries the bill.
+        """
+        today = dt_util.now().date()
+        out: list[dict[str, Any]] = []
+        for row in reversed(self._month_rows()):
+            year, month = (int(part) for part in row["month"].split("-"))
+            entry: dict[str, Any] = {
+                "month": row["month"],
+                "label": _MONTH_NAMES[month - 1][:3],
+                "cost": [],
+                "kwh": [],
+                "total_cost": None,
+                "total_cost_text": None,
+                "total_kwh": None,
+                "note": None,
+            }
+            cost = row.get("block_cost")
+            kwh = row.get("block_kwh")
+            if row["days"] and cost and kwh:
+                total = round(sum(cost), 2)
+                entry.update(
+                    cost=list(cost),
+                    kwh=list(kwh),
+                    total_cost=total,
+                    # Whole pounds. Twelve columns leave no room for pence,
+                    # and nobody reads a month to the penny.
+                    total_cost_text=(
+                        f"£{total:,.0f}" if total >= 10 else money(total)
+                    ),
+                    total_kwh=round(sum(kwh)),
+                )
+            if row["days"] and not row["complete"]:
+                current = (year, month) == (today.year, today.month)
+                # Short, because two neighbouring columns can both carry one
+                # -- the month just gone and this one -- and at a year's
+                # spacing anything longer runs into the next.
+                entry["note"] = (
+                    "so far" if current else f"{row['days']}/{row['days_in_month']} days"
+                )
+            out.append(entry)
+        return out
 
     @callback
     def _recompute(self) -> None:
@@ -921,6 +1026,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             return {
                 "days_of_history": len(self._history),
                 "months": self._month_rows(),
+                "month_blocks": self._month_blocks(),
                 **self._today(),
             }
 
@@ -950,6 +1056,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 # finished month does not go stale: September's total is as
                 # true on Thursday as it was on Monday.
                 "months": self._month_rows(),
+                "month_blocks": self._month_blocks(),
                 # Today is not stale. It comes from a different meter and
                 # is the freshest thing here; only the comparison against
                 # the settled day goes, because that is made of it.
@@ -1083,6 +1190,9 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # Also what `_restore` reads back: a month outlives the five
             # weeks of days it was totalled from.
             "months": self._month_rows(),
+            # The months again, as stacked blocks for the chart. See
+            # `_month_blocks`.
+            "month_blocks": self._month_blocks(),
         }
 
         today = self._today()
