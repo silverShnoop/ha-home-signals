@@ -329,9 +329,10 @@ card is the difference between one Python function and a template per tile.
   of days it was made from.
 - **`month_blocks`** — the same twelve months, oldest first, shaped like
   `block_days` so the stacked time-of-day chart draws them: each month's
-  four blocks summed, the totals under the bar (blocks only, no standing
-  charge), and a `note` on a part-month. An empty month keeps its column
-  with no blocks.
+  four blocks summed under the month's standing charge, which is the first
+  segment, so the bar and the total under it are the bill; and a `note` on
+  a part-month. An empty month keeps its column with no blocks.
+  `month_block_names` names the stack, standing charge first.
 - **`cost_series`, `kwh_series`, `baseline_series`, `series_labels`** — plain
   arrays, oldest first, for a chart to read straight off.
 - **`baseline_norm`, `baseline_excess_pct`, `baseline_trend_pct`,
