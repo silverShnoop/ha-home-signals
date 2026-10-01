@@ -287,6 +287,11 @@ ENERGY_MIN_DAYS_FOR_AVERAGE = 3
 ENERGY_WEEK_DAYS = 7
 ENERGY_MONTH_DAYS = 30
 
+# Calendar months published for the month-by-month card, the current one
+# included. A year, so the same month last year is the bottom row once there
+# is one -- that is the comparison a bill is actually read against.
+ENERGY_MONTHS = 12
+
 # How many days the card's chart draws. Shorter than the history on purpose:
 # thirty-five bars across a card read from a doorway is a texture, not a
 # shape, and the history exists to be averaged rather than drawn.
