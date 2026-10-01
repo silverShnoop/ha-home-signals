@@ -339,6 +339,9 @@ DEFAULT_BASELINE_EXCESS_PCT = 40
 BLOCK_HOURS = 6
 BLOCK_NAMES = ("Overnight", "Morning", "Afternoon", "Evening")
 
+# The base of the month chart's stack: what is paid before anything is used.
+ENERGY_STANDING_NAME = "Standing"
+
 # How many days the split card draws. Seven rather than fourteen: each
 # column carries four segments and two lines of text under it, and a
 # fortnight of those is a texture rather than a week you can read.

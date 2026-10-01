@@ -1292,10 +1292,18 @@ async def test_a_month_column_is_its_days_blocks_added_up(
 
     september = m.attrs["month_blocks"][-1]
     day = m.attrs["block_days"][-1]
-    assert september["cost"] == pytest.approx([2 * v for v in day["cost"]], abs=0.02)
-    assert september["kwh"] == pytest.approx([2 * v for v in day["kwh"]], abs=0.002)
-    # The total is the bar's, not the bill's: no standing charge in it.
-    assert september["total_cost"] == pytest.approx(sum(september["cost"]), abs=0.01)
+    # The standing charge is the base of the stack, then the four blocks.
+    assert september["cost"][1:] == pytest.approx([2 * v for v in day["cost"]], abs=0.02)
+    assert september["kwh"][1:] == pytest.approx([2 * v for v in day["kwh"]], abs=0.002)
+    assert september["cost"][0] == pytest.approx(2 * STANDING, abs=0.02)
+    assert september["kwh"][0] == 0
+    # So the bar is the bill.
+    assert september["total_cost"] == pytest.approx(
+        sum(r["cost"] for r in m.attrs["recent_days"]), abs=0.01
+    )
+    assert m.attrs["month_block_names"] == [
+        "Standing", "Overnight", "Morning", "Afternoon", "Evening",
+    ]
     assert september["total_kwh"] == round(sum(SATURDAY) * 2)
     assert september["note"] == "so far"
 
