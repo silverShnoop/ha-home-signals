@@ -63,6 +63,7 @@ from .const import (
     ENERGY_MIN_DAYS_FOR_NORM,
     ENERGY_MONTH_DAYS,
     ENERGY_MONTHS,
+    ENERGY_STANDING_NAME,
     ENERGY_NORM_DAYS,
     ENERGY_SAME_PCT,
     ENERGY_SERIES_DAYS,
@@ -305,6 +306,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                     "days": days,
                     "block_cost": _blocks_or_none(row.get("block_cost")),
                     "block_kwh": _blocks_or_none(row.get("block_kwh")),
+                    "standing": _as_float(row.get("standing")),
                 }
         # A first start on a version that had no months still has five weeks
         # of days to make them from.
@@ -602,7 +604,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 {
                     "cost": 0.0, "kwh": 0.0, "days": 0,
                     "block_cost": [0.0] * width, "block_kwh": [0.0] * width,
-                    "block_days": 0,
+                    "block_days": 0, "standing": 0.0,
                 },
             )
             month["cost"] += row["cost"]
@@ -615,6 +617,12 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                     month["block_cost"][i] += cost[i]
                     month["block_kwh"][i] += kwh[i]
                 month["block_days"] += 1
+                # Whatever of the day's bill no block accounts for. That is
+                # the standing charge, and taking it as the remainder rather
+                # than from the tariff is what makes the stack add up to the
+                # bill exactly -- the pence the blocks lose to rounding land
+                # here instead of vanishing.
+                month["standing"] += max(0.0, row["cost"] - sum(cost))
         for key, month in tally.items():
             kept = self._months.get(key)
             if kept is None or month["days"] >= kept["days"]:
@@ -632,6 +640,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                     "block_kwh": (
                         [round(v, 3) for v in month["block_kwh"]] if blocked else None
                     ),
+                    "standing": round(month["standing"], 2) if blocked else None,
                 }
         for key in sorted(self._months)[:-ENERGY_MONTHS]:
             del self._months[key]
@@ -682,6 +691,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                     # days they were summed from are gone by then.
                     block_cost=kept.get("block_cost"),
                     block_kwh=kept.get("block_kwh"),
+                    standing=kept.get("standing"),
                 )
             rows.append(row)
             month -= 1
@@ -702,10 +712,10 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         a part-month column is otherwise just a short bar, which reads as a
         cheap month.
 
-        The totals are the blocks', not the bill's: the standing charge is
-        not used at any time of day, so it has no segment to sit in, and a
-        figure under a bar that disagrees with the bar's height is worse than
-        either alone. `months` carries the bill.
+        The standing charge is the first segment, at the base of the stack:
+        it is paid before anything is used, at no time of day, so it sits
+        under the four blocks rather than among them. With it there the bar
+        is the bill, and so is the figure under it. Its kWh is zero.
         """
         today = dt_util.now().date()
         out: list[dict[str, Any]] = []
@@ -724,10 +734,12 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             cost = row.get("block_cost")
             kwh = row.get("block_kwh")
             if row["days"] and cost and kwh:
+                cost = [row.get("standing") or 0.0, *cost]
+                kwh = [0.0, *kwh]
                 total = round(sum(cost), 2)
                 entry.update(
-                    cost=list(cost),
-                    kwh=list(kwh),
+                    cost=cost,
+                    kwh=kwh,
                     total_cost=total,
                     # Whole pounds. Twelve columns leave no room for pence,
                     # and nobody reads a month to the penny.
@@ -1027,6 +1039,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 "days_of_history": len(self._history),
                 "months": self._month_rows(),
                 "month_blocks": self._month_blocks(),
+                "month_block_names": [ENERGY_STANDING_NAME, *BLOCK_NAMES],
                 **self._today(),
             }
 
@@ -1057,6 +1070,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 # true on Thursday as it was on Monday.
                 "months": self._month_rows(),
                 "month_blocks": self._month_blocks(),
+                "month_block_names": [ENERGY_STANDING_NAME, *BLOCK_NAMES],
                 # Today is not stale. It comes from a different meter and
                 # is the freshest thing here; only the comparison against
                 # the settled day goes, because that is made of it.
@@ -1193,6 +1207,9 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # The months again, as stacked blocks for the chart. See
             # `_month_blocks`.
             "month_blocks": self._month_blocks(),
+            # The stack's names for the month chart: the standing charge at
+            # the base, then the day's blocks.
+            "month_block_names": [ENERGY_STANDING_NAME, *BLOCK_NAMES],
         }
 
         today = self._today()
