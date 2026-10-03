@@ -158,7 +158,7 @@ ATTR_SOURCE = "source"
 SOURCE_BUTTON = "button"
 SOURCE_UI = "ui"
 
-# The three levels a job can be at, and the only colours on the panel
+# The levels a job can be at, and the only colours on the panel
 # that mean the house is asking a person for something.
 #
 # Named rather than numbered because they are ORDERED, and because the
@@ -174,8 +174,21 @@ SOURCE_UI = "ui"
 #   WAITING    something is paused or degrading until a person acts.
 #   CRITICAL   damage or risk is accruing now.
 #
+# And one quieter than all three, which is not an alarm at all:
+#
+#   NOTICE     something you asked for is ready. Nothing gets worse
+#              while it waits; it is only waiting to be looked at.
+#
+# It exists for work the house did on somebody's behalf -- an AI task
+# reading a recipe off a page -- where the job is real (somebody has to
+# look at the answer) but has no timeline. It is blue, because blue is
+# the one hue not already promising a deadline.
+#
 # A thing that needs no doing at all takes no level. It is information,
-# it belongs on a card, and it is not a Needs-you row.
+# it belongs on a card, and it is not a Needs-you row. An AI task is
+# the one exception by decision: it is blue while it RUNS as well, so a
+# person can see from anywhere that the house is working for them.
+LEVEL_NOTICE = "notice"
 LEVEL_ATTENTION = "attention"
 LEVEL_WAITING = "waiting"
 LEVEL_CRITICAL = "critical"
@@ -187,6 +200,7 @@ TABS = ("cleaning", "security", "lists", "maintenance", "kitchen")
 # How loud each level is, for picking the worst in a list. Ordered by
 # what the level means, never by anything incidental about its name.
 LEVEL_LOUDNESS = {
+    LEVEL_NOTICE: 0,
     LEVEL_ATTENTION: 1,
     LEVEL_WAITING: 2,
     LEVEL_CRITICAL: 3,
@@ -224,6 +238,25 @@ ATTR_URL = "url"
 ATTR_SOURCE = "source"
 ATTR_AI = "ai"
 ATTR_SECTIONS = "sections"
+
+# --- AI tasks --------------------------------------------------------
+#
+# Slow work a card asked for, run here so it outlives the sheet that
+# started it. See ai_tasks.py.
+SERVICE_START_AI_TASK = "start_ai_task"
+SERVICE_AI_TASK_RESULT = "ai_task_result"
+ATTR_TASK_ID = "task_id"
+ATTR_TITLE = "title"
+ATTR_ACTION = "action"
+ATTR_DATA = "data"
+ATTR_CARD = "card"
+ATTR_TAB = "tab"
+ATTR_LABEL = "label"
+ATTR_THEN = "then"
+ATTR_PASS = "pass"
+ATTR_UNLESS = "unless"
+ATTR_OPEN = "open"
+ATTR_KIND = "kind"
 
 # --- Photos ------------------------------------------------------------
 #
