@@ -156,7 +156,7 @@ that memory lives. Dismissals survive a restart, and they are keyed to the
 **occurrence**: dismissing `bin_2026-09-16` clears tonight's bins and lets
 next week's come back.
 
-## The three levels
+## The levels
 
 A card may state any fact it likes. But a **level** is a promise that
 something wants doing, and on this panel the thing that wants doing lives
@@ -167,6 +167,12 @@ in `Needs you` and nowhere else.
 | `attention` | needs doing today or tomorrow. Real, but it keeps. |
 | `waiting` | something is paused or degrading until a person acts. |
 | `critical` | damage or risk is accruing now. |
+| `notice` | something you asked for is under way or has landed. Nothing gets worse while it waits. |
+
+`notice` is the quietest, and the only one that promises no deadline. It
+exists for work the house did on somebody's behalf — an AI task reading a
+recipe off a page — where somebody still has to look at the answer. It is
+blue. See [AI tasks](#sensorai_tasks).
 
 The name is the test a new row has to pass. Before there were three, ten
 of the twelve rows were the same "warning" whatever they meant, and the
@@ -220,6 +226,7 @@ publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
 | Batteries | `sensor.batteries_status` |
 | Devices | `sensor.devices` |
 | Meals (prep) | the meal prep sensor |
+| Whichever card started an AI task | `sensor.ai_tasks`, by its `cards` map |
 
 The card's outline reads its sensor's `level`. `sensor.needs_you` collects
 every card's `jobs` and works out no level of its own; it publishes
@@ -245,6 +252,71 @@ night that had already happened, with no action beyond Dismiss — which is
 the one thing a row may not be: it did not need doing. The figures are
 still published on `sensor.energy_day`, where the Electricity card reads
 them and always did. What left is the claim that they were a job.
+
+## `sensor.ai_tasks`
+
+Reading a recipe off a page takes a model the best part of a minute, and
+splitting it into what can be done ahead takes another. The card used to
+wait for both inside a sheet that said "Reading the page…" and nothing
+else: close the sheet and the answer arrived to nobody, and nobody could
+tell whether anything was happening at all.
+
+So the card hands the work over with `home_signals.start_ai_task`, which
+answers at once with a `task_id` and runs the action in the background:
+
+```yaml
+action: home_signals.start_ai_task
+data:
+  title: Recipe from a link
+  action: script.recipe_import       # anything that answers with a response
+  data: {url: "https://…"}
+  card: meals                        # which card started it
+  tab: kitchen                       # whose rail button it colours
+  label: recipe                      # the answer key that names what came back
+  open: true                         # the card can show the answer again (default)
+  kind: import                       # what the answer is, for the card that opens it
+  then:                              # optional: a second action, fed from the first
+    action: script.recipe_split
+    pass: {recipe: slug}             # its field <- the first answer's key
+    unless: already                  # skip it when the first answer says this
+```
+
+**Running is already blue.** The sensor's state is `running`, and the card,
+the tab and a row — "Recipe from a link · Running · step 1 of 2" — wear
+`notice` from the moment it starts, so it can be seen from anywhere that the
+house is working on something you asked for. The row has Dismiss, which
+quietens it while it runs; when it lands that is news again, and it comes
+back as Done or Failed.
+
+**Finished is a `notice`, on all three, for two minutes.** The card
+(`cards: {meals: notice}`), the tab (`tab_kitchen` on Needs you) and a row —
+"Recipe from a link · Done · Chicken pie". Two minutes after it lands, all
+three go back to how they were on their own; a notice is news, not a chore.
+Needs you sorts its rows loudest first — critical, waiting, attention,
+notice — so blue is always at the bottom.
+
+The row has two buttons. **Dismiss** (`secondary_action`) clears all three
+at once. **Open** is there only when the answer can be shown again —
+`open: true` when the task was started, and a card to show it on. It is not
+a service: it carries `open_task`, `card` and `tab`, and the panel switches
+to that tab and the card opens the answer, which it reads with
+`home_signals.ai_task_result`. Opening it clears all three too. A task with
+nothing to open has Dismiss alone, as its main button. `kind` says what the
+answer is, for the card that opens it.
+
+**Every finished task says which way it went** — `Done` or `Failed` at the
+start of the row's detail, a tick or an alert for its icon, and `outcome:
+success | failure` for anything reading the row. A failure is a notice
+too: something you asked for did not happen, and only the person who asked
+can try again. It has nothing to open, so it has Dismiss alone, and the
+reason is in the row. If the first action answered and only the second
+failed, the task is done, and says so — the recipe is in the box, just not
+split.
+
+Answers are kept in storage, not in the state, for their two minutes, and
+the recorder never holds a whole recipe. A task still running at a restart
+comes back failed and says why: the call it was waiting on died with the
+old instance.
 
 ## Where `sensor.system_health` went
 
