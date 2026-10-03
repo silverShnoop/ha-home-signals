@@ -275,6 +275,8 @@ data:
   label: recipe                      # the answer key that names what came back
   open: true                         # the card can show the answer again (default)
   kind: import                       # what the answer is, for the card that opens it
+  require: slug                      # the answer must have this, or it is Failed
+  missing: No recipe found on that page   # ...and this is what the row then says
   then:                              # optional: a second action, fed from the first
     action: script.recipe_split
     pass: {recipe: slug}             # its field <- the first answer's key
@@ -309,7 +311,11 @@ start of the row's detail, a tick or an alert for its icon, and `outcome:
 success | failure` for anything reading the row. A failure is a notice
 too: something you asked for did not happen, and only the person who asked
 can try again. It has nothing to open, so it has Dismiss alone, and the
-reason is in the row. If the first action answered and only the second
+reason is in the row. Failing is not only raising: an answer that carries its
+own `error`, or that lacks the `require` key (a photo with no recipe on it
+answers with an empty name), found nothing, and is Failed too, saying
+`missing`. A second step that answers with an error or `mode: error` leaves
+the task Done, and says the second step did not finish. If the first action answered and only the second
 failed, the task is done, and says so — the recipe is in the box, just not
 split.
 

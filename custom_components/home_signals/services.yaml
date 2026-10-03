@@ -452,6 +452,20 @@ start_ai_task:
       example: recipe
       selector:
         text:
+    require:
+      name: Required answer
+      description: >-
+        The answer's key that must be there for it to have worked. Without
+        it, the task is Failed.
+      example: name
+      selector:
+        text:
+    missing:
+      name: When it is missing
+      description: What the Failed row says when the required answer is not there.
+      example: No recipe found in the photo
+      selector:
+        text:
 
 ai_task_result:
   name: AI task result

@@ -257,6 +257,8 @@ ATTR_PASS = "pass"
 ATTR_UNLESS = "unless"
 ATTR_OPEN = "open"
 ATTR_KIND = "kind"
+ATTR_REQUIRE = "require"
+ATTR_MISSING = "missing"
 
 # --- Photos ------------------------------------------------------------
 #
