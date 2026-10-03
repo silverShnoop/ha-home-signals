@@ -167,7 +167,7 @@ in `Needs you` and nowhere else.
 | `attention` | needs doing today or tomorrow. Real, but it keeps. |
 | `waiting` | something is paused or degrading until a person acts. |
 | `critical` | damage or risk is accruing now. |
-| `notice` | something you asked for is ready. Nothing gets worse while it waits. |
+| `notice` | something you asked for is under way or has landed. Nothing gets worse while it waits. |
 
 `notice` is the quietest, and the only one that promises no deadline. It
 exists for work the house did on somebody's behalf — an AI task reading a
@@ -281,9 +281,12 @@ data:
     unless: already                  # skip it when the first answer says this
 ```
 
-**Running is a fact.** The sensor's state is `running`, the task is listed
-in `tasks`, and the card that started it says so. There is no row and no
-colour: nothing needs doing yet.
+**Running is already blue.** The sensor's state is `running`, and the card,
+the tab and a row — "Recipe from a link · Running · step 1 of 2" — wear
+`notice` from the moment it starts, so it can be seen from anywhere that the
+house is working on something you asked for. The row has Dismiss, which
+quietens it while it runs; when it lands that is news again, and it comes
+back as Done or Failed.
 
 **Finished is a `notice`, on all three, for two minutes.** The card
 (`cards: {meals: notice}`), the tab (`tab_kitchen` on Needs you) and a row —

@@ -6,12 +6,13 @@ to wait for both inside a sheet that said "Reading the page..." and nothing
 else: close the sheet, or walk away from the panel, and the answer arrived
 to nobody. Nobody could tell whether anything was happening at all.
 
-So the card hands the work over and this runs it. While it runs it is a
-FACT -- a line on the card that started it, and no row anywhere: nothing
-needs doing yet. When it finishes it becomes a job, at the one level that
+So the card hands the work over and this runs it, at the one level that
 promises no deadline:
 
-    notice   something you asked for is ready to look at
+    notice   something you asked for is under way, or has landed
+
+Running, it is blue with a "Running" row, so a person can see from anywhere
+that the house is working on it. Landed, it says Done or Failed.
 
 and, like every level, it is all three or none: the card (by its `card`
 key in `cards`), its tab's rail button and a `Needs you` row. It is the
@@ -324,8 +325,10 @@ class AiTasksSensor(SensorEntity):
             task["state"] = DONE
             task["partial"] = True
         task["finished"] = dt_util.utcnow().isoformat()
+        # Landing is news, even for a task quietened while it ran.
+        task.pop("quiet", None)
         if self._find(task["id"]) is None:
-            # Dismissed while it ran: somebody has already moved on.
+            # Gone while it ran (pruned past the cap): nobody to tell.
             return
         self._results[task["id"]] = {"result": result, "then": then_result}
         await self._save()
@@ -354,7 +357,17 @@ class AiTasksSensor(SensorEntity):
 
     @callback
     def dismiss(self, item_id: str) -> None:
-        """Done: the answer has been seen. Card, tab and row clear together."""
+        """Dismiss: card, tab and row clear together.
+
+        A task still running is only quietened -- the work goes on, and
+        when it lands that is news again, so it comes back as Done or
+        Failed. A finished one is gone.
+        """
+        task = self._find(item_id)
+        if task is not None and task["state"] == RUNNING:
+            task["quiet"] = True
+            self.async_write_ha_state()
+            return
         self._tasks = [t for t in self._tasks if t["id"] != item_id]
         self._results.pop(item_id, None)
         self.hass.async_create_task(self._save())
@@ -364,15 +377,36 @@ class AiTasksSensor(SensorEntity):
     def needs_you_rows(self) -> list[dict[str, Any]]:
         rows = []
         for task in self._tasks:
-            if task["state"] == RUNNING:
-                continue
-            # Every finished task says which way it went, in words and in
-            # its icon, before anything else: "Done" or "Failed".
-            ok = task["state"] == DONE
             dismiss = {
                 "service": f"{DOMAIN}.{SERVICE_DISMISS}",
                 "data": {"item_id": task["id"]},
             }
+            if task["state"] == RUNNING:
+                # Running is blue too: something you asked for is under way,
+                # and the house says so everywhere a finished one would be.
+                if task.get("quiet"):
+                    continue
+                step = (
+                    f" \u00b7 step {task.get('step', 1)} of {task['steps']}"
+                    if task.get("steps", 1) > 1 else ""
+                )
+                rows.append({
+                    "id": task["id"],
+                    "title": task["title"],
+                    "detail": f"Running{step}",
+                    "outcome": "running",
+                    "icon": "mdi:progress-clock",
+                    "level": LEVEL_NOTICE,
+                    "tab": task["tab"],
+                    "card": task["card"],
+                    "expires": None,
+                    "action_label": "Dismiss",
+                    "action": dismiss,
+                })
+                continue
+            # Every finished task says which way it went, in words and in
+            # its icon, before anything else: "Done" or "Failed".
+            ok = task["state"] == DONE
             if ok:
                 detail = f"Done \u00b7 {task['label']}" if task.get("label") else "Done"
                 if task.get("partial"):
@@ -448,7 +482,7 @@ class AiTasksSensor(SensorEntity):
             "tasks": [
                 {k: t.get(k) for k in (
                     "id", "title", "card", "tab", "state", "started",
-                    "finished", "step", "steps", "label", "error", "partial", "open", "kind",
+                    "finished", "step", "steps", "label", "error", "partial", "open", "kind", "quiet",
                 )} | {"expires": self._expires(t)}
                 for t in self._tasks
             ],

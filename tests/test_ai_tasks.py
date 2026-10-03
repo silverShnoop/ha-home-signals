@@ -88,7 +88,7 @@ async def _start(hass: HomeAssistant, url: str = "https://x") -> str:
     return out["task_id"]
 
 
-async def test_running_is_a_fact_not_a_job(hass: HomeAssistant) -> None:
+async def test_running_is_blue_on_all_three(hass: HomeAssistant) -> None:
     release = await _setup(hass)
     task_id = await _start(hass)
     await hass.async_block_till_done(wait_background_tasks=False)
@@ -96,14 +96,34 @@ async def test_running_is_a_fact_not_a_job(hass: HomeAssistant) -> None:
     state = hass.states.get(TASKS)
     assert state.state == "running"
     assert state.attributes["running"] == 1
-    assert state.attributes["tasks"][0]["id"] == task_id
-    assert state.attributes["cards"] == {}, "a running task coloured its card"
+    assert state.attributes["cards"] == {"meals": LEVEL_NOTICE}
     needs = hass.states.get(NEEDS).attributes
-    assert needs["items"] == [], "a running task raised a row"
-    assert needs["tab_kitchen"] is None, "a running task coloured the rail"
+    assert needs["tab_kitchen"] == LEVEL_NOTICE
+    [row] = [r for r in needs["items"] if r["id"] == task_id]
+    assert row["level"] == LEVEL_NOTICE
+    assert row["outcome"] == "running"
+    assert row["detail"] == "Running · step 1 of 2"
+    assert row["action_label"] == "Dismiss"
 
     release.set()
     await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def test_dismissing_a_running_task_quietens_it_until_it_lands(hass: HomeAssistant) -> None:
+    release = await _setup(hass)
+    task_id = await _start(hass)
+    await hass.async_block_till_done(wait_background_tasks=False)
+
+    await hass.services.async_call(DOMAIN, "dismiss", {"item_id": task_id}, blocking=True)
+    needs = hass.states.get(NEEDS).attributes
+    assert not [r for r in needs["items"] if r["id"] == task_id]
+    assert needs["tab_kitchen"] is None
+    assert hass.states.get(TASKS).attributes["cards"] == {}
+
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    [row] = [r for r in hass.states.get(NEEDS).attributes["items"] if r["id"] == task_id]
+    assert row["outcome"] == "success", "landing was not news again"
 
 
 async def test_finished_is_a_notice_on_all_three(hass: HomeAssistant) -> None:

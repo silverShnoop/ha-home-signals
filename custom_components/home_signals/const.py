@@ -185,8 +185,9 @@ SOURCE_UI = "ui"
 # the one hue not already promising a deadline.
 #
 # A thing that needs no doing at all takes no level. It is information,
-# it belongs on a card, and it is not a Needs-you row. A task that is
-# still RUNNING is exactly that: a fact on its card, never a row.
+# it belongs on a card, and it is not a Needs-you row. An AI task is
+# the one exception by decision: it is blue while it RUNS as well, so a
+# person can see from anywhere that the house is working for them.
 LEVEL_NOTICE = "notice"
 LEVEL_ATTENTION = "attention"
 LEVEL_WAITING = "waiting"
