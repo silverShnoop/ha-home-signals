@@ -298,6 +298,14 @@
         "then": {
           "name": "Then",
           "description": "A second action fed from the first one's answer: action, data, pass (field <- answer key) and unless (an answer key that skips it)."
+        },
+        "open": {
+          "name": "Can be opened",
+          "description": "Whether the card can show the answer again. False gives the row only Dismiss."
+        },
+        "kind": {
+          "name": "Kind",
+          "description": "What sort of answer it is, for the card that opens it."
         }
       }
     },

@@ -273,6 +273,8 @@ data:
   card: meals                        # which card started it
   tab: kitchen                       # whose rail button it colours
   label: recipe                      # the answer key that names what came back
+  open: true                         # the card can show the answer again (default)
+  kind: import                       # what the answer is, for the card that opens it
   then:                              # optional: a second action, fed from the first
     action: script.recipe_split
     pass: {recipe: slug}             # its field <- the first answer's key
@@ -283,28 +285,35 @@ data:
 in `tasks`, and the card that started it says so. There is no row and no
 colour: nothing needs doing yet.
 
-**Finished is a `notice`, on all three.** The card (`cards: {meals:
-notice}`), the tab (`tab_kitchen` on Needs you) and a row — "Recipe from a
-link · Done · Chicken pie", with **Open**. The row's action is not a
-service: it carries `open_task`, `card` and `tab`, and the panel switches
+**Finished is a `notice`, on all three, for two minutes.** The card
+(`cards: {meals: notice}`), the tab (`tab_kitchen` on Needs you) and a row —
+"Recipe from a link · Done · Chicken pie". Two minutes after it lands, all
+three go back to how they were on their own; a notice is news, not a chore.
+Needs you sorts its rows loudest first — critical, waiting, attention,
+notice — so blue is always at the bottom.
+
+The row has two buttons. **Dismiss** (`secondary_action`) clears all three
+at once. **Open** is there only when the answer can be shown again —
+`open: true` when the task was started, and a card to show it on. It is not
+a service: it carries `open_task`, `card` and `tab`, and the panel switches
 to that tab and the card opens the answer, which it reads with
-`home_signals.ai_task_result`. Opening it, or Done, is `dismiss`, and all
-three clear together. Snooze hides the row and leaves the card and tab
-blue, as everywhere else.
+`home_signals.ai_task_result`. Opening it clears all three too. A task with
+nothing to open has Dismiss alone, as its main button. `kind` says what the
+answer is, for the card that opens it.
 
 **Every finished task says which way it went** — `Done` or `Failed` at the
 start of the row's detail, a tick or an alert for its icon, and `outcome:
 success | failure` for anything reading the row. A failure is a notice
 too: something you asked for did not happen, and only the person who asked
-can try again. Opening it says what went wrong. If the first action
-answered and only the second failed, the task is done, and says so — the
-recipe is in the box, just not split.
+can try again. It has nothing to open, so it has Dismiss alone, and the
+reason is in the row. If the first action answered and only the second
+failed, the task is done, and says so — the recipe is in the box, just not
+split.
 
-Answers are kept in storage, not in the state, so a restart does not lose
-one nobody has opened, and the recorder never holds a whole recipe. A task
-still running at a restart comes back failed and says why: the call it
-was waiting on died with the old instance. Unopened answers go after a
-week, and never more than twelve are kept.
+Answers are kept in storage, not in the state, for their two minutes, and
+the recorder never holds a whole recipe. A task still running at a restart
+comes back failed and says why: the call it was waiting on died with the
+old instance.
 
 ## Where `sensor.system_health` went
 

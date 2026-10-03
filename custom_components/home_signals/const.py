@@ -255,6 +255,7 @@ ATTR_THEN = "then"
 ATTR_PASS = "pass"
 ATTR_UNLESS = "unless"
 ATTR_OPEN = "open"
+ATTR_KIND = "kind"
 
 # --- Photos ------------------------------------------------------------
 #

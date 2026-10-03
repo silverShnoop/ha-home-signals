@@ -438,6 +438,20 @@ start_ai_task:
         pass (field <- answer key) and unless (an answer key that skips it).
       selector:
         object:
+    open:
+      name: Can be opened
+      description: >-
+        Whether the card can show the answer again. False gives the row only
+        Dismiss.
+      default: true
+      selector:
+        boolean:
+    kind:
+      name: Kind
+      description: What sort of answer it is, for the card that opens it.
+      example: recipe
+      selector:
+        text:
 
 ai_task_result:
   name: AI task result

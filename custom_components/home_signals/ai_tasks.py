@@ -67,6 +67,7 @@ from .const import (
     ATTR_ACTION,
     ATTR_CARD,
     ATTR_DATA,
+    ATTR_KIND,
     ATTR_LABEL,
     ATTR_OPEN,
     ATTR_PASS,
@@ -126,6 +127,9 @@ START_SCHEMA = vol.Schema({
     # Whether the card can show the answer. A task with nothing to show
     # -- a plan written straight onto the week -- gets Dismiss and no Open.
     vol.Optional(ATTR_OPEN, default=True): cv.boolean,
+    # What sort of answer this is, for the card that opens it: a saved
+    # recipe, an unsaved draft, a split. Opaque here; the card branches on it.
+    vol.Optional(ATTR_KIND, default=""): cv.string,
 })
 
 RESULT_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): cv.string})
@@ -266,6 +270,7 @@ class AiTasksSensor(SensorEntity):
             "label": None,
             "error": None,
             "open": bool(data.get(ATTR_OPEN, True)),
+            "kind": data.get(ATTR_KIND) or "",
         }
         self._tasks.append(task)
         self._prune()
@@ -443,7 +448,7 @@ class AiTasksSensor(SensorEntity):
             "tasks": [
                 {k: t.get(k) for k in (
                     "id", "title", "card", "tab", "state", "started",
-                    "finished", "step", "steps", "label", "error", "partial", "open",
+                    "finished", "step", "steps", "label", "error", "partial", "open", "kind",
                 )} | {"expires": self._expires(t)}
                 for t in self._tasks
             ],
