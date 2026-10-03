@@ -47,6 +47,10 @@ async def _setup(hass: HomeAssistant) -> asyncio.Event:
         await release.wait()
         if call.data.get("url") == "bad":
             raise ValueError("No recipe on that page")
+        if call.data.get("url") == "empty":
+            return {"recipe": "", "slug": ""}
+        if call.data.get("url") == "refused":
+            return {"error": "That page wants a login"}
         return {"recipe": "Chicken pie", "slug": "chicken-pie",
                 "already": call.data.get("url") == "again"}
 
@@ -319,3 +323,57 @@ async def test_needs_you_is_loudest_first(hass: HomeAssistant) -> None:
     needs._recompute()  # noqa: SLF001
     order = [i["id"] for i in needs.extra_state_attributes["items"]]
     assert order == ["r", "o", "y1", "y2", "b"]
+
+
+async def _row_for(hass: HomeAssistant, url: str, **extra: Any) -> dict[str, Any]:
+    release = await _setup(hass)
+    out = await hass.services.async_call(
+        DOMAIN, "start_ai_task",
+        {"title": "Recipe from a link", "action": "script.recipe_import",
+         "data": {"url": url}, "card": "recipes", **extra},
+        blocking=True, return_response=True,
+    )
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    [row] = [r for r in hass.states.get(NEEDS).attributes["items"] if r["id"] == out["task_id"]]
+    return row
+
+
+async def test_an_answer_without_what_was_asked_for_is_a_failure(hass: HomeAssistant) -> None:
+    """A model that finds no recipe answers cleanly, with an empty name.
+
+    That is not Done: the card says no recipe could be read, so the row
+    must say Failed too, with the caller's reason.
+    """
+    row = await _row_for(hass, "empty", require="slug", missing="No recipe found on that page")
+    assert row["outcome"] == "failure"
+    assert row["detail"] == "Failed \u00b7 No recipe found on that page"
+    assert row["action_label"] == "Dismiss"
+
+
+async def test_without_require_an_empty_answer_still_counts(hass: HomeAssistant) -> None:
+    row = await _row_for(hass, "empty")
+    assert row["outcome"] == "success"
+
+
+async def test_an_answer_that_carries_its_own_error_is_a_failure(hass: HomeAssistant) -> None:
+    row = await _row_for(hass, "refused")
+    assert row["outcome"] == "failure"
+    assert row["detail"] == "Failed \u00b7 That page wants a login"
+
+
+async def test_a_second_step_that_answers_with_an_error_is_partial(hass: HomeAssistant) -> None:
+    release = await _setup(hass)
+
+    async def _split_error(call: ServiceCall) -> dict[str, Any]:
+        return {"mode": "error", "skipped": True}
+
+    hass.services.async_register(
+        "script", "recipe_split", _split_error, supports_response=SupportsResponse.ONLY
+    )
+    task_id = await _start(hass)
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    [row] = [r for r in hass.states.get(NEEDS).attributes["items"] if r["id"] == task_id]
+    assert row["outcome"] == "success"
+    assert row["detail"].endswith("the second step did not finish")
