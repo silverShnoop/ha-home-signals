@@ -9,17 +9,24 @@ row in Needs you -- and Done on the row has to clear every one of them.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.home_signals.const import (
     DOMAIN,
     LEVEL_ATTENTION,
+    LEVEL_CRITICAL,
     LEVEL_NOTICE,
+    LEVEL_WAITING,
 )
-from custom_components.home_signals.derived import loudest
+from custom_components.home_signals.derived import NeedsYouSensor, loudest
 
 TASKS = "sensor.ai_tasks"
 NEEDS = "sensor.needs_you"
@@ -114,7 +121,13 @@ async def test_finished_is_a_notice_on_all_three(hass: HomeAssistant) -> None:
     assert row["level"] == LEVEL_NOTICE
     assert row["detail"] == "Done · Chicken pie"
     assert row["outcome"] == "success"
+    # Two buttons: Open shows the answer, Dismiss clears it everywhere.
+    assert row["action_label"] == "Open"
     assert row["action"] == {"open_task": task_id, "card": "meals", "tab": "kitchen"}
+    assert row["secondary_label"] == "Dismiss"
+    assert row["secondary_action"] == {
+        "service": f"{DOMAIN}.dismiss", "data": {"item_id": task_id},
+    }
 
     # The split ran, fed the import's slug.
     assert hass.data["ai_calls"][-1] == ("split", {"recipe": "chicken-pie"})
@@ -191,7 +204,7 @@ async def test_an_already_saved_recipe_is_not_split_again(hass: HomeAssistant) -
     assert got["then"] is None
 
 
-async def test_a_failure_says_so_and_opens_to_say_why(hass: HomeAssistant) -> None:
+async def test_a_failure_says_why_and_has_only_dismiss(hass: HomeAssistant) -> None:
     release = await _setup(hass)
     task_id = await _start(hass, "bad")
     release.set()
@@ -202,7 +215,10 @@ async def test_a_failure_says_so_and_opens_to_say_why(hass: HomeAssistant) -> No
     assert row["level"] == LEVEL_NOTICE
     assert row["detail"] == "Failed · No recipe on that page"
     assert row["outcome"] == "failure"
-    assert row["action"] == {"open_task": task_id, "card": "meals", "tab": "kitchen"}
+    # Nothing to open: the reason is in the row.
+    assert row["action_label"] == "Dismiss"
+    assert row["action"]["service"] == f"{DOMAIN}.dismiss"
+    assert "secondary_action" not in row
     got = await hass.services.async_call(
         DOMAIN, "ai_task_result", {"task_id": task_id},
         blocking=True, return_response=True,
@@ -215,3 +231,71 @@ async def test_a_failure_says_so_and_opens_to_say_why(hass: HomeAssistant) -> No
 def test_notice_is_the_quietest_level() -> None:
     assert loudest([LEVEL_NOTICE, LEVEL_ATTENTION]) == LEVEL_ATTENTION
     assert loudest([None, LEVEL_NOTICE]) == LEVEL_NOTICE
+
+
+async def test_two_minutes_later_everything_resets(hass: HomeAssistant) -> None:
+    release = await _setup(hass)
+    task_id = await _start(hass)
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(NEEDS).attributes["tab_kitchen"] == LEVEL_NOTICE
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=90))
+    await hass.async_block_till_done()
+    assert hass.states.get(TASKS).attributes["cards"] == {"meals": LEVEL_NOTICE}, (
+        "it went before its two minutes were up"
+    )
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=2, seconds=5))
+    await hass.async_block_till_done()
+    state = hass.states.get(TASKS)
+    assert state.state == "clear"
+    assert state.attributes["cards"] == {}
+    needs = hass.states.get(NEEDS).attributes
+    assert needs["tab_kitchen"] is None
+    assert not [r for r in needs["items"] if r["id"] == task_id]
+
+
+async def test_a_task_with_nothing_to_show_gets_only_dismiss(hass: HomeAssistant) -> None:
+    release = await _setup(hass)
+    await hass.services.async_call(
+        DOMAIN, "start_ai_task",
+        {"title": "Plan the week", "action": "script.recipe_import",
+         "data": {"url": "x"}, "card": "meals", "open": False},
+        blocking=True, return_response=True,
+    )
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    [row] = hass.states.get(NEEDS).attributes["items"]
+    assert row["action_label"] == "Dismiss"
+    assert "secondary_action" not in row
+
+
+async def test_needs_you_is_loudest_first(hass: HomeAssistant) -> None:
+    """Red, orange, yellow, blue -- whatever order the cards came in."""
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    needs = NeedsYouSensor(entry)
+    needs.hass = hass
+    needs.entity_id = NEEDS
+
+    class _Owner:
+        tab = "kitchen"
+        owner_level = None
+
+        def __init__(self, rows: list[dict[str, Any]]) -> None:
+            self._rows = rows
+
+        def needs_you_rows(self) -> list[dict[str, Any]]:
+            return list(self._rows)
+
+    needs.owners = [_Owner([
+        {"id": "b", "level": LEVEL_NOTICE},
+        {"id": "y1", "level": LEVEL_ATTENTION},
+        {"id": "r", "level": LEVEL_CRITICAL},
+        {"id": "o", "level": LEVEL_WAITING},
+        {"id": "y2", "level": LEVEL_ATTENTION},
+    ])]
+    needs._recompute()  # noqa: SLF001
+    order = [i["id"] for i in needs.extra_state_attributes["items"]]
+    assert order == ["r", "o", "y1", "y2", "b"]

@@ -1207,6 +1207,9 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             c for c in candidates
             if not self._hides(c)
         ]
+        # Loudest first: red, orange, yellow, blue. Stable, so rows at one
+        # level keep the order their cards gave them.
+        self._items.sort(key=lambda c: -LEVEL_LOUDNESS.get(c.get("level"), -1))
 
         # The rail button's level: the loudest card on each tab. Taken from
         # the cards' own levels, not from these rows, so a snoozed row goes

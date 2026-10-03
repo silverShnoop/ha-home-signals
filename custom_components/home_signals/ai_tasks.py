@@ -14,23 +14,26 @@ promises no deadline:
     notice   something you asked for is ready to look at
 
 and, like every level, it is all three or none: the card (by its `card`
-key in `cards`), its tab's rail button and a `Needs you` row. Opening the
-result on the card, or Done on the row, clears all three together, through
-`dismiss` -- this sensor owns the row, so Needs you hands the dismissal
-here.
+key in `cards`), its tab's rail button and a `Needs you` row. It is the
+quietest level, so it sorts below every other row.
+
+It is news for two minutes, then all three go back to how they were on
+their own. Before that, the row has two buttons: Dismiss, which clears all
+three at once, and Open -- when there is an answer to show and a card to
+show it -- which opens it on that card and clears it the same way. This
+sensor owns the row, so Needs you hands the dismissal here.
 
 Every finished task says which way it went -- `Done` or `Failed`, in the
-row's words, its icon and its `outcome` -- and a failure is a notice too.
-Something you asked for did not happen, and the only person who can try
-again is the one who asked. Opened, it says what went wrong.
+row's words, its icon and its `outcome` -- and a failure is a notice too:
+the reason is in the row, and it has only Dismiss.
 
 The work itself is any action that answers -- a script that calls
 `ai_task.generate_data` and stops with a response, usually. A second
 action can follow it (`then`), fed from the first one's answer, so an
 import and its split are one task rather than two a person has to chain.
 
-Finished tasks, and their answers, are kept in storage, so a restart does
-not lose a recipe somebody has not looked at yet. A task still running at
+Finished tasks, and their answers, are kept in storage for their two
+minutes, so a restart in that window does not lose one. A task still running at
 a restart cannot be resumed -- the call it was waiting on died with the
 old instance -- so it comes back failed, and says why.
 """
@@ -38,7 +41,7 @@ old instance -- so it comes back failed, and says why.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 import uuid
@@ -56,6 +59,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -64,6 +68,7 @@ from .const import (
     ATTR_CARD,
     ATTR_DATA,
     ATTR_LABEL,
+    ATTR_OPEN,
     ATTR_PASS,
     ATTR_TAB,
     ATTR_TASK_ID,
@@ -74,6 +79,7 @@ from .const import (
     DOMAIN,
     LEVEL_NOTICE,
     SERVICE_AI_TASK_RESULT,
+    SERVICE_DISMISS,
     SERVICE_START_AI_TASK,
     TABS,
 )
@@ -86,10 +92,11 @@ RUNNING = "running"
 DONE = "done"
 FAILED = "failed"
 
-# Kept for as long as nobody has looked, but not for ever: an answer nobody
-# opened in a week is not going to be, and a row that never leaves is a
-# row that stops being read.
-KEEP_FOR = timedelta(days=7)
+# A finished task is news for two minutes, then it is history: the card,
+# the tab and the row all go back to how they were. It is a notice, not a
+# chore -- the recipe is in the box either way, and a blue row that sits
+# there all afternoon is a blue that stops being read.
+KEEP_FOR = timedelta(minutes=2)
 # And never more than this many, however busy the kitchen has been.
 KEEP_MAX = 12
 
@@ -116,6 +123,9 @@ START_SCHEMA = vol.Schema({
     # the key in the answer that names what came back, for the row
     vol.Optional(ATTR_LABEL): cv.string,
     vol.Optional(ATTR_THEN): THEN_SCHEMA,
+    # Whether the card can show the answer. A task with nothing to show
+    # -- a plan written straight onto the week -- gets Dismiss and no Open.
+    vol.Optional(ATTR_OPEN, default=True): cv.boolean,
 })
 
 RESULT_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): cv.string})
@@ -150,6 +160,7 @@ class AiTasksSensor(SensorEntity):
         # recipe, and the recorder has no business keeping that.
         self._results: dict[str, dict[str, Any]] = {}
         self._listeners: list[Any] = []
+        self._unexpire: Any = None
 
     # --- plumbing -----------------------------------------------------
 
@@ -178,14 +189,42 @@ class AiTasksSensor(SensorEntity):
                 changed = True
         if self._prune() or changed:
             await self._save()
+        self.async_on_remove(self._cancel_expiry)
+        self._arm_expiry()
+
+    @callback
+    def _cancel_expiry(self) -> None:
+        if self._unexpire is not None:
+            self._unexpire()
+            self._unexpire = None
+
+    @callback
+    def _arm_expiry(self) -> None:
+        """Wake when the oldest finished task stops being news."""
+        self._cancel_expiry()
+        due = [
+            when + KEEP_FOR
+            for t in self._tasks
+            if t.get("state") != RUNNING
+            and (when := dt_util.parse_datetime(t.get("finished") or "")) is not None
+        ]
+        if due and self.hass is not None:
+            self._unexpire = async_track_point_in_time(self.hass, self._async_expire, min(due))
+
+    async def _async_expire(self, now: datetime) -> None:
+        self._unexpire = None
+        if self._prune(now):
+            await self._save()
+            self.async_write_ha_state()
+        self._arm_expiry()
 
     async def _save(self) -> None:
         if self._store is not None:
             await self._store.async_save({"tasks": self._tasks, "results": self._results})
 
-    def _prune(self) -> bool:
-        """Drop answers nobody opened in a week, and any past the cap."""
-        now = dt_util.utcnow()
+    def _prune(self, now: datetime | None = None) -> bool:
+        """Drop finished tasks once they stop being news, and any past the cap."""
+        now = now or dt_util.utcnow()
         before = len(self._tasks)
 
         def fresh(task: dict[str, Any]) -> bool:
@@ -226,6 +265,7 @@ class AiTasksSensor(SensorEntity):
             "steps": 2 if then else 1,
             "label": None,
             "error": None,
+            "open": bool(data.get(ATTR_OPEN, True)),
         }
         self._tasks.append(task)
         self._prune()
@@ -285,6 +325,7 @@ class AiTasksSensor(SensorEntity):
         self._results[task["id"]] = {"result": result, "then": then_result}
         await self._save()
         self.async_write_ha_state()
+        self._arm_expiry()
 
     @staticmethod
     def _wants_then(then: dict[str, Any], result: Any) -> bool:
@@ -313,6 +354,7 @@ class AiTasksSensor(SensorEntity):
         self._results.pop(item_id, None)
         self.hass.async_create_task(self._save())
         self.async_write_ha_state()
+        self._arm_expiry()
 
     def needs_you_rows(self) -> list[dict[str, Any]]:
         rows = []
@@ -322,6 +364,10 @@ class AiTasksSensor(SensorEntity):
             # Every finished task says which way it went, in words and in
             # its icon, before anything else: "Done" or "Failed".
             ok = task["state"] == DONE
+            dismiss = {
+                "service": f"{DOMAIN}.{SERVICE_DISMISS}",
+                "data": {"item_id": task["id"]},
+            }
             if ok:
                 detail = f"Done \u00b7 {task['label']}" if task.get("label") else "Done"
                 if task.get("partial"):
@@ -337,13 +383,29 @@ class AiTasksSensor(SensorEntity):
                 "level": LEVEL_NOTICE,
                 "tab": task["tab"],
                 "card": task["card"],
-                # Opening it is a thing only a screen can do, so the row
-                # carries what the card needs to find it rather than a
-                # service. A failure opens too: what went wrong is its answer.
-                "action_label": "Open",
-                "action": {"open_task": task["id"], "card": task["card"], "tab": task["tab"]},
+                "expires": self._expires(task),
+                # Two buttons. Dismiss clears it everywhere; Open shows the
+                # answer, and is there only when there is one to show and a
+                # card to show it. Opening it is a thing only a screen can
+                # do, so Open carries what the card needs to find it rather
+                # than a service.
+                **(
+                    {
+                        "action_label": "Open",
+                        "action": {"open_task": task["id"], "card": task["card"], "tab": task["tab"]},
+                        "secondary_label": "Dismiss",
+                        "secondary_action": dismiss,
+                    }
+                    if ok and task.get("open", True) and task["card"]
+                    else {"action_label": "Dismiss", "action": dismiss}
+                ),
             })
         return rows
+
+    @staticmethod
+    def _expires(task: dict[str, Any]) -> str | None:
+        when = dt_util.parse_datetime(task.get("finished") or "")
+        return (when + KEEP_FOR).isoformat() if when else None
 
     def by_tab(self) -> list[tuple[str, str | None, list[dict[str, Any]]]]:
         """(tab, level, jobs) per tab with a finished task on it."""
@@ -381,8 +443,8 @@ class AiTasksSensor(SensorEntity):
             "tasks": [
                 {k: t.get(k) for k in (
                     "id", "title", "card", "tab", "state", "started",
-                    "finished", "step", "steps", "label", "error", "partial",
-                )}
+                    "finished", "step", "steps", "label", "error", "partial", "open",
+                )} | {"expires": self._expires(t)}
                 for t in self._tasks
             ],
             "running": sum(1 for t in self._tasks if t["state"] == RUNNING),
