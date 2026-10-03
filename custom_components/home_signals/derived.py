@@ -1231,10 +1231,16 @@ class NeedsYouSensor(_Derived, RestoreEntity):
 
     def _owner_rows(self) -> list[tuple[str, str | None, list[dict[str, Any]]]]:
         """(tab, level, jobs) for every card that owns a need."""
-        owned: list[tuple[str, str | None, list[dict[str, Any]]]] = [
-            (owner.tab, owner.owner_level, owner.needs_you_rows())
-            for owner in self.owners
-        ]
+        owned: list[tuple[str, str | None, list[dict[str, Any]]]] = []
+        for owner in self.owners:
+            # An owner whose rows can land on more than one tab -- the AI
+            # tasks, which go wherever the card that started them is --
+            # reports each tab on its own.
+            by_tab = getattr(owner, "by_tab", None)
+            if by_tab is not None:
+                owned.extend(by_tab())
+            else:
+                owned.append((owner.tab, owner.owner_level, owner.needs_you_rows()))
         # The washing machines, by their published state: their card reads
         # that same state, so this reads exactly what the card shows. A
         # state from before the machines published `jobs` is read the old

@@ -385,3 +385,69 @@ prep_settings:
       selector:
         entity:
           domain: todo
+
+start_ai_task:
+  name: Start AI task
+  description: >-
+    Run a slow action -- usually a script that calls an AI task -- in the
+    background, so it outlives the card that asked for it. Answers at once
+    with a task_id. While it runs it is a fact on the card; when it finishes
+    it is a blue notice on the card, its tab and Needs you.
+  fields:
+    title:
+      name: Title
+      description: What the Needs you row says, such as "Recipe from a link".
+      required: true
+      selector:
+        text:
+    action:
+      name: Action
+      description: The action to run. It must answer with a response.
+      required: true
+      example: script.recipe_import
+      selector:
+        text:
+    data:
+      name: Data
+      description: What to call the action with.
+      selector:
+        object:
+    card:
+      name: Card
+      description: Which card started it, so that card can find and show it.
+      example: meals
+      selector:
+        text:
+    tab:
+      name: Tab
+      description: The tab whose rail button turns blue when it finishes.
+      default: kitchen
+      selector:
+        select:
+          options: [cleaning, security, lists, maintenance, kitchen]
+    label:
+      name: Label
+      description: The key in the answer that names what came back, for the row.
+      example: recipe
+      selector:
+        text:
+    then:
+      name: Then
+      description: >-
+        A second action fed from the first one's answer: action, data,
+        pass (field <- answer key) and unless (an answer key that skips it).
+      selector:
+        object:
+
+ai_task_result:
+  name: AI task result
+  description: >-
+    What a finished AI task came back with: the task, the first action's
+    answer as result, and the second's as then.
+  fields:
+    task_id:
+      name: Task
+      description: The id start_ai_task answered with.
+      required: true
+      selector:
+        text:

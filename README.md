@@ -156,7 +156,7 @@ that memory lives. Dismissals survive a restart, and they are keyed to the
 **occurrence**: dismissing `bin_2026-09-16` clears tonight's bins and lets
 next week's come back.
 
-## The three levels
+## The levels
 
 A card may state any fact it likes. But a **level** is a promise that
 something wants doing, and on this panel the thing that wants doing lives
@@ -167,6 +167,12 @@ in `Needs you` and nowhere else.
 | `attention` | needs doing today or tomorrow. Real, but it keeps. |
 | `waiting` | something is paused or degrading until a person acts. |
 | `critical` | damage or risk is accruing now. |
+| `notice` | something you asked for is ready. Nothing gets worse while it waits. |
+
+`notice` is the quietest, and the only one that promises no deadline. It
+exists for work the house did on somebody's behalf — an AI task reading a
+recipe off a page — where somebody still has to look at the answer. It is
+blue. See [AI tasks](#sensorai_tasks).
 
 The name is the test a new row has to pass. Before there were three, ten
 of the twelve rows were the same "warning" whatever they meant, and the
@@ -220,6 +226,7 @@ publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
 | Batteries | `sensor.batteries_status` |
 | Devices | `sensor.devices` |
 | Meals (prep) | the meal prep sensor |
+| Whichever card started an AI task | `sensor.ai_tasks`, by its `cards` map |
 
 The card's outline reads its sensor's `level`. `sensor.needs_you` collects
 every card's `jobs` and works out no level of its own; it publishes
@@ -245,6 +252,56 @@ night that had already happened, with no action beyond Dismiss — which is
 the one thing a row may not be: it did not need doing. The figures are
 still published on `sensor.energy_day`, where the Electricity card reads
 them and always did. What left is the claim that they were a job.
+
+## `sensor.ai_tasks`
+
+Reading a recipe off a page takes a model the best part of a minute, and
+splitting it into what can be done ahead takes another. The card used to
+wait for both inside a sheet that said "Reading the page…" and nothing
+else: close the sheet and the answer arrived to nobody, and nobody could
+tell whether anything was happening at all.
+
+So the card hands the work over with `home_signals.start_ai_task`, which
+answers at once with a `task_id` and runs the action in the background:
+
+```yaml
+action: home_signals.start_ai_task
+data:
+  title: Recipe from a link
+  action: script.recipe_import       # anything that answers with a response
+  data: {url: "https://…"}
+  card: meals                        # which card started it
+  tab: kitchen                       # whose rail button it colours
+  label: recipe                      # the answer key that names what came back
+  then:                              # optional: a second action, fed from the first
+    action: script.recipe_split
+    pass: {recipe: slug}             # its field <- the first answer's key
+    unless: already                  # skip it when the first answer says this
+```
+
+**Running is a fact.** The sensor's state is `running`, the task is listed
+in `tasks`, and the card that started it says so. There is no row and no
+colour: nothing needs doing yet.
+
+**Finished is a `notice`, on all three.** The card (`cards: {meals:
+notice}`), the tab (`tab_kitchen` on Needs you) and a row — "Recipe from a
+link · Ready · Chicken pie", with **Open**. The row's action is not a
+service: it carries `open_task`, `card` and `tab`, and the panel switches
+to that tab and the card opens the answer, which it reads with
+`home_signals.ai_task_result`. Opening it, or Done, is `dismiss`, and all
+three clear together. Snooze hides the row and leaves the card and tab
+blue, as everywhere else.
+
+**A failure is a notice too**, with Clear rather than Open: something you
+asked for did not happen, and only the person who asked can try again. If
+the first action answered and only the second failed, the task is done —
+the recipe is in the box, just not split.
+
+Answers are kept in storage, not in the state, so a restart does not lose
+one nobody has opened, and the recorder never holds a whole recipe. A task
+still running at a restart comes back failed and says why: the call it
+was waiting on died with the old instance. Unopened answers go after a
+week, and never more than twelve are kept.
 
 ## Where `sensor.system_health` went
 

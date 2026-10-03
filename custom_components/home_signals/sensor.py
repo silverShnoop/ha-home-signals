@@ -90,6 +90,7 @@ from .const import (
     SERVICE_RESET,
     SERVICE_SNOOZE,
 )
+from .ai_tasks import AiTasksSensor, async_register_ai_task_services
 from .appliance import (
     AppliancePressSensor,
     ApplianceCycleSensor,
@@ -214,12 +215,14 @@ async def async_setup_entry(
     needs_you = NeedsYouSensor(entry)
     security = SecurityStatusSensor(entry)
     prep = MealPrepSensor(entry)
+    ai_tasks = AiTasksSensor(entry)
     # Every card that owns a need has its own sensor, which decides the
     # card's level and the jobs behind it. Needs you only collects them.
     # (The washing machines are owners too, found by their state.)
     owners = [
         security,
         prep,
+        ai_tasks,
         DevicesSensor(entry),
         BinsStatusSensor(entry),
         TasksStatusSensor(entry),
@@ -259,6 +262,7 @@ async def async_setup_entry(
     async_add_entities(entities)
     _async_register_services(hass, needs_you, cycles, presses)
     async_register_prep_services(hass, prep)
+    async_register_ai_task_services(hass, ai_tasks)
 
 
 def _done_today_sensors(
