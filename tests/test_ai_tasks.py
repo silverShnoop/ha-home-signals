@@ -112,7 +112,8 @@ async def test_finished_is_a_notice_on_all_three(hass: HomeAssistant) -> None:
     assert needs["tab_kitchen"] == LEVEL_NOTICE
     [row] = [r for r in needs["items"] if r["id"] == task_id]
     assert row["level"] == LEVEL_NOTICE
-    assert row["detail"] == "Ready · Chicken pie"
+    assert row["detail"] == "Done · Chicken pie"
+    assert row["outcome"] == "success"
     assert row["action"] == {"open_task": task_id, "card": "meals", "tab": "kitchen"}
 
     # The split ran, fed the import's slug.
@@ -157,6 +158,25 @@ async def test_a_snooze_hides_the_row_but_the_tab_stays_blue(hass: HomeAssistant
     assert needs["tab_kitchen"] == LEVEL_NOTICE
 
 
+async def test_a_split_that_fails_keeps_the_import_and_says_so(hass: HomeAssistant) -> None:
+    release = await _setup(hass)
+
+    async def _broken(call: ServiceCall) -> dict[str, Any]:
+        raise ValueError("model said nothing")
+
+    hass.services.async_register(
+        "script", "recipe_split", _broken, supports_response=SupportsResponse.ONLY
+    )
+    task_id = await _start(hass)
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    needs = hass.states.get(NEEDS).attributes
+    [row] = [r for r in needs["items"] if r["id"] == task_id]
+    assert row["outcome"] == "success"
+    assert row["detail"] == "Done · Chicken pie · the second step did not finish"
+
+
 async def test_an_already_saved_recipe_is_not_split_again(hass: HomeAssistant) -> None:
     release = await _setup(hass)
     task_id = await _start(hass, "again")
@@ -171,7 +191,7 @@ async def test_an_already_saved_recipe_is_not_split_again(hass: HomeAssistant) -
     assert got["then"] is None
 
 
-async def test_a_failure_is_a_notice_with_nothing_to_open(hass: HomeAssistant) -> None:
+async def test_a_failure_says_so_and_opens_to_say_why(hass: HomeAssistant) -> None:
     release = await _setup(hass)
     task_id = await _start(hass, "bad")
     release.set()
@@ -180,9 +200,16 @@ async def test_a_failure_is_a_notice_with_nothing_to_open(hass: HomeAssistant) -
     needs = hass.states.get(NEEDS).attributes
     [row] = [r for r in needs["items"] if r["id"] == task_id]
     assert row["level"] == LEVEL_NOTICE
-    assert row["detail"] == "Did not finish · No recipe on that page"
-    assert row["action"]["service"] == f"{DOMAIN}.dismiss"
+    assert row["detail"] == "Failed · No recipe on that page"
+    assert row["outcome"] == "failure"
+    assert row["action"] == {"open_task": task_id, "card": "meals", "tab": "kitchen"}
+    got = await hass.services.async_call(
+        DOMAIN, "ai_task_result", {"task_id": task_id},
+        blocking=True, return_response=True,
+    )
+    assert got["task"]["error"] == "No recipe on that page"
     assert hass.states.get(TASKS).attributes["tasks"][0]["state"] == "failed"
+    assert hass.states.get(TASKS).attributes["cards"] == {"meals": LEVEL_NOTICE}
 
 
 def test_notice_is_the_quietest_level() -> None:

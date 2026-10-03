@@ -19,8 +19,10 @@ result on the card, or Done on the row, clears all three together, through
 `dismiss` -- this sensor owns the row, so Needs you hands the dismissal
 here.
 
-A failure is a notice too. Something you asked for did not happen, and
-the only person who can try again is the one who asked.
+Every finished task says which way it went -- `Done` or `Failed`, in the
+row's words, its icon and its `outcome` -- and a failure is a notice too.
+Something you asked for did not happen, and the only person who can try
+again is the one who asked. Opened, it says what went wrong.
 
 The work itself is any action that answers -- a script that calls
 `ai_task.generate_data` and stops with a response, usually. A second
@@ -72,7 +74,6 @@ from .const import (
     DOMAIN,
     LEVEL_NOTICE,
     SERVICE_AI_TASK_RESULT,
-    SERVICE_DISMISS,
     SERVICE_START_AI_TASK,
     TABS,
 )
@@ -318,28 +319,29 @@ class AiTasksSensor(SensorEntity):
         for task in self._tasks:
             if task["state"] == RUNNING:
                 continue
+            # Every finished task says which way it went, in words and in
+            # its icon, before anything else: "Done" or "Failed".
             ok = task["state"] == DONE
             if ok:
-                detail = f"Ready · {task['label']}" if task.get("label") else "Ready to look at"
+                detail = f"Done \u00b7 {task['label']}" if task.get("label") else "Done"
+                if task.get("partial"):
+                    detail += " \u00b7 the second step did not finish"
             else:
-                detail = f"Did not finish · {task.get('error') or 'no answer'}"
+                detail = f"Failed \u00b7 {task.get('error') or 'no answer'}"
             rows.append({
                 "id": task["id"],
                 "title": task["title"],
                 "detail": detail,
-                "icon": "mdi:creation" if ok else "mdi:creation-outline",
+                "outcome": "success" if ok else "failure",
+                "icon": "mdi:check-circle-outline" if ok else "mdi:alert-circle-outline",
                 "level": LEVEL_NOTICE,
                 "tab": task["tab"],
                 "card": task["card"],
                 # Opening it is a thing only a screen can do, so the row
                 # carries what the card needs to find it rather than a
-                # service. A failure has nothing to open.
-                "action_label": "Open" if ok else "Clear",
-                "action": (
-                    {"open_task": task["id"], "card": task["card"], "tab": task["tab"]}
-                    if ok
-                    else {"service": f"{DOMAIN}.{SERVICE_DISMISS}", "data": {"item_id": task["id"]}}
-                ),
+                # service. A failure opens too: what went wrong is its answer.
+                "action_label": "Open",
+                "action": {"open_task": task["id"], "card": task["card"], "tab": task["tab"]},
             })
         return rows
 

@@ -285,17 +285,20 @@ colour: nothing needs doing yet.
 
 **Finished is a `notice`, on all three.** The card (`cards: {meals:
 notice}`), the tab (`tab_kitchen` on Needs you) and a row — "Recipe from a
-link · Ready · Chicken pie", with **Open**. The row's action is not a
+link · Done · Chicken pie", with **Open**. The row's action is not a
 service: it carries `open_task`, `card` and `tab`, and the panel switches
 to that tab and the card opens the answer, which it reads with
 `home_signals.ai_task_result`. Opening it, or Done, is `dismiss`, and all
 three clear together. Snooze hides the row and leaves the card and tab
 blue, as everywhere else.
 
-**A failure is a notice too**, with Clear rather than Open: something you
-asked for did not happen, and only the person who asked can try again. If
-the first action answered and only the second failed, the task is done —
-the recipe is in the box, just not split.
+**Every finished task says which way it went** — `Done` or `Failed` at the
+start of the row's detail, a tick or an alert for its icon, and `outcome:
+success | failure` for anything reading the row. A failure is a notice
+too: something you asked for did not happen, and only the person who asked
+can try again. Opening it says what went wrong. If the first action
+answered and only the second failed, the task is done, and says so — the
+recipe is in the box, just not split.
 
 Answers are kept in storage, not in the state, so a restart does not lose
 one nobody has opened, and the recorder never holds a whole recipe. A task
