@@ -26,7 +26,10 @@ sensor owns the row, so Needs you hands the dismissal here.
 
 Every finished task says which way it went -- `Done` or `Failed`, in the
 row's words, its icon and its `outcome` -- and a failure is a notice too:
-the reason is in the row, and it has only Dismiss.
+the reason is in the row, and it has only Dismiss. Failing is not only
+raising: an answer that carries its own `error`, or that lacks the one
+key the caller said it must have (`require` -- a recipe's name), found
+nothing, and is Failed too, with `missing` as the reason.
 
 The work itself is any action that answers -- a script that calls
 `ai_task.generate_data` and stops with a response, usually. A second
@@ -70,6 +73,8 @@ from .const import (
     ATTR_DATA,
     ATTR_KIND,
     ATTR_LABEL,
+    ATTR_MISSING,
+    ATTR_REQUIRE,
     ATTR_OPEN,
     ATTR_PASS,
     ATTR_TAB,
@@ -131,9 +136,47 @@ START_SCHEMA = vol.Schema({
     # What sort of answer this is, for the card that opens it: a saved
     # recipe, an unsaved draft, a split. Opaque here; the card branches on it.
     vol.Optional(ATTR_KIND, default=""): cv.string,
+    # The answer's key that has to be there for it to have worked -- a
+    # recipe's name, a page's slug. A script that answers without it found
+    # nothing, and that is a failure whatever the call itself said.
+    vol.Optional(ATTR_REQUIRE): cv.string,
+    # What the Failed row says when it is missing.
+    vol.Optional(ATTR_MISSING): cv.string,
 })
 
 RESULT_SCHEMA = vol.Schema({vol.Required(ATTR_TASK_ID): cv.string})
+
+
+class _NoAnswer(Exception):
+    """The action answered, but with nothing in it, or with its own error."""
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, (str, list, dict, tuple)) and not value)
+
+
+def _why_empty(result: Any, data: dict[str, Any]) -> str | None:
+    """Why an answer counts as a failure, or None when it is a real one.
+
+    A script that catches its own trouble usually says so in an `error`
+    key and stops cleanly, and a model that finds no recipe on a page
+    answers with an empty name. Neither raised, and both are Failed: the
+    person asked for a thing and did not get it.
+    """
+    if isinstance(result, dict) and result.get("error"):
+        return str(result["error"])
+    if (key := data.get(ATTR_REQUIRE)) and _blank(
+        result.get(key) if isinstance(result, dict) else None
+    ):
+        return data.get(ATTR_MISSING) or "Nothing came back"
+    return None
+
+
+def _second_failed(result: Any) -> bool:
+    """A second step that answered, but only to say it could not."""
+    return isinstance(result, dict) and (
+        bool(result.get("error")) or result.get("mode") == "error"
+    )
 
 
 def _split(action: str) -> tuple[str, str]:
@@ -294,6 +337,8 @@ class AiTasksSensor(SensorEntity):
         then_result: Any = None
         try:
             result = await self._call(data[ATTR_ACTION], data.get(ATTR_DATA) or {})
+            if (why := _why_empty(result, data)) is not None:
+                raise _NoAnswer(why)
             label_key = data.get(ATTR_LABEL)
             if label_key and isinstance(result, dict) and result.get(label_key):
                 task["label"] = str(result[label_key])
@@ -308,7 +353,15 @@ class AiTasksSensor(SensorEntity):
                 then_result = await self._call(
                     then[ATTR_ACTION], {**(then.get(ATTR_DATA) or {}), **fed}
                 )
+                if _second_failed(then_result):
+                    task["partial"] = True
             task["state"] = DONE
+        except _NoAnswer as err:
+            # Answered, but not with the thing asked for. Not a half-done
+            # task either: there is nothing from it worth keeping.
+            task["state"] = FAILED
+            task["error"] = str(err)
+            result = None
         except TimeoutError:
             task["state"] = FAILED
             task["error"] = "No answer after ten minutes"
