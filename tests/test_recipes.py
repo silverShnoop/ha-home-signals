@@ -160,6 +160,7 @@ async def test_a_new_recipe_is_created_then_filled_in(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes?perPage=-1", json={"items": [RECIPE]})
     aioclient_mock.post(f"{BASE}/recipes", text='"nanas-curry"', status=201)
     aioclient_mock.get(
         f"{BASE}/recipes/nanas-curry",
@@ -197,6 +198,41 @@ async def test_a_new_recipe_is_created_then_filled_in(
     }
     stored = json.loads(patch["extras"]["provenance"])
     assert stored["source"]["kind"] == "typed", "a new recipe with nothing said about it was typed in"
+
+
+async def test_a_name_already_in_the_box_makes_nothing(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Mealie makes "Sea bass (1)" and then refuses to rename it, so asking
+    to create it anyway left an empty shell behind every time."""
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes?perPage=-1", json={"items": [RECIPE]})
+
+    for name in ("Sea bass", "sea  BASS!"):
+        with pytest.raises(ServiceValidationError, match="Sea bass"):
+            await hass.services.async_call(
+                DOMAIN, SERVICE_SAVE_RECIPE, {"name": name, "ingredients": "1 fish"},
+                blocking=True, return_response=True,
+            )
+    assert not _sent(aioclient_mock, "POST")
+
+
+async def test_a_new_recipe_that_cannot_be_filled_in_is_taken_away(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes?perPage=-1", json={"items": []})
+    aioclient_mock.post(f"{BASE}/recipes", text='"stew"', status=201)
+    aioclient_mock.get(f"{BASE}/recipes/stew", json={"id": "rid-3", "slug": "stew", "name": "Stew"})
+    aioclient_mock.patch(f"{BASE}/recipes/stew", status=400, text="no")
+    aioclient_mock.delete(f"{BASE}/recipes/stew", status=200)
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_SAVE_RECIPE, {"name": "Stew", "ingredients": "1 onion"},
+            blocking=True, return_response=True,
+        )
+    assert [str(c[1]) for c in aioclient_mock.mock_calls if c[0] == "DELETE"] == [f"{BASE}/recipes/stew"]
 
 
 async def test_a_rename_answers_with_the_new_slug(
