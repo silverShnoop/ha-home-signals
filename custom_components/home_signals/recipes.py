@@ -646,18 +646,55 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
         name = str(data.get(ATTR_NAME) or "").strip()
         if not name:
             raise ServiceValidationError("A new recipe needs a name.")
+        # Asked before anything is made. Mealie creates a second one under
+        # "Name (1)" and then refuses the rename to the name asked for, so
+        # the save failed and left a "1 Cup Flour" shell behind every time.
+        same = await _named(api, name)
+        if same:
+            raise ServiceValidationError(f"“{same}” is already in the recipe box.")
         created = await api.request("POST", "/recipes", {"name": name})
         # Mealie answers a create with the new slug, as a bare JSON string.
         slug = created if isinstance(created, str) else (created or {}).get("slug")
         if not slug:
             raise HomeAssistantError("Mealie created the recipe but did not say where.")
+        made = slug
+    else:
+        made = None
 
     async with _recipe_lock(hass, slug):
-        saved = await _save_to(api, slug, data)
-        if photo:
-            await api.set_image(saved["slug"], *photo)
-            saved["image"] = True
+        try:
+            saved = await _save_to(api, slug, data)
+            if photo:
+                await api.set_image(saved["slug"], *photo)
+                saved["image"] = True
+        except Exception:
+            # A new recipe that could not be filled in is taken away again,
+            # rather than left in the box as an empty shell.
+            if made:
+                try:
+                    await api.request("DELETE", f"/recipes/{made}")
+                except HomeAssistantError:
+                    pass
+            raise
         return saved
+
+
+def _slugish(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")
+
+
+async def _named(api: _Mealie, name: str) -> str | None:
+    """The name of a recipe already called this, or that Mealie would give
+    the same address."""
+    listing = await api.request("GET", "/recipes?perPage=-1") or {}
+    want = name.casefold()
+    for r in listing.get("items") or []:
+        if not isinstance(r, dict):
+            continue
+        have = str(r.get("name") or "")
+        if have.casefold() == want or (r.get("slug") and r["slug"] == _slugish(name)):
+            return have or name
+    return None
 
 
 def _recipe_lock(hass: HomeAssistant, slug: str) -> asyncio.Lock:
