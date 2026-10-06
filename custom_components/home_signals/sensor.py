@@ -522,9 +522,11 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
                 self._last = dt_util.parse_datetime(last.state)
             restored = last.attributes.get("events")
             if isinstance(restored, list):
-                self._events.extend(
-                    row for row in restored[: self._max_events] if isinstance(row, dict)
-                )
+                # Oldest first, through `_push`, so a feed saved before rows
+                # were folded comes back folded, and the cap is still rows.
+                for row in reversed(restored):
+                    if isinstance(row, dict):
+                        self._push(row)
             by_area = last.attributes.get("by_area")
             if isinstance(by_area, dict):
                 for area, row in by_area.items():
@@ -626,7 +628,7 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
 
         now = dt_util.utcnow()
         area = self._area_name(entity_id)
-        self._events.appendleft(
+        self._push(
             {
                 "entity_id": entity_id,
                 "name": new_state.attributes.get(ATTR_FRIENDLY_NAME, entity_id),
@@ -644,6 +646,28 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
             row["times"] = [int(now.timestamp()), *row["times"]][:BY_AREA_MAX_TIMES]
         self._prune_by_area(now)
         self.async_write_ha_state()
+
+    def _push(self, row: dict[str, Any]) -> None:
+        """Put a row on top, or fold it into the top row if it is the same thing.
+
+        `max_events` caps ROWS, not happenings. Four hall trips in a row are
+        one row on the rail ("Hall · motion ×4"), and spending four of the
+        twenty slots on it pushed older rows off the end for the sake of
+        entries the card was only going to merge back into one.
+        The top row keeps the newest `at` and `state`, `first_at` says when
+        the run began, and `count` how long it is.
+        """
+        top = self._events[0] if self._events else None
+        if top is not None and top.get("entity_id") == row.get("entity_id"):
+            # Replaced rather than edited: the state machine keeps the old
+            # attributes to compare against.
+            self._events[0] = {
+                **row,
+                "count": int(top.get("count") or 1) + int(row.get("count") or 1),
+                "first_at": top.get("first_at") or top.get("at"),
+            }
+            return
+        self._events.appendleft(row)
 
     @staticmethod
     def _kind(
