@@ -62,8 +62,27 @@ _KIND_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
 _NO_READING = {STATE_UNKNOWN, STATE_UNAVAILABLE}
 
 
+# Device classes that are something a camera saw, for a detection whose
+# name says nothing we know.
+_SEEING_CLASSES = {"motion", "occupancy", "presence", "sound"}
+
+
+def _is_detection(entry: er.RegistryEntry) -> bool:
+    """Whether a binary sensor on a camera's device is something it saw.
+
+    Not every binary sensor on such a device is. A wall tablet running a
+    kiosk app shows up with a camera of its own, and its charging and
+    connectivity sensors were being filed as sightings -- "Hall · camera"
+    every time the panel was plugged in.
+    """
+    if camera_kind(entry) != KIND_CAMERA:
+        return True
+    return (entry.device_class or entry.original_device_class) in _SEEING_CLASSES
+
+
 def camera_detections(registry: er.EntityRegistry) -> list[str]:
-    """Every binary sensor that shares a device with a camera."""
+    """Every binary sensor that shares a device with a camera and is
+    something the camera saw."""
     cameras = {
         entry.device_id
         for entry in registry.entities.values()
@@ -75,6 +94,7 @@ def camera_detections(registry: er.EntityRegistry) -> list[str]:
         if entry.domain == "binary_sensor"
         and entry.device_id in cameras
         and not entry.disabled
+        and _is_detection(entry)
     )
 
 
@@ -165,6 +185,9 @@ class CameraSightingsSensor(SensorEntity, RestoreEntity):
             return
         self._stop_watching()
         self._watched = watched
+        # A sensor that is no longer a detection takes its record with it.
+        for entity_id in [e for e in self._sightings if e not in watched]:
+            del self._sightings[entity_id]
         if watched:
             self._unwatch = async_track_state_change_event(
                 self.hass, watched, self._async_changed

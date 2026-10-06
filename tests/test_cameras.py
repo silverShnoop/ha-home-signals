@@ -206,3 +206,36 @@ async def test_a_door_still_needs_configuring(hass: HomeAssistant) -> None:
     hass.states.async_set(DOOR, "on", {"device_class": "door"})
     await hass.async_block_till_done()
     assert _events(hass) == []
+
+
+async def test_a_tablet_s_charging_is_not_a_sighting(hass: HomeAssistant) -> None:
+    """A kiosk tablet has a camera too; its battery sensors saw nothing."""
+    source = MockConfigEntry(domain="fully_kiosk")
+    source.add_to_hass(hass)
+    tablet = dr.async_get(hass).async_get_or_create(
+        config_entry_id=source.entry_id, identifiers={("fully_kiosk", "hall")})
+    registry = er.async_get(hass)
+    registry.async_get_or_create("camera", "fully_kiosk", "hall_cam", device_id=tablet.id,
+                                 suggested_object_id="hall_dashboard")
+    registry.async_get_or_create("binary_sensor", "fully_kiosk", "charging", device_id=tablet.id,
+                                 suggested_object_id="hall_dashboard_charging",
+                                 original_device_class="battery_charging")
+    registry.async_get_or_create("binary_sensor", "fully_kiosk", "conn", device_id=tablet.id,
+                                 suggested_object_id="hall_dashboard_connectivity",
+                                 original_device_class="connectivity")
+    registry.async_get_or_create("binary_sensor", "fully_kiosk", "seen", device_id=tablet.id,
+                                 suggested_object_id="hall_dashboard_seen",
+                                 original_device_class="motion")
+    _house(hass)
+    assert camera_detections(registry) == ["binary_sensor.hall_dashboard_seen", CRY, PERSON]
+
+
+async def test_a_record_for_something_no_longer_a_detection_goes(hass: HomeAssistant) -> None:
+    seen = (dt_util.utcnow() - timedelta(hours=1)).isoformat()
+    mock_restore_cache(hass, (State("sensor.camera_sightings", seen, {"sightings": {
+        "binary_sensor.hall_dashboard_charging": {"on": True, "since": seen, "started": seen},
+        PERSON: {"on": False, "since": seen, "started": seen},
+    }}),))
+    _house(hass)
+    sensor = await _sensor(hass)
+    assert list(_seen(sensor)) == [PERSON]
