@@ -36,7 +36,28 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
+from .const import (
+    KIND_ANIMAL,
+    KIND_CAMERA,
+    KIND_CRYING,
+    KIND_MOTION,
+    KIND_PERSON,
+    KIND_VEHICLE,
+)
+
 LOGGER = logging.getLogger(__name__)
+
+# Words in a detection's name, and the kind each one means. First match
+# wins, so crying is found before a "baby" could be taken for a person.
+# Reolink names them "Person", "Animal", "Pet", "Vehicle", "Baby crying";
+# Frigate's are "<camera> Person occupancy", "<camera> Dog occupancy".
+_KIND_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("crying", "cry"), KIND_CRYING),
+    (("person", "people", "face"), KIND_PERSON),
+    (("animal", "pet", "dog", "cat", "bird"), KIND_ANIMAL),
+    (("vehicle", "car", "bicycle", "motorcycle"), KIND_VEHICLE),
+    (("motion",), KIND_MOTION),
+)
 
 _NO_READING = {STATE_UNKNOWN, STATE_UNAVAILABLE}
 
@@ -55,6 +76,20 @@ def camera_detections(registry: er.EntityRegistry) -> list[str]:
         and entry.device_id in cameras
         and not entry.disabled
     )
+
+
+def camera_kind(entry: er.RegistryEntry) -> str:
+    """What a camera's detection sensor detects, as an activity kind."""
+    text = " ".join(
+        str(part) for part in (
+            entry.translation_key, entry.original_name, entry.name, entry.entity_id,
+        ) if part
+    ).lower()
+    words = set(text.replace(".", " ").replace("_", " ").split())
+    for keys, kind in _KIND_WORDS:
+        if words.intersection(keys):
+            return kind
+    return KIND_CAMERA
 
 
 class CameraSightingsSensor(SensorEntity, RestoreEntity):
