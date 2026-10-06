@@ -50,6 +50,10 @@ from .const import (
     ATTR_ITEM_ID,
     ATTR_LOAD_ID,
     ATTR_SOURCE,
+    CONF_DISHWASHER_DOOR,
+    CONF_DISHWASHER_ENERGY,
+    CONF_DISHWASHER_PLUG,
+    CONF_DISHWASHER_POWER,
     CONF_DRYER_DOOR,
     CONF_DRYER_ENERGY,
     CONF_DRYER_PLUG,
@@ -70,7 +74,9 @@ from .const import (
     DEFAULT_MIN_KWH,
     DEFAULT_MIN_MINUTES,
     DEFAULT_START_WATTS,
+    PHASE_HEAT,
     PHASE_TUMBLE,
+    PHASE_WASH,
     SERVICE_LAUNDRY_HUNG,
     SOURCE_BUTTON,
     SOURCE_UI,
@@ -133,12 +139,15 @@ _DOOR_CLASSES = {
 }
 
 
+DISHWASHER_MIN_IDLE_MINUTES = 20.0
+
+
 def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
     """The appliances that have been given a power sensor, and only those.
 
-    Two slots rather than an open-ended list because the config flow has no
-    way to draw a repeating record, and because two is the real number. The
-    code below never counts them, so a third is a schema entry rather than a
+    Fixed slots rather than an open-ended list because the config flow has
+    no way to draw a repeating record. The code below never counts them, and
+    the dishwasher was the proof: the third was a schema entry rather than a
     rewrite.
     """
 
@@ -202,6 +211,52 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             # answer the machine can give.
             "only_phase": PHASE_TUMBLE,
             **shared,
+        },
+        {
+            "slug": "dishwasher",
+            "name": "Dishwasher",
+            "power_sensor": option(CONF_DISHWASHER_POWER),
+            "plug": option(CONF_DISHWASHER_PLUG),
+            "door": option(CONF_DISHWASHER_DOOR),
+            "leak": None,
+            "energy_sensor": option(CONF_DISHWASHER_ENERGY),
+            "icon": "mdi:dishwasher",
+            # The dryer's shape. Clean dishes are put away straight out
+            # of the rack, and the rack coming out is the door opening --
+            # so a finished load is a full drum until the door opens,
+            # and nothing after that. With no door configured it is
+            # never full at all; see `_finish`.
+            "queues_loads": False,
+            # Two phases, and only two, because only two can be told
+            # apart from the plug on any dishwasher: the heating element,
+            # which draws kilowatts, and the pump pushing water through
+            # the arms, which draws tens of watts. Nothing else in the
+            # machine comes near the element, so the split needs no
+            # trace to be safe. The floor is the geometric mean of a
+            # generous pump (200 W) and a small element (1.8 kW), the
+            # same rule the washer's bands use, and `phase_evidence`
+            # says where the real ones sit after the first few loads.
+            #
+            # What the plug cannot tell is pre-wash from main wash from
+            # rinse: all three are the pump. Naming them would be
+            # inventing detail from the order things happened in.
+            "tracks_phases": True,
+            "phase_bands": ((600.0, PHASE_HEAT),),
+            "base_phase": PHASE_WASH,
+            # A washer's opening run is its fill. A dishwasher fills
+            # too, but at the same pump draw as everything after it,
+            # and calling the first minutes "filling" would be a guess.
+            "opening_fill": False,
+            **shared,
+            # A dishwasher goes quiet mid-programme -- a soak, a pause
+            # before the rinse, a passive dry with the element off --
+            # for longer than a washer ever does. Five minutes would
+            # split one load into several. Twenty is a guess, and it is
+            # an override only upward: `longest_lull_seconds` after the
+            # first real load is what this should be set from.
+            "idle_minutes": max(
+                float(shared["idle_minutes"]), DISHWASHER_MIN_IDLE_MINUTES
+            ),
         },
     ]
     return [c for c in candidates if c["power_sensor"]]

@@ -100,6 +100,12 @@ CONF_DRYER_POWER = "dryer_power"
 CONF_DRYER_PLUG = "dryer_plug"
 CONF_DRYER_DOOR = "dryer_door"
 CONF_DRYER_ENERGY = "dryer_energy"
+# The dishwasher is the third time, and it is the dryer's shape: the door
+# is what says the clean load came out, so nothing queues behind it.
+CONF_DISHWASHER_POWER = "dishwasher_power"
+CONF_DISHWASHER_PLUG = "dishwasher_plug"
+CONF_DISHWASHER_DOOR = "dishwasher_door"
+CONF_DISHWASHER_ENERGY = "dishwasher_energy"
 
 # What a kWh costs, right now. One sensor for the house rather than one per
 # machine: the price of electricity is not a property of the washing machine,
@@ -149,6 +155,10 @@ PHASE_FILL = "fill"
 PHASE_HEAT = "heat"
 PHASE_SPIN = "spin"
 PHASE_TUMBLE = "tumble"
+# A dishwasher's pump driving water through the spray arms. Not a tumble:
+# nothing in a dishwasher goes round but the arms, and the card draws it
+# differently so a dishwasher is never said to be tumbling.
+PHASE_WASH = "wash"
 
 # Who said the washing was hung. The activity feed answers "where are
 # people", and only one of these is evidence of a body in the room: the
