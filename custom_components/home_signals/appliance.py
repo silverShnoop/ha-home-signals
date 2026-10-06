@@ -271,7 +271,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         history = attrs.get("finished")
         if isinstance(history, list):
             self._history = [h for h in history if isinstance(h, dict)][:MAX_HISTORY]
-        self._drum_full = bool(attrs.get("drum_full"))
+        # Same rule as `_finish`: a door taken out of the options takes
+        # with it the only thing that could have emptied the drum.
+        self._drum_full = bool(attrs.get("drum_full")) and bool(self._spec.get("door"))
         self._rewashing = bool(attrs.get("rewashing"))
         load = attrs.get("rewashing_load")
         self._rewashing_load = str(load) if load else None
@@ -655,16 +657,22 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
     def _classify(self, watts: float) -> str:
         """Which band this reading falls in. Tumble is the fallthrough.
 
+        A machine may bring its own bands and its own fallthrough --
+        `phase_bands` and `base_phase` in its spec. The washer's are the
+        class defaults because they were measured on the washer; the
+        dishwasher's say only "heater or pump", which is the one thing
+        a dishwasher's draw can tell apart. See `_appliance_specs`.
+
         There is deliberately no floor under tumble. This is only ever
         asked about a reading the plug has already put at or above
         `start_watts` -- the machine is doing SOMETHING, and the quietest
         something it does is tumble. A second floor here would be a copy
         of that one, free to drift away from it.
         """
-        for floor, kind in self.PHASE_BANDS:
+        for floor, kind in self._cfg("phase_bands", self.PHASE_BANDS):
             if watts >= floor:
                 return kind
-        return PHASE_TUMBLE
+        return self._cfg("base_phase", PHASE_TUMBLE)
 
     def _note_phase(self, now: datetime, watts: float) -> None:
         """Fold this reading into the phase timeline.
@@ -688,9 +696,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # its own band. Anchoring it to "no phases yet" ended the fill at
         # the first commit, 30 seconds in, and filed the rest of the same
         # unbroken low-power run as tumble. See PHASE_BANDS.
-        opening = not self._phases or (
+        opening = self._cfg("opening_fill", True) and (not self._phases or (
             len(self._phases) == 1 and self._phases[0]["kind"] == PHASE_FILL
-        )
+        ))
         if kind == PHASE_TUMBLE and opening:
             kind = PHASE_FILL
 
@@ -1006,7 +1014,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._pending.append(record)
         self._history.insert(0, record)
         del self._history[MAX_HISTORY:]
-        self._drum_full = fills_drum
+        # Only where there is a door to empty it. With no contact sensor
+        # nothing in the house could ever clear a full drum, and a row
+        # that cannot be cleared is the one kind Needs you must not hold
+        # -- so a machine without a door is never reported full, and
+        # gains the job the day it gains the sensor.
+        self._drum_full = fills_drum and bool(self._spec.get("door"))
         self._rewashing = False
         self._rewashing_load = None
         # This run WAS a wash, so its own timeline is the one to keep.

@@ -217,7 +217,7 @@ publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
 
 | Card | Its sensor |
 | --- | --- |
-| Washing machine, Tumble dryer | `sensor.washing_machine`, `sensor.tumble_dryer` |
+| Washing machine, Tumble dryer, Dishwasher | `sensor.washing_machine`, `sensor.tumble_dryer`, `sensor.dishwasher` |
 | Front door | `sensor.security_status` |
 | Who's home | `sensor.people_status` |
 | Bin calendar | `sensor.bins_status` |
@@ -737,7 +737,7 @@ There is also a band, `ENERGY_SAME_PCT`. Without it a perfectly ordinary day
 reads as "3% down", and a comparison that always has something to say is one
 nobody reads.
 
-## `sensor.washing_machine_cycle` (and the tumble dryer)
+## `sensor.washing_machine_cycle` (and the tumble dryer, and the dishwasher)
 
 Whether an appliance is running, worked out from nothing but the watts its
 plug reports.
@@ -895,6 +895,37 @@ know nothing about the difference.
 `tracks_phases` picks the classifier; `only_phase` names the single
 phase for a machine that has just the one. A machine sets one or the
 other, never both.
+
+### The dishwasher is the dryer again, with one split it can make
+
+`sensor.dishwasher` is the same machine a third time, configured from the
+`dishwasher_*` options. It is the dryer's shape: clean dishes are put away
+straight out of the rack, and the rack coming out *is* the door opening, so
+`queues_loads` is false and there is no button.
+
+**No door, no full drum.** A finished load fills the drum only where a door
+is configured, because a drum nothing can empty would raise a `Needs you`
+row that nothing could ever clear. Without the contact sensor the card says
+when it ran and what it cost, and no more; the day a door sensor is set in
+the options, "Dishwasher needs emptying" starts appearing on its own. (The
+config flow always said a missing door meant never full. Now the code does
+too, for every machine.)
+
+**Heating or washing, and nothing finer.** A dishwasher's draw tells exactly
+two things apart on any machine: the element, in kilowatts, and the pump, in
+tens of watts. So it reports `heat` and `wash` and nothing else, split at
+600 W — the geometric mean of a generous pump (200 W) and a small element
+(1.8 kW), the same rule the washer's bands use. Pre-wash, main wash and
+rinse are all the pump, and naming them would be reading the order things
+happened in as evidence. There is no `fill`: it fills at the same draw as
+everything after it. `phase_bands`, `base_phase` and `opening_fill` are the
+spec keys that say this; the washer keeps the class defaults.
+
+**A higher idle floor.** A dishwasher goes quiet mid-programme — a soak, a
+pause before the rinse, a passive dry — for longer than a washer ever does,
+so its idle floor is at least 20 minutes whatever the shared option says. It
+is a guess until the first load: `longest_lull_seconds` is the number to set
+it from.
 
 ### What the wash cost
 

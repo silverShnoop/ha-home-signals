@@ -562,3 +562,25 @@ async def test_every_card_that_owns_a_need_has_its_own_sensor(
     assert machine["level"] == "waiting"
     assert any(r["id"] == "unpowered_washing_machine" for r in needs["items"])
     assert needs["tab_cleaning"] == machine["level"]
+
+
+# --- the dishwasher ---------------------------------------------------
+
+
+async def test_a_dishwasher_appears_as_itself_with_no_button(
+    hass: HomeAssistant,
+) -> None:
+    """Configured with no door, which is how it was first installed."""
+    hass.states.async_set("switch.dishwasher_plug", "on")
+    hass.states.async_set("sensor.dishwasher_plug_power", "0")
+    await _start(hass, {
+        **OPTIONS,
+        "dishwasher_power": "sensor.dishwasher_plug_power",
+        "dishwasher_plug": "switch.dishwasher_plug",
+    })
+
+    state = hass.states.get("sensor.dishwasher")
+    assert state is not None, "no dishwasher appeared"
+    assert state.attributes["icon"] == "mdi:dishwasher"
+    assert state.attributes["tab"] == "cleaning"
+    assert hass.states.get("sensor.dishwasher_button") is None

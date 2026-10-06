@@ -19,6 +19,10 @@ from .const import (
     CONF_BASELINE_EXCESS_PCT,
     CONF_BATTERY_THRESHOLD,
     CONF_BIN_SENSOR,
+    CONF_DISHWASHER_DOOR,
+    CONF_DISHWASHER_ENERGY,
+    CONF_DISHWASHER_PLUG,
+    CONF_DISHWASHER_POWER,
     CONF_DRYER_DOOR,
     CONF_DRYER_ENERGY,
     CONF_DRYER_PLUG,
@@ -255,6 +259,30 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_DRYER_ENERGY,
                 default=defaults.get(CONF_DRYER_ENERGY, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+            vol.Optional(
+                CONF_DISHWASHER_POWER,
+                default=defaults.get(CONF_DISHWASHER_POWER, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+            vol.Optional(
+                CONF_DISHWASHER_PLUG,
+                default=defaults.get(CONF_DISHWASHER_PLUG, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="switch")
+            ),
+            vol.Optional(
+                CONF_DISHWASHER_DOOR,
+                default=defaults.get(CONF_DISHWASHER_DOOR, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="binary_sensor")
+            ),
+            vol.Optional(
+                CONF_DISHWASHER_ENERGY,
+                default=defaults.get(CONF_DISHWASHER_ENERGY, vol.UNDEFINED),
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class="energy")
             ),
