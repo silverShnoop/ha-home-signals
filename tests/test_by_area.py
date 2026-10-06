@@ -77,14 +77,35 @@ async def test_each_room_keeps_every_trip_not_just_the_last(hass: HomeAssistant)
 
 
 async def test_it_outlives_the_rails_cap(hass: HomeAssistant) -> None:
-    """Thirty trips is more than the rail keeps, and all of them are the hour."""
+    """Thirty rows is more than the rail keeps, and all of them are the hour."""
     await _start(hass)
-    for _ in range(30):
-        await _trip(hass)
+    for _ in range(15):
+        await _trip(hass, HALL)
+        await _trip(hass, NOWHERE)
 
     feed = hass.states.get("sensor.activity_feed")
     assert len(feed.attributes["events"]) == 20
-    assert len(_by_area(hass)["Hall"]["times"]) == 30
+    assert len(_by_area(hass)["Hall"]["times"]) == 15
+
+
+async def test_the_cap_is_rows_not_happenings(hass: HomeAssistant) -> None:
+    """Four trips in a row are one row of the twenty, not four."""
+    await _start(hass)
+    await _trip(hass, NOWHERE)
+    for _ in range(4):
+        await _trip(hass)
+
+    events = hass.states.get("sensor.activity_feed").attributes["events"]
+    assert [(e["entity_id"], e.get("count", 1)) for e in events] == [
+        (HALL, 4), (NOWHERE, 1),
+    ]
+    assert events[0]["first_at"] <= events[0]["at"]
+
+    for _ in range(30):
+        await _trip(hass)
+    events = hass.states.get("sensor.activity_feed").attributes["events"]
+    assert len(events) == 2, "a busy hall must not push the shed off the rail"
+    assert events[0]["count"] == 34
 
 
 async def test_an_entity_with_no_room_has_nowhere_to_be_drawn(hass: HomeAssistant) -> None:
@@ -125,3 +146,25 @@ async def test_a_restart_brings_the_hour_back(hass: HomeAssistant) -> None:
     rooms = _by_area(hass)
     assert rooms["Hall"]["times"] == [now - 60, now - 120]
     assert "Stale" not in rooms, "a restore must not bring back more than the hour"
+
+
+async def test_a_feed_saved_unfolded_comes_back_folded(hass: HomeAssistant) -> None:
+    """Rows written before folding existed are folded on the way back in."""
+    row = {"entity_id": HALL, "area": "Hall", "kind": "motion", "state": "on"}
+    mock_restore_cache(hass, [State(
+        "sensor.activity_feed", dt_util.utcnow().isoformat(),
+        {"events": [
+            {**row, "at": "2026-10-06T10:03:00+00:00"},
+            {**row, "at": "2026-10-06T10:02:00+00:00"},
+            {**row, "entity_id": STUDY, "kind": "button", "at": "2026-10-06T10:01:00+00:00"},
+            {**row, "at": "2026-10-06T10:00:00+00:00"},
+        ]},
+    )])
+    await _start(hass)
+
+    events = hass.states.get("sensor.activity_feed").attributes["events"]
+    assert [(e["entity_id"], e.get("count", 1)) for e in events] == [
+        (HALL, 2), (STUDY, 1), (HALL, 1),
+    ]
+    assert events[0]["at"] == "2026-10-06T10:03:00+00:00"
+    assert events[0]["first_at"] == "2026-10-06T10:02:00+00:00"
