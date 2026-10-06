@@ -42,7 +42,8 @@ One merged, newest-first feed of things that happened in the house.
   stays a few kilobytes. An entity with no area is on the rail and not here:
   there is nowhere to draw it.
 
-`kind` is one of `button`, `lock`, `motion`, `door`, `other`. It is a contract
+`kind` is one of `button`, `lock`, `motion`, `door`, `other`, or what a
+camera saw: `person`, `animal`, `vehicle`, `crying`, `camera`. It is a contract
 with the frontend: a rail draws its icon from the kind, and a button press is
 the interesting one because it proves a person rather than a cat.
 
@@ -58,6 +59,14 @@ that sensor says *when* something happened and nothing about what.
 
 - **Motion and door** — only the transition *to* on. Motion clearing is not
   something that happened.
+- **What a camera sees** — only the transition *to* on, and never
+  configured. Every camera's detection sensors join the feed by being on a
+  device with a camera, the same discovery as `sensor.camera_sightings`, so
+  the card and the feed agree about what a camera noticed. The kind is
+  read off the sensor's name (`Baby crying` is `crying`), and the row reads
+  "Anaya's Bedroom · crying". A camera's plain **motion** sensor is left
+  out: a person, an animal and a cry are said by name, and pixel motion on
+  a camera is mostly the light changing and night vision switching over.
 - **Buttons and locks** — any change to a real state. An `event` entity's state
   is the timestamp of the press, so every press is a change.
 - **Never** — `unknown`, `unavailable`, or a state appearing with no previous

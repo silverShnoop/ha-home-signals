@@ -85,6 +85,11 @@ from .const import (
     KIND_LOCK,
     KIND_MOTION,
     KIND_OTHER,
+    KIND_ANIMAL,
+    KIND_CAMERA,
+    KIND_CRYING,
+    KIND_PERSON,
+    KIND_VEHICLE,
     DOMAIN,
     SERVICE_DISMISS,
     SERVICE_RESET,
@@ -104,7 +109,7 @@ from .derived import (
     SoftenerStatusSensor,
     TasksStatusSensor,
 )
-from .cameras import CameraSightingsSensor
+from .cameras import CameraSightingsSensor, camera_detections, camera_kind
 from .devices import DevicesSensor
 from .energy import EnergyDaySensor
 from .prep import MealPrepSensor, async_register_prep_services
@@ -124,6 +129,8 @@ _MOTION_CLASSES = {
 # the frontend draws an icon from it: an unknown kind would silently render
 # as nothing.
 _KINDS = {KIND_BUTTON, KIND_LOCK, KIND_MOTION, KIND_DOOR, KIND_OTHER}
+# What a camera saw. Like motion, a detection ending is not an event.
+_CAMERA_KINDS = {KIND_PERSON, KIND_ANIMAL, KIND_VEHICLE, KIND_CRYING, KIND_CAMERA}
 
 _DOOR_CLASSES = {
     BinarySensorDeviceClass.DOOR,
@@ -427,6 +434,11 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         # plan. Kept apart from `events` because the rail's cap is a length
         # and the plan's is an age.
         self._by_area: dict[str, dict[str, Any]] = {}
+        # Camera detection sensor -> the kind it detects. Found, not
+        # configured: see `_watch`.
+        self._cameras: dict[str, str] = {}
+        self._watching: list[str] = []
+        self._unwatch: Any = None
 
     @property
     def _max_events(self) -> int:
@@ -476,17 +488,58 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
                         }
                 self._prune_by_area(dt_util.utcnow())
 
-        tracked = self._tracked
-        if not tracked:
+        if not self._tracked:
             LOGGER.warning(
                 "Home Signals has no entities configured; the activity feed will "
-                "stay empty until some are selected"
+                "carry only what the cameras see until some are selected"
             )
-            return
-
+        self._watch()
+        # A new camera joins the feed when it joins the registry.
         self.async_on_remove(
-            async_track_state_change_event(self.hass, tracked, self._handle_event)
+            self.hass.bus.async_listen(
+                er.EVENT_ENTITY_REGISTRY_UPDATED, self._registry_changed
+            )
         )
+        self.async_on_remove(self._stop_watching)
+
+    @callback
+    def _registry_changed(self, _event: Event) -> None:
+        self._watch()
+
+    @callback
+    def _stop_watching(self) -> None:
+        if self._unwatch is not None:
+            self._unwatch()
+            self._unwatch = None
+
+    @callback
+    def _watch(self) -> None:
+        """Listen to the configured entities and to every camera's detections.
+
+        A camera's detections are its binary sensors, named by what they
+        see -- the same discovery `camera_sightings` uses, so the card and
+        the feed never disagree about what a camera noticed. Its plain
+        motion sensor is left out: a person, an animal and a cry are said
+        by name, and pixel motion on a camera is mostly the light changing
+        and the night vision switching over.
+        """
+        registry = er.async_get(self.hass)
+        cameras: dict[str, str] = {}
+        for entity_id in camera_detections(registry):
+            entry = registry.async_get(entity_id)
+            kind = camera_kind(entry) if entry else KIND_CAMERA
+            if kind != KIND_MOTION:
+                cameras[entity_id] = kind
+        self._cameras = cameras
+        watching = sorted(set(self._tracked) | set(cameras))
+        if watching == self._watching and self._unwatch is not None:
+            return
+        self._stop_watching()
+        self._watching = watching
+        if watching:
+            self._unwatch = async_track_state_change_event(
+                self.hass, watching, self._handle_event
+            )
 
     @callback
     def _handle_event(self, event: Event[EventStateChangedData]) -> None:
@@ -503,14 +556,17 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
             return
 
         entity_id = new_state.entity_id
-        kind = self._kind(
+        kind = self._cameras.get(entity_id) or self._kind(
             entity_id,
             new_state.attributes.get(ATTR_DEVICE_CLASS),
             new_state.attributes.get("kind"),
         )
 
-        # Motion clearing is not an event. A button or a lock changing is.
-        if kind in (KIND_MOTION, KIND_DOOR) and new_state.state != STATE_ON:
+        # Motion clearing is not an event, and nor is a camera no longer
+        # seeing something. A button or a lock changing is.
+        if (
+            kind in (KIND_MOTION, KIND_DOOR) or kind in _CAMERA_KINDS
+        ) and new_state.state != STATE_ON:
             return
 
         now = dt_util.utcnow()
