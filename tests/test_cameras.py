@@ -142,3 +142,67 @@ async def test_a_door_is_not_a_camera(hass: HomeAssistant) -> None:
     hass.states.async_set(DOOR, "on")
     await hass.async_block_till_done()
     assert DOOR not in _seen(sensor)
+
+
+# ---- the activity feed -------------------------------------------------
+
+from custom_components.home_signals.cameras import camera_kind  # noqa: E402
+
+
+async def test_a_detection_is_named_by_what_it_sees(hass: HomeAssistant) -> None:
+    _house(hass)
+    registry = er.async_get(hass)
+    assert camera_kind(registry.async_get(CRY)) == "crying"
+    assert camera_kind(registry.async_get(PERSON)) == "person"
+
+
+async def _feed(hass: HomeAssistant, entities: list[str] | None = None):
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={"entities": entities or []})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+def _events(hass: HomeAssistant) -> list[dict]:
+    return hass.states.get("sensor.activity_feed").attributes.get("events") or []
+
+
+async def test_what_a_camera_sees_reaches_the_feed_unconfigured(hass: HomeAssistant) -> None:
+    """No option lists the camera: it is found by having a camera."""
+    _house(hass)
+    await _feed(hass)
+    hass.states.async_set(CRY, "on")
+    await hass.async_block_till_done()
+    rows = _events(hass)
+    assert [(r["entity_id"], r["kind"], r["state"]) for r in rows] == [(CRY, "crying", "on")]
+
+
+async def test_a_camera_no_longer_seeing_is_not_an_event(hass: HomeAssistant) -> None:
+    _house(hass)
+    await _feed(hass)
+    for state in ("on", "off", "unavailable", "off"):
+        hass.states.async_set(PERSON, state)
+        await hass.async_block_till_done()
+    rows = _events(hass)
+    assert [(r["kind"], r["state"]) for r in rows] == [("person", "on")]
+
+
+async def test_a_camera_s_pixel_motion_stays_out(hass: HomeAssistant) -> None:
+    _house(hass)
+    registry = er.async_get(hass)
+    cam = registry.async_get(PERSON).device_id
+    registry.async_get_or_create("binary_sensor", "reolink", "motion", device_id=cam,
+                                 suggested_object_id="nursery_motion")
+    hass.states.async_set("binary_sensor.nursery_motion", "off")
+    await _feed(hass)
+    hass.states.async_set("binary_sensor.nursery_motion", "on")
+    await hass.async_block_till_done()
+    assert _events(hass) == []
+
+
+async def test_a_door_still_needs_configuring(hass: HomeAssistant) -> None:
+    _house(hass)
+    await _feed(hass)
+    hass.states.async_set(DOOR, "on", {"device_class": "door"})
+    await hass.async_block_till_done()
+    assert _events(hass) == []
