@@ -374,7 +374,10 @@ a sensor coming back from unavailable as `off` is not a sighting of
 anything. One that has never seen anything has no entry at all.
 
 Which sensors count is not configured: a detection is a binary sensor on
-a device that also has a camera. That is true of a Reolink now and of
+a device that also has a camera, named for something seen (person, animal,
+vehicle, crying, motion) or of a seeing device class (motion, occupancy,
+presence, sound). The second half matters: a kiosk wall tablet has a camera
+of its own, and its charging and connectivity sensors are not sightings. That is true of a Reolink now and of
 Frigate's object sensors later, and a new camera is picked up when it
 appears in the registry, without a restart.
 
