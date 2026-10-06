@@ -30,7 +30,10 @@ One merged, newest-first feed of things that happened in the house.
 - **State** — when anything last happened anywhere. `device_class: timestamp`,
   so a card renders it as a relative time ("Quiet 2m") with no second sensor.
 - **`events`** — the rows, newest first, capped by `max_events`. Each carries
-  `entity_id`, `name`, `area`, `kind`, `state` and `at`.
+  `entity_id`, `name`, `area`, `kind`, `state` and `at`. Consecutive events
+  from the same entity fold into one row — the cap counts rows, not
+  happenings — and a folded row adds `count` and `first_at` (when the run
+  began; `at` is the newest).
 - **`tracked_count`** — how many entities are being watched, so a card can tell
   "nothing has happened" apart from "nothing is configured".
 - **`by_area`** — the last hour, per room: `{"Hall": {"kind", "at", "times"}}`,
