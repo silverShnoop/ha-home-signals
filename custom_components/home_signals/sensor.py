@@ -104,6 +104,7 @@ from .derived import (
     SoftenerStatusSensor,
     TasksStatusSensor,
 )
+from .cameras import CameraSightingsSensor
 from .devices import DevicesSensor
 from .energy import EnergyDaySensor
 from .prep import MealPrepSensor, async_register_prep_services
@@ -235,6 +236,7 @@ async def async_setup_entry(
     needs_you.owners = owners
     entities: list[SensorEntity] = [
         ActivityFeedSensor(entry),
+        CameraSightingsSensor(entry),
         needs_you,
         EnergyDaySensor(entry),
         *owners,

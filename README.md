@@ -340,6 +340,35 @@ out a Maintenance level twice:
 - **The rail button** reads `tab_maintenance` and `summary_maintenance` on
   `sensor.needs_you`.
 
+## `sensor.camera_sightings`
+
+When each camera last saw something. The state is when any camera last
+saw anything; `sightings` maps each detection sensor to
+`{on, since, started}`, where `since` is the moment the sighting ended,
+or the moment it began while it is still going on.
+
+```yaml
+since: {entity: sensor.camera_sightings, attribute: sightings,
+        key: [binary_sensor.rileys_room_camera_person, since],
+        format: relative}
+```
+
+A detection sensor's own `last_changed` is the last time it changed state
+for any reason, and that is not the same thing. A Reolink in privacy mode
+makes every detection sensor unavailable, and opening the lens brings them
+back as `off`. Read off `last_changed`, the panel said "Crying 5s ago" in
+a house where nobody had cried. A restart and an integration reload do the
+same. So only the two edges are written down, a detection starting and a
+detection ending, and the record is restored across restarts. A sensor
+going unavailable while it was seeing something ends the sighting there;
+a sensor coming back from unavailable as `off` is not a sighting of
+anything. One that has never seen anything has no entry at all.
+
+Which sensors count is not configured: a detection is a binary sensor on
+a device that also has a camera. That is true of a Reolink now and of
+Frigate's object sensors later, and a new camera is picked up when it
+appears in the registry, without a restart.
+
 ## `sensor.devices`
 
 How many of the house's devices are answering, counted as **things** rather
