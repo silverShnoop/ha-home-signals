@@ -235,6 +235,7 @@ publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
 | Bin calendar | `sensor.bins_status` |
 | Home Tasks | `sensor.tasks_status` |
 | Water softener | `sensor.softener_status` |
+| A Frigate camera | `sensor.camera_status`, by its `cameras` map |
 | Batteries | `sensor.batteries_status` |
 | Devices | `sensor.devices` |
 | Meals (prep) | the meal prep sensor |
@@ -1118,6 +1119,46 @@ A timer clears the record at local midnight. The rows are *also* filtered
 on the way out, because nothing was running at midnight after an overnight
 reboot and that timer never fired — without the second check the panel
 comes up showing yesterday under today's heading.
+
+## `sensor.camera_status`
+
+What a Frigate camera is asking somebody to do. A camera card states facts:
+what it can see, what it saw, what Frigate made of it. Two things it sees
+are jobs, and this is where their rows come from.
+
+- **Bring the parcel in** (`attention`). Frigate keeps tracking an object
+  that has stopped moving, so a camera's `package` occupancy stays on for
+  as long as the parcel is there. The row is that occupancy and nothing
+  else: it appears when a parcel is seen and clears itself when the parcel
+  is gone. Snooze only. Pressing a button does not bring a parcel in, and
+  a Done that hid the row while it sat in the rain would leave the card
+  and the row disagreeing.
+- **<Camera> camera has stopped** (`waiting`). No frames from the camera,
+  unbroken, for five minutes, read off Frigate's camera fps sensor (or
+  that sensor being unavailable, which is Frigate itself gone). Footage is
+  not being recorded until somebody looks, which is the promise `waiting`
+  makes. A shorter gap is a camera rebooting itself, and not news. While a
+  camera is stopped it raises no parcel row: its occupancy sensors hold
+  whatever they last said, and a row from them would be a guess.
+
+The cameras are **found, not configured**: every camera the Frigate
+integration has registered, read off its unique id (`<entry>:camera:<name>`)
+rather than its state, because an unavailable camera loses its attributes
+and an unavailable camera is half of what this is for. A camera added to
+Frigate is watched the moment it is registered.
+
+The state is the loudest level, or `clear`, with `level`, `tab`
+(`security`) and `jobs` as every card's sensor has. **`cameras`** maps
+Frigate's name for each camera to its own `name`, `entity`, `level` and
+`jobs`, so a card reads its own camera and a parcel at the back door does
+not colour the gate:
+
+```yaml
+outline: {entity: sensor.camera_status, attribute: cameras, key: [front_gate, level]}
+```
+
+The parcel's time is the occupancy sensor's `last_changed`, which a
+restart resets. A parcel there before a restart reads as arriving at it.
 
 ## `sensor.security_status`
 
