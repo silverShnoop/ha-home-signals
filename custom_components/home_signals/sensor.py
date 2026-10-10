@@ -410,7 +410,11 @@ def _async_register_services(
         DOMAIN, SERVICE_SNOOZE, _snooze,
         schema=vol.Schema({
             vol.Required(ATTR_ITEM_ID): cv.string,
-            vol.Optional(ATTR_HOURS, default=8): vol.Coerce(float),
+            # A quarter of an hour to a week: a snooze is a wait, not a
+            # dismissal in disguise and not a zero that hides nothing.
+            vol.Optional(ATTR_HOURS, default=8): vol.All(
+                vol.Coerce(float), vol.Range(min=0.25, max=168)
+            ),
         }),
     )
     hass.services.async_register(DOMAIN, SERVICE_RESET, _reset, schema=vol.Schema({}))

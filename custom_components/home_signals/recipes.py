@@ -48,10 +48,14 @@ loses its mark, because it is theirs now.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
+import ipaddress
 import json
+import math
 import re
 from typing import Any
+from urllib.parse import quote, urlparse
 import uuid
 
 import aiohttp
@@ -131,12 +135,59 @@ def _lines(value: Any) -> list[str] | None:
     return out
 
 
+# A recipe is named by its Mealie slug (lowercase words joined by dashes)
+# or its id (a UUID). Both are letters, digits and dashes, so anything
+# else -- a slash, a question mark, a dot -- is not a recipe and must not
+# reach the URL, where it would be read as a path.
+_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+RECIPE = vol.All(cv.string, vol.Match(_SLUG, msg="not a recipe slug or id"))
+
+
+def _finite(value: float) -> float:
+    """A number the recipe can actually hold: not NaN and not infinite."""
+    if not math.isfinite(value):
+        raise vol.Invalid("not a finite number")
+    return value
+
+
+def _public_url(value: str) -> str:
+    """A web address Mealie may be sent to fetch.
+
+    Mealie fetches whatever it is given, from wherever it runs, so a link
+    to this machine, the Supervisor or anything on the LAN would make it a
+    proxy into the house. A literal address is checked as an address; a
+    name is only refused when it is plainly local (no DNS lookup belongs
+    in the event loop, and the rest is Mealie's own network to police).
+    """
+    parts = urlparse(value)
+    if parts.scheme not in ("http", "https"):
+        raise vol.Invalid("the link must start with http:// or https://")
+    host = (parts.hostname or "").strip().lower()
+    if not host:
+        raise vol.Invalid("the link has no host")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if (
+            host in ("localhost", "homeassistant", "supervisor", "hassio")
+            or host.endswith((".local", ".localhost", ".internal"))
+        ):
+            raise vol.Invalid("the link points inside the house") from None
+        return value
+    if (
+        address.is_loopback or address.is_link_local or address.is_private
+        or address.is_reserved or address.is_multicast or address.is_unspecified
+    ):
+        raise vol.Invalid("the link points inside the house")
+    return value
+
+
 SAVE_SCHEMA = vol.Schema({
-    vol.Optional(ATTR_RECIPE): cv.string,
+    vol.Optional(ATTR_RECIPE): RECIPE,
     vol.Optional(ATTR_NAME): cv.string,
     vol.Optional(ATTR_DESCRIPTION): cv.string,
     vol.Optional(ATTR_TOTAL_TIME): cv.string,
-    vol.Optional(ATTR_SERVINGS): vol.Coerce(float),
+    vol.Optional(ATTR_SERVINGS): vol.All(vol.Coerce(float), _finite),
     # A list is tried first. cv.string turns anything into text, so with it
     # first a list of tags arrived as "['Dinner', 'Quick']" and was split on
     # its commas into tags called "['Dinner'" and "'Quick']".
@@ -165,7 +216,7 @@ PRUNE_SCHEMA = vol.Schema({
 })
 
 MARK_MADE_SCHEMA = vol.Schema({
-    vol.Required(ATTR_RECIPE): cv.string,
+    vol.Required(ATTR_RECIPE): RECIPE,
     vol.Optional(ATTR_DATE): cv.date,
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
@@ -178,14 +229,24 @@ _INDEX_CACHE = f"{DOMAIN}_recipe_index"
 _INDEX_PARALLEL = 6
 
 IMPORT_SCHEMA = vol.Schema({
-    vol.Required(ATTR_URL): cv.string,
+    vol.Required(ATTR_URL): vol.All(cv.string, str.strip, cv.url, _public_url),
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
 
 DELETE_SCHEMA = vol.Schema({
-    vol.Required(ATTR_RECIPE): cv.string,
+    vol.Required(ATTR_RECIPE): RECIPE,
     vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
 })
+
+
+def _path(*segments: Any) -> str:
+    """A path under /api, with every segment quoted so it stays one segment.
+
+    A slug is checked at the schema, but an id from Mealie's own answer is
+    not, and a value with a slash or a question mark in it would otherwise
+    be read as more path or as a query.
+    """
+    return "/" + "/".join(quote(str(part), safe="") for part in segments)
 
 
 class _Mealie:
@@ -241,7 +302,7 @@ class _Mealie:
         form.add_field("extension", ext)
         try:
             async with self._session.put(
-                f"{self._base}/recipes/{slug}/image", data=form,
+                f"{self._base}{_path('recipes', slug, 'image')}", data=form,
                 headers=self._headers, timeout=_TIMEOUT,
             ) as resp:
                 if resp.status >= 400:
@@ -370,7 +431,7 @@ def _prep_step(value: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     try:
         n = int(raw.get("n"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         n = 0
     if n >= 1:
         out["n"] = n
@@ -383,7 +444,7 @@ def _prep_step(value: Any) -> dict[str, Any]:
             number = float(raw.get(key))
         except (TypeError, ValueError):
             continue
-        if number >= 0:
+        if math.isfinite(number) and number >= 0:
             out[key] = int(number) if number == int(number) else number
     for key in ("keeps", "source"):
         if raw.get(key):
@@ -672,7 +733,7 @@ async def async_save_recipe(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
             # rather than left in the box as an empty shell.
             if made:
                 try:
-                    await api.request("DELETE", f"/recipes/{made}")
+                    await api.request("DELETE", _path("recipes", made))
                 except HomeAssistantError:
                     pass
             raise
@@ -697,7 +758,8 @@ async def _named(api: _Mealie, name: str) -> str | None:
     return None
 
 
-def _recipe_lock(hass: HomeAssistant, slug: str) -> asyncio.Lock:
+@contextlib.asynccontextmanager
+async def _recipe_lock(hass: HomeAssistant, slug: str):
     """One write at a time to a recipe.
 
     A save reads the recipe and writes it back. Mealie writes a recipe's
@@ -705,13 +767,24 @@ def _recipe_lock(hass: HomeAssistant, slug: str) -> asyncio.Lock:
     once both add theirs: an import's tagging and its split, which run
     side by side, left every line of a recipe twice, and the second save's
     extras overwrote the first's.
+
+    The lock lives only while somebody holds or waits for it: each slug
+    ever saved used to keep one for good.
     """
-    locks: dict[str, asyncio.Lock] = hass.data.setdefault(f"{DOMAIN}_recipe_locks", {})
-    return locks.setdefault(str(slug), asyncio.Lock())
+    locks: dict[str, list[Any]] = hass.data.setdefault(f"{DOMAIN}_recipe_locks", {})
+    held = locks.setdefault(str(slug), [asyncio.Lock(), 0])
+    held[1] += 1
+    try:
+        async with held[0]:
+            yield
+    finally:
+        held[1] -= 1
+        if held[1] == 0 and locks.get(str(slug)) is held:
+            del locks[str(slug)]
 
 
 async def _save_to(api: _Mealie, slug: str, data: Any) -> dict[str, Any]:
-    current = await api.request("GET", f"/recipes/{slug}") or {}
+    current = await api.request("GET", _path("recipes", slug)) or {}
     patch: dict[str, Any] = {}
     if ATTR_NAME in data and str(data[ATTR_NAME]).strip():
         patch["name"] = str(data[ATTR_NAME]).strip()
@@ -775,7 +848,7 @@ async def _save_to(api: _Mealie, slug: str, data: Any) -> dict[str, Any]:
 
     saved = current
     if patch:
-        answer = await api.request("PATCH", f"/recipes/{slug}", patch)
+        answer = await api.request("PATCH", _path("recipes", slug), patch)
         saved = answer if isinstance(answer, dict) else current
     # A rename moves the recipe to a new slug, so the answer is read from
     # what Mealie sent back, not from what was asked for.
@@ -848,7 +921,7 @@ async def _tags_for(api: _Mealie, names: list[str]) -> list[dict[str, Any]]:
                 tag = tags.get(slug) or {}
             tags[slug] = tag
         elif tag.get("id") and str(tag.get("name", "")).lower() != name.lower():
-            renamed = await api.request("PUT", f"/organizers/tags/{tag['id']}", {"name": name})
+            renamed = await api.request("PUT", _path("organizers", "tags", tag["id"]), {"name": name})
             tag = renamed if isinstance(renamed, dict) and renamed.get("slug") else {**tag, "name": name}
             tags[slug] = tag
         if tag.get("slug") and all(t["slug"] != tag["slug"] for t in out):
@@ -865,7 +938,7 @@ async def async_prune_tags(hass: HomeAssistant, call: ServiceCall) -> ServiceRes
     gone = []
     for tag in empty:
         if isinstance(tag, dict) and tag.get("id"):
-            await api.request("DELETE", f"/organizers/tags/{tag['id']}")
+            await api.request("DELETE", _path("organizers", "tags", tag["id"]))
             gone.append(tag.get("name"))
     return {"deleted": gone}
 
@@ -876,7 +949,7 @@ async def _set_favourite(api: _Mealie, slug: str, favourite: bool) -> None:
     if not me.get("id"):
         raise HomeAssistantError("Mealie did not say whose token this is.")
     await api.request(
-        "POST", f"/users/{me['id']}/ratings/{slug}", {"isFavorite": bool(favourite)}
+        "POST", _path("users", me["id"], "ratings", slug), {"isFavorite": bool(favourite)}
     )
 
 
@@ -896,7 +969,7 @@ async def async_import_recipe(hass: HomeAssistant, call: ServiceCall) -> Service
         raise
     if not isinstance(slug, str) or not slug:
         raise HomeAssistantError("Mealie imported the recipe but did not say where.")
-    saved = await api.request("GET", f"/recipes/{slug}") or {}
+    saved = await api.request("GET", _path("recipes", slug)) or {}
     # Where it came from. A video is transcribed and read by Mealie's own
     # AI, which does not say which model it used; every step it wrote is
     # marked as read by AI.
@@ -911,7 +984,7 @@ async def async_import_recipe(hass: HomeAssistant, call: ServiceCall) -> Service
         extras = dict(saved.get("extras")) if isinstance(saved.get("extras"), dict) else {}
         extras[PROVENANCE] = _stored_provenance(prov)
         try:
-            await api.request("PATCH", f"/recipes/{saved.get('slug', slug)}", {"extras": extras})
+            await api.request("PATCH", _path("recipes", saved.get("slug", slug)), {"extras": extras})
         except HomeAssistantError:
             pass
     return {
@@ -924,7 +997,7 @@ async def async_import_recipe(hass: HomeAssistant, call: ServiceCall) -> Service
 async def async_delete_recipe(hass: HomeAssistant, call: ServiceCall) -> None:
     """Delete a recipe. Meals already planned with it lose their recipe."""
     api = _Mealie(hass, _mealie_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID)))
-    await api.request("DELETE", f"/recipes/{call.data[ATTR_RECIPE]}")
+    await api.request("DELETE", _path("recipes", call.data[ATTR_RECIPE]))
 
 
 def _ingredient_lines(recipe: dict[str, Any]) -> list[str]:
@@ -984,7 +1057,7 @@ async def async_recipe_index(hass: HomeAssistant, call: ServiceCall) -> ServiceR
             return hit[1], hit[2], hit[3], hit[4]
         async with gate:
             try:
-                full = await api.request("GET", f"/recipes/{slug}") or {}
+                full = await api.request("GET", _path("recipes", slug)) or {}
             except HomeAssistantError:
                 return (hit[1], hit[2], hit[3], hit[4]) if hit and len(hit) == 5 else ([], None, None, [])
         got = (_ingredient_lines(full), _prep_of(full), _provenance_of(full),
@@ -1036,7 +1109,7 @@ async def async_mark_made(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
     it was cooked again on Friday must not make it look older than it is.
     """
     api = _Mealie(hass, _mealie_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID)))
-    recipe = await api.request("GET", f"/recipes/{call.data[ATTR_RECIPE]}") or {}
+    recipe = await api.request("GET", _path("recipes", call.data[ATTR_RECIPE])) or {}
     slug = recipe.get("slug")
     if not slug:
         raise ServiceValidationError("Mealie has no such recipe.")
@@ -1046,7 +1119,7 @@ async def async_mark_made(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
         return {"slug": slug, "last_made": before, "changed": False}
     # Midday local, so the date reads the same in any timezone Mealie shows it in.
     stamp = dt.datetime.combine(day, dt.time(12), tzinfo=dt_util.get_default_time_zone())
-    await api.request("PATCH", f"/recipes/{slug}/last-made", {"timestamp": stamp.isoformat()})
+    await api.request("PATCH", _path("recipes", slug, "last-made"), {"timestamp": stamp.isoformat()})
     return {"slug": slug, "last_made": day.isoformat(), "changed": True}
 
 

@@ -157,10 +157,17 @@ It carries `snooze_only: True`, so a dismissal — from the `dismiss`
 service, an automation, or a suppression restored from before — is
 ignored. Only a timed snooze hides it, and the snooze always runs out.
 
+The three appliance rows that stay true until the world changes are the
+same: a leak (`leak_<slug>`), a pad still wet after the power came back
+(`leak_wet_<slug>`) and a machine with no power (`unpowered_<slug>`). Water
+on the floor and a wet load going nowhere are not things a "Done" can
+finish, so each honours a snooze and ignores a dismissal.
+
 ### Dismissing
 
-Three actions: `home_signals.dismiss`, `home_signals.snooze` (with `hours`)
-and `home_signals.reset`. All take the row's `id`.
+Three actions: `home_signals.dismiss`, `home_signals.snooze` (with `hours`,
+from a quarter of an hour to a week) and `home_signals.reset`. All take the
+row's `id`.
 
 They are actions rather than state inside a card because the panel, a phone
 and a wall button all have to clear the same row — a browser cannot be where
@@ -281,7 +288,7 @@ answers at once with a `task_id` and runs the action in the background:
 action: home_signals.start_ai_task
 data:
   title: Recipe from a link
-  action: script.recipe_import       # anything that answers with a response
+  action: script.recipe_import       # a script, ai_task or frigate action that answers
   data: {url: "https://…"}
   card: meals                        # which card started it
   tab: kitchen                       # whose rail button it colours
@@ -295,6 +302,18 @@ data:
     pass: {recipe: slug}             # its field <- the first answer's key
     unless: already                  # skip it when the first answer says this
 ```
+
+**It runs as whoever asked, and only what a card would ask for.** The
+action is called with the caller's context, so Home Assistant applies that
+person's permissions and the logbook names them, rather than everything a
+card starts running as nobody. Its domain, and `then`'s, must be one of
+`script`, `ai_task` or `frigate`: those are what the cards hand over (every
+meal flow is a script, and the camera's day summary is Frigate's own
+`review_summarize`), and a lock or a shell command has no business being
+run in the background under this integration's name. Anything else is
+refused, naming the three. At most four tasks run at once — a fifth is
+refused with "try again shortly" — and a task's `data` may be up to 8 MB
+as JSON, which is room for a few fridge photos and not for more.
 
 **Running is already blue.** The sensor's state is `running`, and the card,
 the tab and a row — "Recipe from a link · Running · step 1 of 2" — wear
@@ -982,6 +1001,10 @@ Stood down is not the same as quiet. The cutoff fires only on the pad
 dries there is an `attention` row, "leak sensor still wet", and the Cleaning
 tab is at `attention` too. It clears itself when the pad dries.
 
+Neither leak row, nor the no-power row, can be dismissed: each carries
+`snooze_only`, so a snooze puts it off and a "Done" from anything calling
+`dismiss` is ignored. The floor, the pad and the plug are what clear them.
+
 ### A dryer only tumbles, and says so
 
 The washer's phase bands were measured on the washer, off one wash, so
@@ -1384,6 +1407,15 @@ unless `date` is given). It never moves the date backwards, so marking an
 older meal after a newer one is harmless. The meal scripts call it each
 night for the day that has just gone.
 
+Everywhere an action names a `recipe`, it is Mealie's slug or id: letters,
+digits, dashes and underscores, and nothing else. Anything else is refused
+at the schema, and every value that ends up in a path to Mealie — a slug, a
+tag's id, a user's id — is percent-encoded on the way, so a value with a
+slash in it stays one segment rather than becoming more path.
+`import_recipe` takes an `http` or `https` link on the web; a link to this
+machine, the Supervisor, a `.local` name or a private address is refused,
+because Mealie would fetch it from inside the house.
+
 ## Prep ahead: noting what can be done early
 
 `save_recipe` takes an optional `prep`, which says which of a recipe's steps
@@ -1469,7 +1501,11 @@ photo through from Mealie, with `size` one of `tiny`, `min` or `original`. The
 meal cards cannot reach Mealie themselves, because the app sits behind
 ingress. The path needs Home Assistant's authentication. An `<img>` cannot
 send a token, so the card signs the path first with `auth/sign_path` and
-uses the signed URL. The browser keeps each photo for a day.
+uses the signed URL. The browser keeps each photo for a day. Only a WebP,
+JPEG or PNG is passed through — anything else Mealie sends back is answered
+with 415 — and it is sent with `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: sandbox`, so the browser shows a picture and
+runs nothing.
 
 **`home_signals.save_photo`** keeps a photo sent by a card (base64 or a data
 URL, JPEG, PNG or WebP, under 3 MB) in local media under

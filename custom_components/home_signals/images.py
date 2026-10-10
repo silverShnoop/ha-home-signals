@@ -28,6 +28,9 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import DOMAIN, MEALIE_DOMAIN
 
 SIZES = {"tiny": "tiny-original.webp", "min": "min-original.webp", "original": "original.webp"}
+# What Mealie stores a recipe's photo as. Anything else -- an SVG with a
+# script in it, say -- is not a photo and is not passed through.
+KINDS = frozenset({"image/webp", "image/jpeg", "image/png"})
 _ID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 _TIMEOUT = ClientTimeout(total=15)
 
@@ -68,11 +71,18 @@ class RecipeImageView(HomeAssistantView):
                 kind = resp.headers.get("Content-Type", "image/webp")
         except (ClientError, TimeoutError, HomeAssistantError):
             return web.Response(status=HTTPStatus.BAD_GATEWAY)
-        if not kind.startswith("image/"):
-            return web.Response(status=HTTPStatus.NOT_FOUND)
+        kind = kind.split(";")[0].strip().lower()
+        if kind not in KINDS:
+            return web.Response(status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
         return web.Response(
-            body=body, content_type=kind.split(";")[0],
-            headers={"Cache-Control": "private, max-age=86400"},
+            body=body, content_type=kind,
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                # The browser takes the type as sent and renders the bytes
+                # as a picture and nothing more, whatever they turn out to be.
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox",
+            },
         )
 
 

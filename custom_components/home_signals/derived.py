@@ -302,6 +302,10 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             "level": LEVEL_CRITICAL,
             "action_label": "Snooze",
             "action": _snooze(f"leak_{slug}", hours=1),
+            # Snooze, never dismiss. Water on the floor stays true until
+            # the pad dries or the plug is restored, so a "Done" from
+            # anything calling the service must not lose the row for good.
+            "snooze_only": True,
         })
 
     elif attrs.get("leak"):
@@ -317,6 +321,9 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             "detail": _wet_for(attrs, "Won't cut the power again until it dries"),
             "icon": "mdi:water-alert",
             "level": LEVEL_ATTENTION,
+            # Only the pad drying clears it: a dismissal would hide the one
+            # row that says a second leak would cut nothing.
+            "snooze_only": True,
         })
 
     # Deliberately independent of the leak: the sensor stays wet long
@@ -337,6 +344,9 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             "level": LEVEL_WAITING,
             "action_label": "Snooze",
             "action": _snooze(f"unpowered_{slug}", hours=4),
+            # Snooze, never dismiss: the machine stays off until somebody
+            # switches it on, and that is what clears the row.
+            "snooze_only": True,
         })
 
     # There is washing sitting in the drum. True of both machines
