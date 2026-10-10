@@ -747,7 +747,6 @@ prev7_kwh / prev7_cost_text        the seven before those
 week7_vs_prev_text                 "12% above the week before"
 avg_week_cost_text / avg_weeks     the average week, and how many it had
 avg_week_note                      "over 6 weeks", or "over the year"
-month_rows                         whole months, oldest first
 breakdown / breakdown_metered_pct  the week's wedges, and how much is watched
 ```
 
@@ -761,10 +760,13 @@ a month later, and a card renders nothing perfectly well.
   average down.
 - `avg_week_note` says what it actually averaged. "A 7-day average" implies
   a year of evidence that does not exist in the first month.
-- The **current month is never drawn**. It is always the short bar and would
-  always read as an improvement, right up to the last day. Fewer than
-  `ENERGY_MIN_MONTHS` whole months and the card shows nothing: one month is
-  not a trend, and a chart with one bar is a stat tile in fancy dress.
+
+Months are **not** among them. `_fold_months` already totals the days by
+calendar month and does it better than a statistics query could: it
+survives a day Octopus revises, keeps the fuller count as a month's days
+age out of the five-week history, carries the four blocks per month, and
+needs no Energy dashboard configured. A second source for one figure is
+two figures waiting to disagree.
 
 The refresh runs on the half-hourly timer, not when the attributes are
 read. Every figure here is a recorder query and **a card must never be the
