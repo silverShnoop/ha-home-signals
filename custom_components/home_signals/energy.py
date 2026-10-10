@@ -852,6 +852,11 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         rest = max(0.0, grid - named)
         if rest > 0:
             wedge = self._slice(BREAKDOWN_OTHER, rest, grid, rate)
+            # Marked rather than recognised by its name. "Everything else"
+            # is a phrase about this house, and the card that draws the
+            # wedges is not -- it paints this one grey because a gap should
+            # not be given a hue and made to look measured.
+            wedge["rest"] = True
             if spend is not None and rate is not None:
                 # The remainder takes the remaining money rather than its
                 # own multiplication, so the wedges add up to the week's

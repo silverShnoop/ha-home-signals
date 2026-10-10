@@ -18,6 +18,7 @@ from datetime import date, timedelta
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from custom_components.home_signals.energy import (
     EnergyDaySensor,
@@ -1103,6 +1104,49 @@ async def test_a_plug_that_out_reads_the_meter_is_capped(
     assert rows[0]["kwh"] == 10.0
     assert rows[0]["share"] == pytest.approx(100.0)
     assert [r["name"] for r in rows] == ["Washing machine"], "no negative rest"
+
+
+async def test_the_remainder_is_marked_for_the_card(
+    hass: HomeAssistant, freezer, monkeypatch
+) -> None:
+    """Through the real assembly, not the wedge helper underneath it.
+
+    The card paints a wedge grey when the sensor marks it, because
+    "Everything else" is a phrase about this house and the card is not. So
+    the sensor has to actually set the flag -- and testing the two halves
+    separately is exactly how that gets missed: a card test that sets the
+    flag by hand passes whether or not anything ever sets it for real.
+    """
+    from custom_components.home_signals import energy as energy_module
+    from custom_components.home_signals.usage import Meters
+
+    meters = Meters(
+        grid_kwh="stat:grid",
+        grid_cost="stat:cost",
+        devices=(("Washing machine", "stat:washer"),),
+    )
+
+    async def _meters(_hass):
+        return meters
+
+    async def _totals(_hass, ids, _start, _end):
+        return {"stat:grid": 20.0, "stat:washer": 4.0, "stat:cost": 5.0}
+
+    monkeypatch.setattr(energy_module, "async_meters", _meters)
+    monkeypatch.setattr(energy_module, "async_totals", _totals)
+
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    out = await m.sensor._async_breakdown(meters, dt_util.now())
+
+    wedges = out["breakdown"]
+    assert [w["name"] for w in wedges] == ["Washing machine", "Everything else"]
+    assert wedges[0].get("rest") is None, "a metered thing is not the remainder"
+    assert wedges[-1]["rest"] is True, "the remainder was not marked"
+    # And the figures the card prints beside it.
+    assert wedges[-1]["kwh"] == 16.0
+    assert wedges[-1]["share"] == pytest.approx(80.0)
+    assert sum(w["cost"] for w in wedges) == pytest.approx(5.0, abs=0.001)
+    assert out["breakdown_metered_pct"] == 20
 
 
 async def test_a_week_with_no_price_still_divides_up_the_units(
