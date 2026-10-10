@@ -66,7 +66,7 @@ async def test_cameras_are_found_by_their_unique_id(hass: HomeAssistant) -> None
     frigate = _frigate(hass)
     _camera(hass, frigate, "front_gate", "Front Gate")
     # A camera on another integration is not Frigate's.
-    er.async_get(hass).async_get_or_create("camera", "reolink", "nursery", suggested_object_id="nursery")
+    er.async_get(hass).async_get_or_create("camera", "reolink", "rileys_room", suggested_object_id="rileys_room")
     assert frigate_cameras(er.async_get(hass)) == [("fr1", "front_gate", "camera.front_gate")]
 
 

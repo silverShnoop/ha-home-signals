@@ -24,7 +24,7 @@ KIND_MOTION = "motion"
 KIND_DOOR = "door"
 KIND_OTHER = "other"
 # What a camera saw, named by what it was rather than by the camera: the
-# rail reads "Anaya's Bedroom · crying". A detection the camera does not
+# rail reads "Riley's Room · crying". A detection the camera does not
 # name in a way we know is just `camera`.
 KIND_PERSON = "person"
 KIND_ANIMAL = "animal"

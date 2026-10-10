@@ -26,8 +26,8 @@ from custom_components.home_signals.cameras import (
 )
 from custom_components.home_signals.const import DOMAIN
 
-CRY = "binary_sensor.nursery_crying"
-PERSON = "binary_sensor.nursery_person"
+CRY = "binary_sensor.rileys_room_crying"
+PERSON = "binary_sensor.rileys_room_person"
 DOOR = "binary_sensor.front_door"
 
 
@@ -40,8 +40,8 @@ def _house(hass: HomeAssistant) -> None:
     cam = devices.async_get_or_create(config_entry_id=source.entry_id, identifiers={("reolink", "cam")})
     door = devices.async_get_or_create(config_entry_id=source.entry_id, identifiers={("zha", "door")})
     registry.async_get_or_create("camera", "reolink", "cam_fluent", device_id=cam.id,
-                                 suggested_object_id="nursery_fluent")
-    for uid, obj, dev in (("cry", "nursery_crying", cam), ("person", "nursery_person", cam),
+                                 suggested_object_id="rileys_room_fluent")
+    for uid, obj, dev in (("cry", "rileys_room_crying", cam), ("person", "rileys_room_person", cam),
                           ("door", "front_door", door)):
         registry.async_get_or_create("binary_sensor", "reolink", uid, device_id=dev.id,
                                      suggested_object_id=obj)
@@ -192,10 +192,10 @@ async def test_a_camera_s_pixel_motion_stays_out(hass: HomeAssistant) -> None:
     registry = er.async_get(hass)
     cam = registry.async_get(PERSON).device_id
     registry.async_get_or_create("binary_sensor", "reolink", "motion", device_id=cam,
-                                 suggested_object_id="nursery_motion")
-    hass.states.async_set("binary_sensor.nursery_motion", "off")
+                                 suggested_object_id="rileys_room_motion")
+    hass.states.async_set("binary_sensor.rileys_room_motion", "off")
     await _feed(hass)
-    hass.states.async_set("binary_sensor.nursery_motion", "on")
+    hass.states.async_set("binary_sensor.rileys_room_motion", "on")
     await hass.async_block_till_done()
     assert _events(hass) == []
 
