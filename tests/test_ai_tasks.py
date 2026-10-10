@@ -12,7 +12,9 @@ import asyncio
 from datetime import timedelta
 from typing import Any
 
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+import pytest
+from homeassistant.core import Context, HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -26,6 +28,7 @@ from custom_components.home_signals.const import (
     LEVEL_NOTICE,
     LEVEL_WAITING,
 )
+from custom_components.home_signals.ai_tasks import MAX_DATA_BYTES, MAX_RUNNING
 from custom_components.home_signals.derived import NeedsYouSensor, loudest
 
 TASKS = "sensor.ai_tasks"
@@ -377,3 +380,100 @@ async def test_a_second_step_that_answers_with_an_error_is_partial(hass: HomeAss
     [row] = [r for r in hass.states.get(NEEDS).attributes["items"] if r["id"] == task_id]
     assert row["outcome"] == "success"
     assert row["detail"].endswith("the second step did not finish")
+
+
+# --- who runs it, what may run, and how much at once ---------------------
+
+
+async def test_the_action_runs_as_whoever_asked(hass: HomeAssistant) -> None:
+    """The caller's context goes through to the action, so Home Assistant
+    applies that person's permissions and the logbook names them."""
+    release = await _setup(hass)
+    seen: list[Context] = []
+
+    async def _whoami(call: ServiceCall) -> dict[str, Any]:
+        seen.append(call.context)
+        return {"recipe": "Soup", "slug": "soup"}
+
+    hass.services.async_register(
+        "script", "whoami", _whoami, supports_response=SupportsResponse.ONLY
+    )
+    asked = Context(user_id="a-user")
+    await hass.services.async_call(
+        DOMAIN, "start_ai_task",
+        {
+            "title": "Who", "action": "script.whoami", "card": "meals",
+            "then": {"action": "script.recipe_split", "pass": {"recipe": "slug"}},
+        },
+        blocking=True, return_response=True, context=asked,
+    )
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert seen == [asked], "the first step did not run as the caller"
+    (split,) = [c for c in hass.data["ai_calls"] if c[0] == "split"]
+    assert split[1] == {"recipe": "soup"}
+
+
+async def test_only_a_script_an_ai_task_or_frigate_may_be_run(hass: HomeAssistant) -> None:
+    """A lock, a shell command or a cover is not slow AI work."""
+    await _setup(hass)
+    for bad in ("lock.lock", "shell_command.run", "homeassistant.restart"):
+        with pytest.raises(ServiceValidationError, match="ai_task, frigate, script"):
+            await hass.services.async_call(
+                DOMAIN, "start_ai_task",
+                {"title": "No", "action": bad},
+                blocking=True, return_response=True,
+            )
+    # The second step is held to the same list.
+    with pytest.raises(ServiceValidationError, match="ai_task, frigate, script"):
+        await hass.services.async_call(
+            DOMAIN, "start_ai_task",
+            {
+                "title": "No", "action": "script.recipe_import",
+                "then": {"action": "lock.unlock"},
+            },
+            blocking=True, return_response=True,
+        )
+    assert hass.states.get(TASKS).attributes["tasks"] == [], "a refused task was kept"
+
+
+async def test_a_fifth_task_at_once_is_told_to_wait(hass: HomeAssistant) -> None:
+    release = await _setup(hass)
+    for _ in range(MAX_RUNNING):
+        await _start(hass)
+    await hass.async_block_till_done(wait_background_tasks=False)
+    assert hass.states.get(TASKS).attributes["running"] == MAX_RUNNING
+
+    with pytest.raises(ServiceValidationError, match="already running; try again shortly"):
+        await _start(hass)
+
+    release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(TASKS).attributes["running"] == 0
+    # Room again once they have landed.
+    await _start(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def test_a_task_cannot_carry_more_than_the_cap(hass: HomeAssistant) -> None:
+    await _setup(hass)
+    with pytest.raises(ServiceValidationError, match="over 8 MB"):
+        await hass.services.async_call(
+            DOMAIN, "start_ai_task",
+            {
+                "title": "Big", "action": "script.recipe_import",
+                "data": {"photo": "x" * (MAX_DATA_BYTES + 1)},
+            },
+            blocking=True, return_response=True,
+        )
+    # The same again under the cap, carried in the second step, is fine.
+    with pytest.raises(ServiceValidationError, match="over 8 MB"):
+        await hass.services.async_call(
+            DOMAIN, "start_ai_task",
+            {
+                "title": "Big", "action": "script.recipe_import",
+                "then": {"action": "script.recipe_split", "data": {"photo": "x" * MAX_DATA_BYTES}},
+            },
+            blocking=True, return_response=True,
+        )
+    assert hass.states.get(TASKS).attributes["tasks"] == []

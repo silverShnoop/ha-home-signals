@@ -312,3 +312,55 @@ async def test_a_quiet_machine_raises_nothing(hass: HomeAssistant) -> None:
     """
     _machine(hass)
     assert await _rows(hass) == []
+
+
+# --- what a "Done" may not finish ---------------------------------------
+
+
+async def test_a_leak_cannot_be_dismissed_only_snoozed(hass: HomeAssistant) -> None:
+    """Water on the floor stays true until the pad dries or the plug is
+    restored. A dismissal from anything calling the service must not lose
+    the one critical row in the house; a snooze puts it off and runs out."""
+    _machine(hass, leak=True, leak_alarm=True, powered=False)
+    sensor = _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    sensor.suppress("leak_washing_machine")  # a dismissal: no hours, forever
+    sensor._recompute()  # noqa: SLF001
+    rows = sensor.extra_state_attributes["items"]
+    assert any(r["id"] == "leak_washing_machine" for r in rows), "the leak was dismissed away"
+
+    sensor.suppress("leak_washing_machine", hours=1)
+    sensor._recompute()  # noqa: SLF001
+    rows = sensor.extra_state_attributes["items"]
+    assert not any(r["id"] == "leak_washing_machine" for r in rows), "a snooze did not hide it"
+
+
+async def test_a_wet_pad_cannot_be_dismissed(hass: HomeAssistant) -> None:
+    """The row that says a second leak would cut nothing clears when the pad dries."""
+    _machine(hass, leak=True, leak_alarm=False, powered=True)
+    sensor = _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+    sensor.suppress("leak_wet_washing_machine")
+    sensor._recompute()  # noqa: SLF001
+    rows = sensor.extra_state_attributes["items"]
+    assert any(r["id"] == "leak_wet_washing_machine" for r in rows), "the wet pad was dismissed away"
+
+
+async def test_a_dead_machine_cannot_be_dismissed_only_snoozed(hass: HomeAssistant) -> None:
+    _machine(hass, powered=False)
+    sensor = _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    sensor.suppress("unpowered_washing_machine")
+    sensor._recompute()  # noqa: SLF001
+    rows = sensor.extra_state_attributes["items"]
+    assert any(r["id"] == "unpowered_washing_machine" for r in rows), "no power was dismissed away"
+
+    sensor.suppress("unpowered_washing_machine", hours=4)
+    sensor._recompute()  # noqa: SLF001
+    rows = sensor.extra_state_attributes["items"]
+    assert not any(r["id"] == "unpowered_washing_machine" for r in rows)

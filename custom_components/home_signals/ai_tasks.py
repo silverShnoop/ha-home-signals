@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+import json
 import logging
 from typing import Any
 import uuid
@@ -55,6 +56,7 @@ import voluptuous as vol
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import (
+    Context,
     HomeAssistant,
     ServiceCall,
     ServiceResponse,
@@ -109,6 +111,22 @@ KEEP_MAX = 12
 
 # A model that has not answered in this long is not going to.
 TIMEOUT = timedelta(minutes=10)
+
+# What a task may run. The cards hand over scripts (every meal flow), an
+# `ai_task` directly, and Frigate's own day summary. Anything else -- a
+# lock, a cover, a shell command -- is not slow AI work and must not be
+# reachable through a service that runs it in the background under the
+# integration's name.
+ALLOWED_DOMAINS = frozenset({"ai_task", "frigate", "script"})
+
+# How many tasks may run at once. Each one is a model call and a
+# background task; a panel that fires them in a loop should hear "wait",
+# not quietly queue a hundred.
+MAX_RUNNING = 4
+# How much `data` a task may carry, as JSON. A fridge photo is a few
+# hundred KB of base64; eight million bytes is room for several of those
+# and not for the recorder's worth of anything.
+MAX_DATA_BYTES = 8_000_000
 
 _ID_PREFIX = "ai_"
 
@@ -183,7 +201,21 @@ def _split(action: str) -> tuple[str, str]:
     domain, _, service = action.partition(".")
     if not domain or not service:
         raise ServiceValidationError(f"{action!r} is not an action")
+    if domain not in ALLOWED_DOMAINS:
+        raise ServiceValidationError(
+            f"{action!r} cannot be run as an AI task; only "
+            f"{', '.join(sorted(ALLOWED_DOMAINS))} actions can"
+        )
     return domain, service
+
+
+def _too_big(data: dict[str, Any]) -> bool:
+    """Whether the call's data, as the JSON it travelled as, is over the cap."""
+    try:
+        size = len(json.dumps(data, default=str))
+    except (TypeError, ValueError):
+        return True
+    return size > MAX_DATA_BYTES
 
 
 class AiTasksSensor(SensorEntity):
@@ -296,11 +328,27 @@ class AiTasksSensor(SensorEntity):
 
     # --- the work -----------------------------------------------------
 
-    async def async_start(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Take the work and answer at once with its id."""
+    async def async_start(
+        self, data: dict[str, Any], context: Context | None = None
+    ) -> dict[str, Any]:
+        """Take the work and answer at once with its id.
+
+        `context` is the caller's: the action runs as whoever asked, so
+        Home Assistant applies their permissions and the logbook names
+        them, rather than everything a card starts running as nobody.
+        """
         _split(data[ATTR_ACTION])
         if (then := data.get(ATTR_THEN)) is not None:
             _split(then[ATTR_ACTION])
+        if _too_big(data):
+            raise ServiceValidationError(
+                f"That task's data is over {MAX_DATA_BYTES // 1_000_000} MB"
+            )
+        running = sum(1 for t in self._tasks if t["state"] == RUNNING)
+        if running >= MAX_RUNNING:
+            raise ServiceValidationError(
+                f"{MAX_RUNNING} AI tasks are already running; try again shortly"
+            )
         task = {
             "id": f"{_ID_PREFIX}{uuid.uuid4().hex[:12]}",
             "title": data[ATTR_TITLE],
@@ -321,22 +369,29 @@ class AiTasksSensor(SensorEntity):
         await self._save()
         self.async_write_ha_state()
         self.hass.async_create_background_task(
-            self._run(task, dict(data)), f"{DOMAIN} {task['id']}"
+            self._run(task, dict(data), context), f"{DOMAIN} {task['id']}"
         )
         return {ATTR_TASK_ID: task["id"]}
 
-    async def _call(self, action: str, data: dict[str, Any]) -> Any:
+    async def _call(
+        self, action: str, data: dict[str, Any], context: Context | None
+    ) -> Any:
         domain, service = _split(action)
         async with asyncio.timeout(TIMEOUT.total_seconds()):
             return await self.hass.services.async_call(
-                domain, service, data, blocking=True, return_response=True
+                domain, service, data,
+                blocking=True, return_response=True, context=context,
             )
 
-    async def _run(self, task: dict[str, Any], data: dict[str, Any]) -> None:
+    async def _run(
+        self, task: dict[str, Any], data: dict[str, Any], context: Context | None
+    ) -> None:
         result: Any = None
         then_result: Any = None
         try:
-            result = await self._call(data[ATTR_ACTION], data.get(ATTR_DATA) or {})
+            result = await self._call(
+                data[ATTR_ACTION], data.get(ATTR_DATA) or {}, context
+            )
             if (why := _why_empty(result, data)) is not None:
                 raise _NoAnswer(why)
             label_key = data.get(ATTR_LABEL)
@@ -351,7 +406,7 @@ class AiTasksSensor(SensorEntity):
                     for field, key in (then.get(ATTR_PASS) or {}).items()
                 }
                 then_result = await self._call(
-                    then[ATTR_ACTION], {**(then.get(ATTR_DATA) or {}), **fed}
+                    then[ATTR_ACTION], {**(then.get(ATTR_DATA) or {}), **fed}, context
                 )
                 if _second_failed(then_result):
                     task["partial"] = True
@@ -547,7 +602,7 @@ def async_register_ai_task_services(hass: HomeAssistant, tasks: AiTasksSensor) -
     """Registered afresh each setup, so a reload points them at the new sensor."""
 
     async def _start(call: ServiceCall) -> ServiceResponse:
-        return await tasks.async_start(dict(call.data))
+        return await tasks.async_start(dict(call.data), call.context)
 
     async def _result(call: ServiceCall) -> ServiceResponse:
         return tasks.result(call.data[ATTR_TASK_ID])

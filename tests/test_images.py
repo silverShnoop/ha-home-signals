@@ -61,3 +61,34 @@ async def test_it_needs_home_assistants_auth(
     await _start(hass)
     client = await hass_client_no_auth()
     assert (await client.get(f"/api/{DOMAIN}/recipe_image/{RID}/min")).status == 401
+
+
+async def test_only_a_photo_is_passed_through(
+    hass: HomeAssistant, hass_client, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """An SVG can carry a script; Mealie stores photos as WebP, JPEG or PNG."""
+    await _start(hass)
+    aioclient_mock.get(
+        f"{BASE}/api/media/recipes/{RID}/images/min-original.webp",
+        content=b"<svg onload='alert(1)'/>", headers={"Content-Type": "image/svg+xml"},
+    )
+    client = await hass_client()
+    resp = await client.get(f"/api/{DOMAIN}/recipe_image/{RID}/min")
+    assert resp.status == HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+    assert await resp.read() == b""
+
+
+async def test_a_photo_is_sent_as_a_picture_and_nothing_more(
+    hass: HomeAssistant, hass_client, aioclient_mock: AiohttpClientMocker
+) -> None:
+    await _start(hass)
+    aioclient_mock.get(
+        f"{BASE}/api/media/recipes/{RID}/images/original.webp",
+        content=b"\xff\xd8\xff", headers={"Content-Type": "image/JPEG; charset=binary"},
+    )
+    client = await hass_client()
+    resp = await client.get(f"/api/{DOMAIN}/recipe_image/{RID}/original")
+    assert resp.status == HTTPStatus.OK
+    assert resp.headers["Content-Type"] == "image/jpeg"
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    assert resp.headers["Content-Security-Policy"] == "sandbox"

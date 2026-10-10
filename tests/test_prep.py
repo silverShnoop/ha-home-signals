@@ -242,3 +242,21 @@ async def test_settings_move_meal_times(
     assert attrs["meal_times"]["breakfast"] == "07:00"
     assert attrs["level"] == LEVEL_WAITING
     assert attrs["prep_times"][0]["days"] == [6]
+
+
+async def test_changing_the_settings_registers_no_new_remove_hook(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The unwatch is hooked once, when the entity is added; every settings
+    call used to add another, for the life of the entity."""
+    freezer.move_to(_at("2026-09-29T10:00"))
+    prep, _needs, _todo = await _setup(hass)
+    before = len(prep._on_remove or [])  # noqa: SLF001
+    for n in range(3):
+        await hass.services.async_call(
+            DOMAIN, "prep_settings", {"meal_times": {"dinner": f"18:0{n}"}}, blocking=True
+        )
+        await hass.services.async_call(
+            DOMAIN, "prep_settings", {"todo": f"todo.other_{n}"}, blocking=True
+        )
+    assert len(prep._on_remove or []) == before  # noqa: SLF001

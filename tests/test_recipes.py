@@ -504,3 +504,133 @@ async def test_a_photo_that_is_not_one_writes_nothing(
             blocking=True, return_response=True,
         )
     assert not aioclient_mock.mock_calls, "a new recipe was made before the photo was refused"
+
+
+# --- what reaches Mealie's URL --------------------------------------------
+
+
+def test_a_recipe_is_a_slug_or_an_id_and_nothing_else() -> None:
+    """The slug goes into a path. A slash or a question mark in it would be
+    read as more path, or as a query, and `../` walks out of /recipes."""
+    import voluptuous as vol
+
+    for ok in ("sea-bass", "nanas_curry", "r1", "fa4a64da-a534-47b0-b86a-fe72973244fd", "A1"):
+        assert recipes.DELETE_SCHEMA({"recipe": ok})["recipe"] == ok
+        assert recipes.MARK_MADE_SCHEMA({"recipe": ok})["recipe"] == ok
+        assert recipes.SAVE_SCHEMA({"recipe": ok})["recipe"] == ok
+    for bad in ("../admin/users/x", "sea-bass/last-made", "a?b=c", "a b", "", "-x", ".", "a#b"):
+        for schema in (recipes.DELETE_SCHEMA, recipes.MARK_MADE_SCHEMA, recipes.SAVE_SCHEMA):
+            with pytest.raises(vol.Invalid):
+                schema({"recipe": bad})
+
+
+def test_every_path_segment_stays_one_segment() -> None:
+    """An id from Mealie's own answer is not checked at the schema, so it is
+    quoted on the way into the path instead."""
+    assert recipes._path("recipes", "sea-bass") == "/recipes/sea-bass"  # noqa: SLF001
+    assert recipes._path("recipes", "sea-bass", "last-made") == "/recipes/sea-bass/last-made"  # noqa: SLF001
+    odd = recipes._path("users", "../x?y=1#z", "ratings", "a/b")  # noqa: SLF001
+    head, *segments = odd.split("/")[1:]
+    assert head == "users"
+    for segment in segments:
+        assert "/" not in segment and "?" not in segment and "#" not in segment
+    assert odd == "/users/..%2Fx%3Fy%3D1%23z/ratings/a%2Fb"
+
+
+async def test_an_odd_slug_is_refused_before_mealie_is_asked(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    import voluptuous as vol
+
+    await _start(hass)
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_DELETE_RECIPE, {"recipe": "../admin/users/x"}, blocking=True,
+        )
+    assert aioclient_mock.mock_calls == []
+
+
+def test_an_import_link_is_a_web_address_and_not_the_house() -> None:
+    """Mealie fetches whatever it is given, from inside the house."""
+    import voluptuous as vol
+
+    assert recipes.IMPORT_SCHEMA({"url": " https://example.com/recipe "})["url"] == "https://example.com/recipe"
+    assert recipes.IMPORT_SCHEMA({"url": "http://93.184.216.34/x"})["url"] == "http://93.184.216.34/x"
+    for bad in (
+        "ftp://example.com/recipe",
+        "file:///etc/passwd",
+        "not a link",
+        "http://127.0.0.1:8123/api/",
+        "http://10.0.0.5/",
+        "http://192.168.1.20:9000/",
+        "http://172.16.3.4/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/",
+        "http://[fe80::1]/",
+        "http://0.0.0.0/",
+        "http://localhost/",
+        "http://LOCALHOST:8123/",
+        "http://mealie.local/",
+        "http://homeassistant/",
+        "http://supervisor/core/api",
+        "http://hassio/",
+        "http://x.internal/",
+    ):
+        with pytest.raises(vol.Invalid):
+            recipes.IMPORT_SCHEMA({"url": bad})
+
+
+async def test_a_local_link_is_refused_before_mealie_is_asked(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    import voluptuous as vol
+
+    await _start(hass)
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_IMPORT_RECIPE, {"url": "http://127.0.0.1:8123/"},
+            blocking=True, return_response=True,
+        )
+    assert aioclient_mock.mock_calls == []
+
+
+async def test_a_recipes_lock_does_not_outlive_the_save(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """One lock per slug, while a save holds or waits for it, and no longer."""
+    await _start(hass)
+    aioclient_mock.get(f"{BASE}/recipes/sea-bass", json=RECIPE)
+    aioclient_mock.patch(f"{BASE}/recipes/sea-bass", json={**RECIPE, "name": "Sea bass"})
+    locks = hass.data.get(f"{DOMAIN}_recipe_locks")
+    assert not locks
+    await asyncio.gather(*(
+        hass.services.async_call(
+            DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "sea-bass", "description": str(n)},
+            blocking=True,
+        )
+        for n in range(3)
+    ))
+    assert hass.data[f"{DOMAIN}_recipe_locks"] == {}
+    # And after a save that failed.
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE}/recipes/sea-bass", status=500, text="boom")
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_SAVE_RECIPE, {"recipe": "sea-bass", "description": "x"},
+            blocking=True,
+        )
+    assert hass.data[f"{DOMAIN}_recipe_locks"] == {}
+
+
+def test_a_number_that_is_not_finite_is_not_a_number() -> None:
+    import voluptuous as vol
+
+    from custom_components.home_signals.recipes import _prep_step
+
+    assert recipes.SAVE_SCHEMA({"servings": "4"})["servings"] == 4.0
+    for bad in ("inf", "-inf", "nan", float("inf"), float("nan")):
+        with pytest.raises(vol.Invalid):
+            recipes.SAVE_SCHEMA({"servings": bad})
+    step = _prep_step({"n": 2, "minutes": float("inf"), "ahead_max": "nan", "ahead_min": 3})
+    assert step == {"n": 2, "ahead_min": 3}
+    assert "n" not in _prep_step({"n": float("inf")})

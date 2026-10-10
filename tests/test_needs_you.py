@@ -241,3 +241,22 @@ async def test_the_overnight_figures_are_still_published(
     assert attrs["baseline_watts"] == 420
     assert attrs["baseline_norm"] == 280
     assert attrs["baseline_excess_pct"] == 50.0
+
+
+async def test_a_snooze_is_a_quarter_hour_to_a_week(hass: HomeAssistant) -> None:
+    """Zero hours hides nothing and a year is a dismissal in disguise."""
+    import voluptuous as vol
+
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    for hours in (0, 0.1, -1, 169, 10_000, "lots"):
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN, "snooze", {"item_id": "softener_salt", "hours": hours}, blocking=True
+            )
+    for hours in (0.25, "0.5", 8, 168):
+        await hass.services.async_call(
+            DOMAIN, "snooze", {"item_id": "softener_salt", "hours": hours}, blocking=True
+        )

@@ -464,8 +464,9 @@ class MealPrepSensor(SensorEntity):
         self._settings.update(data)
         await self._save()
         if moved:
+            # The remove hook registered when the entity was added unwatches
+            # whichever list is current, so none is added here.
             self._watch()
-        self.async_on_remove(lambda: self._unwatch and self._unwatch())
         await self.async_sync()
 
 
