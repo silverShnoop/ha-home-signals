@@ -32,6 +32,7 @@ rather than passing it through.
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, datetime, timedelta
 import logging
 from typing import Any
@@ -53,9 +54,7 @@ from .const import (
     BREAKDOWN_OTHER,
     ENERGY_AVG_MAX_WEEKS,
     ENERGY_BREAKDOWN_DAYS,
-    ENERGY_MIN_MONTHS,
     ENERGY_MIN_WEEKS_FOR_AVERAGE,
-    ENERGY_MONTHS_SHOWN,
     ENERGY_WEEK_HOURS,
     BLOCK_HOURS,
     BLOCK_NAMES,
@@ -68,6 +67,8 @@ from .const import (
     ENERGY_MIN_DAYS_FOR_AVERAGE,
     ENERGY_MIN_DAYS_FOR_NORM,
     ENERGY_MONTH_DAYS,
+    ENERGY_MONTHS,
+    ENERGY_STANDING_NAME,
     ENERGY_NORM_DAYS,
     ENERGY_SAME_PCT,
     ENERGY_SERIES_DAYS,
@@ -91,6 +92,13 @@ SCAN_INTERVAL = timedelta(minutes=30)
 # One half-hourly slot, in hours. Named because it appears in the middle of
 # arithmetic where `0.5` would read as a fudge.
 SLOT_HOURS = 0.5
+
+# Spelled out rather than taken from the locale, which on some installs is
+# not English and on the rest is whatever the container happened to set.
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December",
+)
 
 
 def _as_float(value: Any) -> float | None:
@@ -116,6 +124,20 @@ def _reading(hass: HomeAssistant, entity_id: str | None) -> float | None:
     if state is None or state.state in _NOT_A_READING:
         return None
     return _as_float(state.state)
+
+
+def _blocks_or_none(value: Any) -> list[float] | None:
+    """One figure per block, or nothing -- never a short or ragged list.
+
+    A list of the wrong length would add into the wrong blocks, which is
+    worse than leaving a month without them.
+    """
+    if not isinstance(value, list) or len(value) != len(BLOCK_NAMES):
+        return None
+    out = [_as_float(v) for v in value]
+    if any(v is None for v in out):
+        return None
+    return out  # type: ignore[return-value]
 
 
 def _day_label(day: date) -> str:
@@ -202,6 +224,11 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         # reading a card must not touch the database. None means "not asked
         # yet", which a card renders as nothing -- the same as "no data".
         self._long: dict[str, Any] = {}
+        # Calendar-month totals, keyed "YYYY-MM". The history is five weeks,
+        # so a month is still wholly inside it for a few days after it ends
+        # and then starts falling out of the far end. This is where it is
+        # written down before that happens -- see `_fold_months`.
+        self._months: dict[str, dict[str, Any]] = {}
 
     def _option(self, key: str, default: Any = None) -> Any:
         return self._entry.options.get(key, self._entry.data.get(key, default))
@@ -252,7 +279,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         """
         rows = attrs.get("recent_days")
         if not isinstance(rows, list):
-            return
+            rows = []
         self._history = [
             dict(row)
             for row in rows
@@ -268,6 +295,33 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 for key in ("cost", "kwh", "baseline_watts")
             )
         ][:ENERGY_HISTORY_DAYS]
+
+        months = attrs.get("months")
+        for row in months if isinstance(months, list) else []:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("month")
+            days = row.get("days")
+            cost = _as_float(row.get("cost"))
+            kwh = _as_float(row.get("kwh"))
+            if (
+                isinstance(key, str)
+                and isinstance(days, int)
+                and days > 0
+                and cost is not None
+                and kwh is not None
+            ):
+                self._months[key] = {
+                    "cost": cost,
+                    "kwh": kwh,
+                    "days": days,
+                    "block_cost": _blocks_or_none(row.get("block_cost")),
+                    "block_kwh": _blocks_or_none(row.get("block_kwh")),
+                    "standing": _as_float(row.get("standing")),
+                }
+        # A first start on a version that had no months still has five weeks
+        # of days to make them from.
+        self._fold_months()
 
     @callback
     def _async_started(self, _hass: HomeAssistant) -> None:
@@ -537,6 +591,7 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 row["baseline_watts"] = day["baseline_watts"]
                 row["block_kwh"] = day["block_kwh"]
                 row["block_cost"] = day["block_cost"]
+                self._fold_months()
                 return
         self._history.insert(0, {
             "day": stamp,
@@ -554,6 +609,183 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         })
         self._history.sort(key=lambda row: row["day"], reverse=True)
         del self._history[ENERGY_HISTORY_DAYS:]
+        self._fold_months()
+
+    def _fold_months(self) -> None:
+        """Total the history by calendar month, keeping the fuller count.
+
+        Recomputed from the days every time rather than added to as each one
+        arrives, so a day Octopus revises is revised in its month too, and a
+        day read twice is not counted twice.
+
+        The history only reaches back five weeks, though, so the first days
+        of a month fall out of it a few days after the month ends. A month
+        is therefore only replaced by a tally of at least as many days as it
+        already has -- which keeps it growing while it is current and frozen
+        once its days start leaving.
+        """
+        width = len(BLOCK_NAMES)
+        tally: dict[str, dict[str, Any]] = {}
+        for row in self._history:
+            month = tally.setdefault(
+                row["day"][:7],
+                {
+                    "cost": 0.0, "kwh": 0.0, "days": 0,
+                    "block_cost": [0.0] * width, "block_kwh": [0.0] * width,
+                    "block_days": 0, "standing": 0.0,
+                },
+            )
+            month["cost"] += row["cost"]
+            month["kwh"] += row["kwh"]
+            month["days"] += 1
+            cost = _blocks_or_none(row.get("block_cost"))
+            kwh = _blocks_or_none(row.get("block_kwh"))
+            if cost is not None and kwh is not None:
+                for i in range(width):
+                    month["block_cost"][i] += cost[i]
+                    month["block_kwh"][i] += kwh[i]
+                month["block_days"] += 1
+                # Whatever of the day's bill no block accounts for. That is
+                # the standing charge, and taking it as the remainder rather
+                # than from the tariff is what makes the stack add up to the
+                # bill exactly -- the pence the blocks lose to rounding land
+                # here instead of vanishing.
+                month["standing"] += max(0.0, row["cost"] - sum(cost))
+        for key, month in tally.items():
+            kept = self._months.get(key)
+            if kept is None or month["days"] >= kept["days"]:
+                # A month whose days all predate the blocks has none, rather
+                # than four zeroes -- an empty stack under a real total would
+                # read as a month that cost nothing at any time of day.
+                blocked = month["block_days"] > 0
+                self._months[key] = {
+                    "cost": round(month["cost"], 2),
+                    "kwh": round(month["kwh"], 3),
+                    "days": month["days"],
+                    "block_cost": (
+                        [round(v, 2) for v in month["block_cost"]] if blocked else None
+                    ),
+                    "block_kwh": (
+                        [round(v, 3) for v in month["block_kwh"]] if blocked else None
+                    ),
+                    "standing": round(month["standing"], 2) if blocked else None,
+                }
+        for key in sorted(self._months)[:-ENERGY_MONTHS]:
+            del self._months[key]
+
+    def _month_rows(self) -> list[dict[str, Any]]:
+        """The last twelve calendar months, newest first, as list rows.
+
+        Every month is there whether or not anything has been written down
+        for it. A month with nothing says so rather than being left out, so
+        the card shows from the first day what it will fill in -- and a gap
+        in the middle of a year reads as a gap, not as a shorter year.
+
+        A month short of its days says how many it has. That is the current
+        month, which is "so far", and any month that was only partly
+        recorded, whose total is real but not the month's bill.
+        """
+        today = dt_util.now().date()
+        year, month = today.year, today.month
+        rows: list[dict[str, Any]] = []
+        for _ in range(ENERGY_MONTHS):
+            key = f"{year:04d}-{month:02d}"
+            length = calendar.monthrange(year, month)[1]
+            kept = self._months.get(key)
+            row: dict[str, Any] = {
+                "id": key,
+                "month": key,
+                "name": f"{_MONTH_NAMES[month - 1]} {year}",
+                "days_in_month": length,
+            }
+            if kept is None:
+                row.update(
+                    cost=None, kwh=None, days=0, complete=False,
+                    sub="Not filled yet", value=None,
+                )
+            else:
+                days = kept["days"]
+                complete = days >= length
+                parts = [f"{round(kept['kwh'])} kWh"]
+                if (year, month) == (today.year, today.month):
+                    parts.append(f"so far, {days} of {length} days")
+                elif not complete:
+                    parts.append(f"{days} of {length} days recorded")
+                row.update(
+                    cost=kept["cost"], kwh=kept["kwh"], days=days,
+                    complete=complete, sub=" · ".join(parts),
+                    value=money(kept["cost"]),
+                    # Kept on the row so the restore brings them back: the
+                    # days they were summed from are gone by then.
+                    block_cost=kept.get("block_cost"),
+                    block_kwh=kept.get("block_kwh"),
+                    standing=kept.get("standing"),
+                )
+            rows.append(row)
+            month -= 1
+            if month == 0:
+                year, month = year - 1, 12
+        return rows
+
+    def _month_blocks(self) -> list[dict[str, Any]]:
+        """The same twelve months, oldest first, shaped like `block_days`.
+
+        So the stacked chart that draws a week of days draws a year of
+        months without knowing the difference: a column per entry, its four
+        blocks, and the two totals under it.
+
+        A month with nothing recorded is still an entry, with no blocks, so
+        the chart keeps its place and labels it rather than closing the gap.
+        A month short of its days carries a `note` saying how many it has --
+        a part-month column is otherwise just a short bar, which reads as a
+        cheap month.
+
+        The standing charge is the first segment, at the base of the stack:
+        it is paid before anything is used, at no time of day, so it sits
+        under the four blocks rather than among them. With it there the bar
+        is the bill, and so is the figure under it. Its kWh is zero.
+        """
+        today = dt_util.now().date()
+        out: list[dict[str, Any]] = []
+        for row in reversed(self._month_rows()):
+            year, month = (int(part) for part in row["month"].split("-"))
+            entry: dict[str, Any] = {
+                "month": row["month"],
+                "label": _MONTH_NAMES[month - 1][:3],
+                "cost": [],
+                "kwh": [],
+                "total_cost": None,
+                "total_cost_text": None,
+                "total_kwh": None,
+                "note": None,
+            }
+            cost = row.get("block_cost")
+            kwh = row.get("block_kwh")
+            if row["days"] and cost and kwh:
+                cost = [row.get("standing") or 0.0, *cost]
+                kwh = [0.0, *kwh]
+                total = round(sum(cost), 2)
+                entry.update(
+                    cost=cost,
+                    kwh=kwh,
+                    total_cost=total,
+                    # Whole pounds. Twelve columns leave no room for pence,
+                    # and nobody reads a month to the penny.
+                    total_cost_text=(
+                        f"£{total:,.0f}" if total >= 10 else money(total)
+                    ),
+                    total_kwh=round(sum(kwh)),
+                )
+            if row["days"] and not row["complete"]:
+                current = (year, month) == (today.year, today.month)
+                # Short, because two neighbouring columns can both carry one
+                # -- the month just gone and this one -- and at a year's
+                # spacing anything longer runs into the next.
+                entry["note"] = (
+                    "so far" if current else f"{row['days']}/{row['days_in_month']} days"
+                )
+            out.append(entry)
+        return out
 
     @callback
     def _recompute(self) -> None:
@@ -758,49 +990,12 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
         else:
             out["avg_weeks"] = len(counted)
 
-        out.update(await self._async_months(meters, now))
+        # Months are not here: `_fold_months` already totals them from the
+        # days, which survives a revision, keeps its blocks, and does not
+        # need the Energy dashboard configured. A second source for one
+        # figure is two figures waiting to disagree.
         out.update(await self._async_breakdown(meters, now))
         self._long = out
-
-    async def _async_months(
-        self, meters: Meters, now: datetime
-    ) -> dict[str, Any]:
-        """Whole months, oldest first, shaped for the same card the days use.
-
-        The current month is never drawn. It is always the short bar and
-        would always read as an improvement, right up to the last day.
-        """
-        rows = await async_buckets(
-            self.hass,
-            [meters.grid_kwh] + ([meters.grid_cost] if meters.grid_cost else []),
-            now - timedelta(days=31 * ENERGY_MONTHS_SHOWN),
-            now,
-            "month",
-        )
-        kwhs = rows.get(meters.grid_kwh) or []
-        costs = dict(rows.get(meters.grid_cost) or []) if meters.grid_cost else {}
-        months = []
-        for at, kwh in kwhs:
-            if at.year == now.year and at.month == now.month:
-                continue
-            cost = costs.get(at)
-            months.append({
-                "day": f"{at:%Y-%m}",
-                "label": f"{at:%b}",
-                # One segment, because a month IS the whole. The card that
-                # draws the four blocks of a day draws this unchanged.
-                "cost": [round(cost, 2) if cost else round(kwh, 2)],
-                "kwh": [round(kwh, 3)],
-                "total_cost": round(cost, 2) if cost else None,
-                "total_cost_text": money(cost) if cost else None,
-                "total_kwh": round(kwh, 1),
-            })
-        months = months[-ENERGY_MONTHS_SHOWN:]
-        if len(months) < ENERGY_MIN_MONTHS:
-            # One month is not a trend, and a card with one bar is a stat
-            # tile that has been made to look like a chart.
-            return {"month_rows": [], "months_known": len(months)}
-        return {"month_rows": months, "months_known": len(months)}
 
     async def _async_breakdown(
         self, meters: Meters, now: datetime
@@ -1052,7 +1247,13 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         day = self._day
         if day is None:
-            return {"days_of_history": len(self._history), **self._today()}
+            return {
+                "days_of_history": len(self._history),
+                "months": self._month_rows(),
+                "month_blocks": self._month_blocks(),
+                "month_block_names": [ENERGY_STANDING_NAME, *BLOCK_NAMES],
+                **self._today(),
+            }
 
         late = self._days_late(day)
         if late > ENERGY_STALE_DAYS:
@@ -1076,6 +1277,12 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
                 "stale": True,
                 "recent_days": list(self._history),
                 "days_of_history": len(self._history),
+                # Kept for the same reason as `recent_days`, and because a
+                # finished month does not go stale: September's total is as
+                # true on Thursday as it was on Monday.
+                "months": self._month_rows(),
+                "month_blocks": self._month_blocks(),
+                "month_block_names": [ENERGY_STANDING_NAME, *BLOCK_NAMES],
                 # Today is not stale. It comes from a different meter and
                 # is the freshest thing here; only the comparison against
                 # the settled day goes, because that is made of it.
@@ -1209,6 +1416,16 @@ class EnergyDaySensor(SensorEntity, RestoreEntity):
             # quiet average look the same on a card and should not to an
             # assistant asked why there is no comparison yet.
             "days_of_history": len(self._history),
+            # Calendar months, newest first, already shaped as list rows.
+            # Also what `_restore` reads back: a month outlives the five
+            # weeks of days it was totalled from.
+            "months": self._month_rows(),
+            # The months again, as stacked blocks for the chart. See
+            # `_month_blocks`.
+            "month_blocks": self._month_blocks(),
+            # The stack's names for the month chart: the standing charge at
+            # the base, then the day's blocks.
+            "month_block_names": [ENERGY_STANDING_NAME, *BLOCK_NAMES],
         }
 
         today = self._today()

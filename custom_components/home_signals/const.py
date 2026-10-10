@@ -7,6 +7,15 @@ CONF_MAX_EVENTS = "max_events"
 
 DEFAULT_MAX_EVENTS = 20
 
+# How far back `by_area` remembers, and how many presses per room it keeps.
+# The rail's twenty rows are about ten minutes of an ordinary evening, which
+# is too short for a floor plan that fades over an hour -- so the plan reads
+# its own, smaller record rather than the rail's being made longer. Bare
+# epoch seconds keep an hour of a busy house to a few kilobytes, well under
+# the recorder's 16 KB attribute limit.
+BY_AREA_WINDOW_MINUTES = 60
+BY_AREA_MAX_TIMES = 120
+
 # Event kinds. The rail draws its icon from the kind, so these are a contract
 # with the frontend, not free text.
 KIND_BUTTON = "button"
@@ -14,6 +23,14 @@ KIND_LOCK = "lock"
 KIND_MOTION = "motion"
 KIND_DOOR = "door"
 KIND_OTHER = "other"
+# What a camera saw, named by what it was rather than by the camera: the
+# rail reads "Riley's Room · crying". A detection the camera does not
+# name in a way we know is just `camera`.
+KIND_PERSON = "person"
+KIND_ANIMAL = "animal"
+KIND_VEHICLE = "vehicle"
+KIND_CRYING = "crying"
+KIND_CAMERA = "camera"
 
 # --- Needs you -------------------------------------------------------
 #
@@ -91,6 +108,12 @@ CONF_DRYER_POWER = "dryer_power"
 CONF_DRYER_PLUG = "dryer_plug"
 CONF_DRYER_DOOR = "dryer_door"
 CONF_DRYER_ENERGY = "dryer_energy"
+# The dishwasher is the third time, and it is the dryer's shape: the door
+# is what says the clean load came out, so nothing queues behind it.
+CONF_DISHWASHER_POWER = "dishwasher_power"
+CONF_DISHWASHER_PLUG = "dishwasher_plug"
+CONF_DISHWASHER_DOOR = "dishwasher_door"
+CONF_DISHWASHER_ENERGY = "dishwasher_energy"
 
 # What a kWh costs, right now. One sensor for the house rather than one per
 # machine: the price of electricity is not a property of the washing machine,
@@ -124,9 +147,10 @@ APPLIANCE_OFF = "off"
 APPLIANCE_IDLE = "idle"
 APPLIANCE_RUNNING = "running"
 
-CLEANING_GREEN = "green"
-CLEANING_AMBER = "amber"
-CLEANING_RED = "red"
+# The Cleaning tab's state is its level, or `clear` when nothing wants
+# doing. It used to be a colour -- green, amber, red -- which made "amber"
+# one word for two levels and a second name for the same yellow.
+CLEANING_CLEAR = "clear"
 
 SERVICE_LAUNDRY_HUNG = "laundry_hung"
 ATTR_LOAD_ID = "load_id"
@@ -139,6 +163,10 @@ PHASE_FILL = "fill"
 PHASE_HEAT = "heat"
 PHASE_SPIN = "spin"
 PHASE_TUMBLE = "tumble"
+# A dishwasher's pump driving water through the spray arms. Not a tumble:
+# nothing in a dishwasher goes round but the arms, and the card draws it
+# differently so a dishwasher is never said to be tumbling.
+PHASE_WASH = "wash"
 
 # Who said the washing was hung. The activity feed answers "where are
 # people", and only one of these is evidence of a body in the room: the
@@ -148,7 +176,7 @@ ATTR_SOURCE = "source"
 SOURCE_BUTTON = "button"
 SOURCE_UI = "ui"
 
-# The three levels a job can be at, and the only colours on the panel
+# The levels a job can be at, and the only colours on the panel
 # that mean the house is asking a person for something.
 #
 # Named rather than numbered because they are ORDERED, and because the
@@ -164,15 +192,33 @@ SOURCE_UI = "ui"
 #   WAITING    something is paused or degrading until a person acts.
 #   CRITICAL   damage or risk is accruing now.
 #
+# And one quieter than all three, which is not an alarm at all:
+#
+#   NOTICE     something you asked for is ready. Nothing gets worse
+#              while it waits; it is only waiting to be looked at.
+#
+# It exists for work the house did on somebody's behalf -- an AI task
+# reading a recipe off a page -- where the job is real (somebody has to
+# look at the answer) but has no timeline. It is blue, because blue is
+# the one hue not already promising a deadline.
+#
 # A thing that needs no doing at all takes no level. It is information,
-# it belongs on a card, and it is not a Needs-you row.
+# it belongs on a card, and it is not a Needs-you row. An AI task is
+# the one exception by decision: it is blue while it RUNS as well, so a
+# person can see from anywhere that the house is working for them.
+LEVEL_NOTICE = "notice"
 LEVEL_ATTENTION = "attention"
 LEVEL_WAITING = "waiting"
 LEVEL_CRITICAL = "critical"
 
+# The tabs a Needs-you row can colour. Home is deliberately absent: it
+# surfaces other tabs' cards and never wears a level of its own.
+TABS = ("cleaning", "security", "lists", "maintenance", "kitchen")
+
 # How loud each level is, for picking the worst in a list. Ordered by
 # what the level means, never by anything incidental about its name.
 LEVEL_LOUDNESS = {
+    LEVEL_NOTICE: 0,
     LEVEL_ATTENTION: 1,
     LEVEL_WAITING: 2,
     LEVEL_CRITICAL: 3,
@@ -189,6 +235,63 @@ SERVICE_RESET = "reset"
 
 ATTR_ITEM_ID = "item_id"
 ATTR_HOURS = "hours"
+
+# --- Recipes ---------------------------------------------------------
+#
+# Written to Mealie directly, with the address and token borrowed from the
+# Mealie integration's own config entry. See recipes.py.
+MEALIE_DOMAIN = "mealie"
+SERVICE_SAVE_RECIPE = "save_recipe"
+SERVICE_DELETE_RECIPE = "delete_recipe"
+SERVICE_IMPORT_RECIPE = "import_recipe"
+SERVICE_RECIPE_INDEX = "recipe_index"
+SERVICE_MARK_MADE = "mark_made"
+SERVICE_PRUNE_TAGS = "prune_tags"
+ATTR_TAGS = "tags"
+ATTR_FAVOURITE = "favourite"
+ATTR_PREP = "prep"
+ATTR_DATE = "date"
+ATTR_URL = "url"
+# Where a recipe came from and what AI did to it. See recipes.py.
+ATTR_SOURCE = "source"
+ATTR_AI = "ai"
+ATTR_SECTIONS = "sections"
+
+# --- AI tasks --------------------------------------------------------
+#
+# Slow work a card asked for, run here so it outlives the sheet that
+# started it. See ai_tasks.py.
+SERVICE_START_AI_TASK = "start_ai_task"
+SERVICE_AI_TASK_RESULT = "ai_task_result"
+ATTR_TASK_ID = "task_id"
+ATTR_TITLE = "title"
+ATTR_ACTION = "action"
+ATTR_DATA = "data"
+ATTR_CARD = "card"
+ATTR_TAB = "tab"
+ATTR_LABEL = "label"
+ATTR_THEN = "then"
+ATTR_PASS = "pass"
+ATTR_UNLESS = "unless"
+ATTR_OPEN = "open"
+ATTR_KIND = "kind"
+ATTR_REQUIRE = "require"
+ATTR_MISSING = "missing"
+
+# --- Photos ------------------------------------------------------------
+#
+# A photo from a card, kept in local media for an AI task. See photos.py.
+SERVICE_SAVE_PHOTO = "save_photo"
+ATTR_IMAGE = "image"
+ATTR_FOLDER = "folder"
+ATTR_RECIPE = "recipe"
+ATTR_NAME = "name"
+ATTR_DESCRIPTION = "description"
+ATTR_TOTAL_TIME = "total_time"
+ATTR_SERVINGS = "servings"
+ATTR_INGREDIENTS = "ingredients"
+ATTR_METHOD = "method"
+ATTR_CONFIG_ENTRY_ID = "config_entry_id"
 
 
 # --- What the day cost ------------------------------------------------
@@ -237,6 +340,11 @@ ENERGY_MIN_DAYS_FOR_AVERAGE = 3
 ENERGY_WEEK_DAYS = 7
 ENERGY_MONTH_DAYS = 30
 
+# Calendar months published for the month-by-month card, the current one
+# included. A year, so the same month last year is the bottom row once there
+# is one -- that is the comparison a bill is actually read against.
+ENERGY_MONTHS = 12
+
 # How many days the card's chart draws. Shorter than the history on purpose:
 # thirty-five bars across a card read from a doorway is a texture, not a
 # shape, and the history exists to be averaged rather than drawn.
@@ -284,6 +392,9 @@ DEFAULT_BASELINE_EXCESS_PCT = 40
 BLOCK_HOURS = 6
 BLOCK_NAMES = ("Overnight", "Morning", "Afternoon", "Evening")
 
+# The base of the month chart's stack: what is paid before anything is used.
+ENERGY_STANDING_NAME = "Standing"
+
 # How many days the split card draws. Seven rather than fourteen: each
 # column carries four segments and two lines of text under it, and a
 # fortnight of those is a texture rather than a week you can read.
@@ -314,13 +425,6 @@ ENERGY_WEEK_HOURS = 7 * 24
 ENERGY_AVG_MAX_WEEKS = 53
 ENERGY_MIN_WEEKS_FOR_AVERAGE = 3
 
-# Months drawn on the monthly card, and the fewest worth drawing. One month
-# is not a trend and a part-month is not a month, so the current one is
-# never plotted -- it would always be the short bar and always look like an
-# improvement.
-ENERGY_MONTHS_SHOWN = 13
-ENERGY_MIN_MONTHS = 2
-
 # The breakdown's window. Seven days so it matches the weekly card beside
 # it; anything shorter and one wash swings the whole picture.
 ENERGY_BREAKDOWN_DAYS = 7
@@ -333,3 +437,19 @@ BREAKDOWN_OTHER = "Everything else"
 # wants: a floor is the quietest number the house produces, so a norm built
 # from three of them is one odd night away from being wrong.
 ENERGY_MIN_DAYS_FOR_NORM = 5
+
+# --- Meal prep ---------------------------------------------------------
+#
+# Prep sessions: when the ahead-of-time steps of the week's meals get done,
+# each one a single Home Tasks item with a deadline. See prep.py.
+SERVICE_SAVE_PREP = "save_prep_session"
+SERVICE_REMOVE_PREP = "remove_prep_session"
+SERVICE_PREP_DONE = "prep_done"
+SERVICE_PREP_SETTINGS = "prep_settings"
+ATTR_SESSION_ID = "id"
+ATTR_DUE = "due"
+ATTR_ITEMS = "items"
+ATTR_MEAL_TIMES = "meal_times"
+ATTR_PREP_TIMES = "prep_times"
+ATTR_TODO = "todo"
+DEFAULT_PREP_TODO = "todo.home_tasks"

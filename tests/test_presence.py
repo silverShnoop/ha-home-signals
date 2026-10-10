@@ -33,7 +33,8 @@ from custom_components.home_signals.const import (
     LEVEL_CRITICAL,
     LEVEL_WAITING,
 )
-from custom_components.home_signals.derived import NeedsYouSensor
+from tests.owners import attach, owner
+from custom_components.home_signals.derived import NeedsYouSensor, PeopleStatusSensor
 
 CASEY = "person.casey"
 
@@ -53,6 +54,7 @@ def _sensor(hass: HomeAssistant, options: dict | None = None) -> NeedsYouSensor:
     sensor = NeedsYouSensor(entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
     return sensor
 
 
@@ -91,7 +93,7 @@ async def test_but_an_hour_of_silence_is(hass: HomeAssistant) -> None:
     # Backdate the moment we first saw them go quiet, which is what the
     # sensor measures from -- see the restart test for why it is not
     # read off the entity.
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(minutes=61)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(minutes=61)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == ["Casey cannot be located"], _titles(sensor)
@@ -102,7 +104,7 @@ async def test_away_is_a_reading_and_not_a_job(hass: HomeAssistant) -> None:
     hass.states.async_set(CASEY, "not_home", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == [], "being out was treated as being untrackable"
@@ -115,7 +117,7 @@ async def test_coming_back_forgets_that_they_were_ever_dark(
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
     assert _titles(sensor) == ["Casey cannot be located"]
 
@@ -124,7 +126,7 @@ async def test_coming_back_forgets_that_they_were_ever_dark(
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == [], "the row survived the tracker coming back"
-    assert CASEY not in sensor._dark_since, (  # noqa: SLF001
+    assert CASEY not in owner(sensor, PeopleStatusSensor)._dark_since, (  # noqa: SLF001
         "the memory was kept, so the next blip would fire immediately"
     )
 
@@ -145,9 +147,9 @@ async def test_a_restart_does_not_restart_the_grace_period(
         hass,
         (
             State(
-                "sensor.needs_you",
-                "0",
-                {"items": [], "dark_since": {CASEY: quiet_since.isoformat()}},
+                "sensor.people_status",
+                "clear",
+                {"jobs": [], "dark_since": {CASEY: quiet_since.isoformat()}},
             ),
         ),
     )
@@ -155,6 +157,8 @@ async def test_a_restart_does_not_restart_the_grace_period(
     # last_changed is NOW, which is the lie.
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
+    # The memory lives on the Who's home card's own sensor now.
+    await owner(sensor, PeopleStatusSensor).async_added_to_hass()
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
 
@@ -168,7 +172,7 @@ async def test_watching_nobody_costs_nothing(hass: HomeAssistant) -> None:
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass, options={})
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == []
@@ -179,7 +183,7 @@ async def test_the_row_can_be_snoozed(hass: HomeAssistant) -> None:
     hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    sensor._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
     row = sensor.extra_state_attributes["items"][0]
     assert row["action_label"] == "Snooze", row
@@ -192,68 +196,179 @@ async def test_the_row_can_be_snoozed(hass: HomeAssistant) -> None:
 #
 # Same rule from the other end. The Maintenance tile was hardcoded
 # ochre, so it was yellow on a morning with nothing wrong -- promising
-# a job that did not exist. It now takes its colour from the worst
-# thing System health is carrying.
+# a job that did not exist. A tab now wears the loudest level of the
+# cards on it, worked out by `loudest`, and says what it is in words.
 
-from custom_components.home_signals.derived import SystemHealthSensor  # noqa: E402
-
-
-def _health(hass: HomeAssistant, rows: list[dict]) -> SystemHealthSensor:
-    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
-    entry.add_to_hass(hass)
-    sensor = SystemHealthSensor(entry)
-    sensor.hass = hass
-    sensor.entity_id = "sensor.system_health"
-    sensor._items = rows  # noqa: SLF001
-    return sensor
+from custom_components.home_signals.derived import _tab_summary, loudest  # noqa: E402
 
 
-async def test_nothing_wrong_is_not_a_colour(hass: HomeAssistant) -> None:
-    assert _health(hass, []).extra_state_attributes["level"] is None, (
+async def test_nothing_wrong_is_not_a_colour() -> None:
+    assert loudest([]) is None, (
         "the tile would be coloured on a morning with nothing wrong"
     )
+    assert _tab_summary([]) == "Nothing waiting"
 
 
-async def test_information_alone_is_not_a_level(hass: HomeAssistant) -> None:
+async def test_information_alone_is_not_a_level() -> None:
     """Seven pending updates is worth knowing and is not a job.
 
-    It carries a decorative accent and no level at all, so the tile has
-    nothing to wear -- which is the point. A row that needs no doing
-    must not be able to colour a tab.
+    It carries no level, so the tile has nothing to wear -- which is the
+    point. Something that needs no doing must not be able to colour a tab.
     """
-    sensor = _health(hass, [{"id": "updates", "accent": ACCENT_INFO}])
-    assert sensor.extra_state_attributes["level"] is None, (
+    assert loudest([None, ACCENT_INFO]) is None, (
         "information coloured the tile, so it was ranked rather than skipped"
     )
 
 
-async def test_the_worst_thing_wins_not_the_last_one(
-    hass: HomeAssistant,
-) -> None:
-    sensor = _health(hass, [
-        {"id": "leak", "level": LEVEL_CRITICAL},
-        {"id": "updates", "accent": ACCENT_INFO},
-        {"id": "batteries", "level": LEVEL_ATTENTION},
-    ])
-    assert sensor.extra_state_attributes["level"] == LEVEL_CRITICAL, (
+async def test_the_worst_thing_wins_not_the_last_one() -> None:
+    assert loudest([LEVEL_CRITICAL, None, LEVEL_ATTENTION]) == LEVEL_CRITICAL, (
         "a critical row was drowned out by what was listed after it"
     )
 
 
-async def test_loudness_is_the_meaning_not_the_name(
-    hass: HomeAssistant,
-) -> None:
+async def test_loudness_is_the_meaning_not_the_name() -> None:
     """The trap the numbers used to set, in its new clothes.
 
     Ordered any incidental way -- alphabetically, say -- "attention"
     comes first and would outrank "waiting". The order has to come from
     what the levels mean.
     """
-    sensor = _health(hass, [
-        {"id": "batteries", "level": LEVEL_ATTENTION},
-        {"id": "unpowered", "level": LEVEL_WAITING},
-    ])
-    assert sensor.extra_state_attributes["level"] == LEVEL_WAITING, (
+    assert loudest([LEVEL_ATTENTION, LEVEL_WAITING]) == LEVEL_WAITING, (
         "attention outranked waiting, so something other than the "
         "meaning was being compared"
     )
+
+
+async def test_the_rail_says_the_loudest_job_and_how_many_more() -> None:
+    jobs = [
+        {"title": "Laundry needs hanging", "level": LEVEL_ATTENTION},
+        {"title": "Washing machine has no power", "level": LEVEL_WAITING},
+        {"title": "Laundry needs hanging", "level": LEVEL_ATTENTION},
+    ]
+    assert _tab_summary(jobs) == "Washing machine has no power \u00b7 +2 more"
+    assert _tab_summary([jobs[0], jobs[2]]) == "Laundry needs hanging \u00d72"
+
+
+# --- "Home 3h ago" survives a restart --------------------------------
+#
+# The card read each person's own `last_changed`, which Home Assistant
+# resets when it starts. So after every restart the panel said everyone
+# had arrived a minute ago. The time now lives on this sensor.
+
+MORGAN = "person.morgan"
+_BOTH = {"people": [MORGAN, CASEY], "presence_grace_minutes": 60}
+
+
+def _people(hass: HomeAssistant, options: dict | None = None) -> PeopleStatusSensor:
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={}, options=_BOTH if options is None else options,
+    )
+    entry.add_to_hass(hass)
+    sensor = PeopleStatusSensor(entry)
+    sensor.hass = hass
+    sensor.entity_id = "sensor.people_status"
+    return sensor
+
+
+def _since(sensor: PeopleStatusSensor, who: str) -> str | None:
+    held = sensor.extra_state_attributes["presence"].get(who)
+    return held["since"] if held else None
+
+
+async def test_home_since_survives_a_restart(hass: HomeAssistant) -> None:
+    arrived = dt_util.utcnow() - timedelta(hours=3)
+    mock_restore_cache(
+        hass,
+        (
+            State(
+                "sensor.people_status",
+                "clear",
+                {"jobs": [], "presence": {
+                    MORGAN: {"state": "home", "since": arrived.isoformat()},
+                }},
+            ),
+        ),
+    )
+    # Home Assistant has just come back: last_changed is NOW, the lie.
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    assert _since(sensor, MORGAN) == arrived.isoformat(), (
+        "the restart told the panel Morgan had just walked in"
+    )
+
+
+async def test_a_move_restarts_the_clock(hass: HomeAssistant) -> None:
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    sensor._at[MORGAN]["since"] = dt_util.utcnow() - timedelta(hours=3)  # noqa: SLF001
+
+    hass.states.async_set(MORGAN, "not_home", {"friendly_name": "Morgan"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    held = sensor.extra_state_attributes["presence"][MORGAN]
+    assert held["state"] == "not_home"
+    assert held["since"] == hass.states.get(MORGAN).last_changed.isoformat()
+
+
+async def test_a_short_silence_is_not_a_move(hass: HomeAssistant) -> None:
+    """Out for ten minutes of no signal, then back where they were."""
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    arrived = dt_util.utcnow() - timedelta(hours=3)
+    sensor._at[MORGAN]["since"] = arrived  # noqa: SLF001
+
+    hass.states.async_set(MORGAN, "unknown", {"friendly_name": "Morgan"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    assert _since(sensor, MORGAN) == arrived.isoformat(), (
+        "a blip in the tracker restarted the clock"
+    )
+
+
+async def test_a_long_silence_then_home_is_a_new_arrival(hass: HomeAssistant) -> None:
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    arrived = dt_util.utcnow() - timedelta(hours=9)
+    sensor._at[MORGAN]["since"] = arrived  # noqa: SLF001
+
+    hass.states.async_set(MORGAN, "unknown", {"friendly_name": "Morgan"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+    sensor._before[MORGAN]["left"] = dt_util.utcnow() - timedelta(hours=2)  # noqa: SLF001
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+
+    assert _since(sensor, MORGAN) != arrived.isoformat()
+
+
+async def test_unknown_since_is_when_they_went_quiet(hass: HomeAssistant) -> None:
+    """The card's "for 2d" must agree with the Needs you row's "quiet since"."""
+    quiet_since = dt_util.utcnow() - timedelta(days=2)
+    mock_restore_cache(
+        hass,
+        (
+            State(
+                "sensor.people_status",
+                "attention",
+                {"jobs": [], "dark_since": {CASEY: quiet_since.isoformat()}},
+            ),
+        ),
+    )
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    assert _since(sensor, CASEY) == quiet_since.isoformat()

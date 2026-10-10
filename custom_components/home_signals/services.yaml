@@ -76,3 +76,406 @@ laundry_hung:
               value: button
             - label: A screen
               value: ui
+
+save_recipe:
+  name: Save recipe
+  description: >-
+    Create a recipe in Mealie, or change one. Name a recipe to change it;
+    leave it out to create a new one, which then needs a name. Anything not
+    given is left as it is. An ingredient line that has not changed keeps
+    Mealie's own parse of it. Answers with the recipe's slug, id and name.
+  fields:
+    recipe:
+      name: Recipe
+      description: The slug or id of the recipe to change. Omit to create one.
+      example: nanas-curry
+      selector:
+        text:
+    name:
+      name: Name
+      example: Nana's curry
+      selector:
+        text:
+    description:
+      name: Description
+      selector:
+        text:
+          multiline: true
+    total_time:
+      name: Total time
+      example: 45 minutes
+      selector:
+        text:
+    servings:
+      name: Servings
+      selector:
+        number:
+          min: 1
+          max: 50
+          mode: box
+    ingredients:
+      name: Ingredients
+      description: One per line. Replaces the whole list.
+      example: "2 onions\n1 tin chopped tomatoes"
+      selector:
+        text:
+          multiline: true
+    method:
+      name: Method
+      description: One step per line. Replaces the whole method.
+      selector:
+        text:
+          multiline: true
+    tags:
+      name: Tags
+      description: >-
+        Tag names, replacing the recipe's tags. Tags Mealie does not have yet
+        are created. Matched ignoring case.
+      example: "Dinner, Quick, Chicken"
+      selector:
+        text:
+          multiple: true
+    favourite:
+      name: Favourite
+      description: Whether it is a favourite of the Mealie user whose token this is.
+      selector:
+        boolean:
+    prep:
+      name: Prep and cook
+      description: >-
+        What can be done ahead, noted on the method without moving it.
+        {mode: split, steps: [...]} with one note per step that can go
+        ahead: n (its number in the method, from 1), ahead_max and ahead_min
+        in hours, keeps, minutes, source, and where the step does two things
+        ahead (the half done ahead) and cook (the half left for the stove);
+        store for how to keep it when made ahead (said at the prep), and
+        if_ahead for what that changes on the night (said at the stove). A
+        part of the dish made ahead can carry reheat and reheat_at. {mode:
+        none} for nothing to do ahead; {mode: order} to take it off. A split
+        with no n is the older kind, whose prep steps come first.
+      example: '{"mode": "split", "steps": [{"n": 1, "ahead_max": 24, "keeps": "Fridge", "minutes": 10, "store": "Cover and chill.", "if_ahead": "Take it out 20 mins before cooking."}]}'
+      selector:
+        object:
+    image:
+      name: Photo
+      description: >-
+        The recipe's photo, as base64 JPEG, PNG or WebP (a data URL is fine),
+        under 3 MB. Replaces the photo Mealie has.
+      selector:
+        text:
+    sections:
+      name: Sections
+      description: >-
+        Titles for the method's groups of steps, as Mealie keeps them: [{n,
+        title}], each title on the step its group starts at (numbers from 1).
+        Every other title is cleared; [] clears them all.
+      example: '[{"n": 1, "title": "The chicken"}, {"n": 3, "title": "The sauce"}]'
+      selector:
+        object:
+    source:
+      name: Where it came from
+      description: >-
+        {kind, url, from}: kind is page, video, photo, said, typed or written
+        (by AI, from a name). Kept once; the first time it is given.
+      example: '{"kind": "written", "from": "Shepherd''s pie"}'
+      selector:
+        object:
+    ai:
+      name: What AI did
+      description: >-
+        Records something AI did to the recipe: {what, by, model, note, mark,
+        steps}. what is read, wrote, split, tagged or checked; mark is
+        interpreted, created or enhanced, given to the steps listed (numbers
+        from 1) or all of them. A step a person rewrites later loses its mark.
+      example: '{"what": "read", "by": "Anthropic: Claude Sonnet 5", "model": "ai_task.anthropic_claude_sonnet_5", "mark": "interpreted"}'
+      selector:
+        object:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+import_recipe:
+  name: Import recipe
+  description: >-
+    Import a recipe into Mealie from a web page or a video link, waiting up
+    to five minutes for it. A page with no recipe data is read by Mealie's AI
+    provider and a video is transcribed, either of which can take a minute.
+    Answers with the recipe's slug, id and name.
+  fields:
+    url:
+      name: Link
+      description: The recipe page or video.
+      required: true
+      example: https://www.youtube.com/shorts/ekOjr2XP_zU
+      selector:
+        text:
+          type: url
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+delete_recipe:
+  name: Delete recipe
+  description: >-
+    Delete a recipe from Mealie. A meal already planned with it loses its
+    recipe.
+  fields:
+    recipe:
+      name: Recipe
+      description: The slug or id of the recipe.
+      required: true
+      selector:
+        text:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+recipe_index:
+  name: Recipe index
+  description: >-
+    Every recipe in Mealie with what a picker filters on: tags, ingredient
+    lines, the day it was last made, the day it was added and whether it is
+    a favourite. Each full recipe is read once and kept until Mealie says it
+    changed, so a repeat is quick.
+  fields:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+mark_made:
+  name: Mark made
+  description: >-
+    Record that a recipe was eaten on a day, today unless a date is given.
+    Never moves the date backwards.
+  fields:
+    recipe:
+      name: Recipe
+      description: The slug or id of the recipe.
+      required: true
+      selector:
+        text:
+    date:
+      name: Date
+      description: The day it was eaten.
+      selector:
+        date:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+prune_tags:
+  name: Prune tags
+  description: >-
+    Delete every Mealie tag that no recipe uses, and answer with their names.
+    Tags are made as recipes are tagged; this tidies the ones left behind.
+  fields:
+    config_entry_id:
+      name: Mealie
+      description: Which Mealie, if there is more than one.
+      selector:
+        config_entry:
+          integration: mealie
+
+save_photo:
+  name: Save photo
+  description: >-
+    Keep a photo sent by a card in local media, so an AI task can take it as
+    an attachment. Answers with its media_content_id and media_content_type.
+    Only the newest twelve in each folder are kept.
+  fields:
+    image:
+      name: Photo
+      description: A JPEG, PNG or WebP as base64, or as a data URL. Under 3 MB.
+      required: true
+      selector:
+        text:
+    folder:
+      name: Folder
+      description: Where under local media/home_signals to keep it.
+      default: photos
+      example: fridge
+      selector:
+        text:
+
+save_prep_session:
+  name: Save prep session
+  description: >-
+    Plan one sitting of meal prep: when it has to be done by, and which meals'
+    ahead-of-time steps it covers. Kept as one Home Tasks item with that
+    deadline, created or updated. Give no items to remove the session.
+  fields:
+    id:
+      name: Session
+      description: The session to change. Leave out to start a new one.
+      selector:
+        text:
+    due:
+      name: Due
+      description: When the prep has to be done by.
+      required: true
+      selector:
+        datetime:
+    items:
+      name: Meals
+      description: >-
+        One per meal: date, entry_type, name, and optionally recipe_id, slug,
+        steps (the prep steps as text) and minutes.
+      required: true
+      example: '[{"date": "2026-09-29", "entry_type": "dinner", "name": "Chilli", "steps": ["Chop the onions"], "minutes": 15}]'
+      selector:
+        object:
+    title:
+      name: Title
+      description: The task's name. Defaults to "Prep:" and the meals.
+      selector:
+        text:
+
+remove_prep_session:
+  name: Remove prep session
+  description: Forget a prep session and remove its Home Tasks item.
+  fields:
+    id:
+      name: Session
+      required: true
+      selector:
+        text:
+
+prep_done:
+  name: Prep done
+  description: Tick a prep session's Home Tasks item.
+  fields:
+    id:
+      name: Session
+      required: true
+      selector:
+        text:
+
+prep_settings:
+  name: Prep settings
+  description: When meals are eaten, when prep usually happens, and which list holds it.
+  fields:
+    meal_times:
+      name: Meal times
+      example: '{"breakfast": "07:00", "lunch": "12:00", "dinner": "17:00"}'
+      selector:
+        object:
+    prep_times:
+      name: Prep times
+      description: Weekdays are 0 (Monday) to 6 (Sunday).
+      example: '[{"label": "Sunday afternoon", "days": [6], "time": "16:00"}]'
+      selector:
+        object:
+    todo:
+      name: List
+      selector:
+        entity:
+          domain: todo
+
+start_ai_task:
+  name: Start AI task
+  description: >-
+    Run a slow action -- usually a script that calls an AI task -- in the
+    background, so it outlives the card that asked for it. Answers at once
+    with a task_id. While it runs it is a fact on the card; when it finishes
+    it is a blue notice on the card, its tab and Needs you.
+  fields:
+    title:
+      name: Title
+      description: What the Needs you row says, such as "Recipe from a link".
+      required: true
+      selector:
+        text:
+    action:
+      name: Action
+      description: The action to run. It must answer with a response.
+      required: true
+      example: script.recipe_import
+      selector:
+        text:
+    data:
+      name: Data
+      description: What to call the action with.
+      selector:
+        object:
+    card:
+      name: Card
+      description: Which card started it, so that card can find and show it.
+      example: meals
+      selector:
+        text:
+    tab:
+      name: Tab
+      description: The tab whose rail button turns blue when it finishes.
+      default: kitchen
+      selector:
+        select:
+          options: [cleaning, security, lists, maintenance, kitchen]
+    label:
+      name: Label
+      description: The key in the answer that names what came back, for the row.
+      example: recipe
+      selector:
+        text:
+    then:
+      name: Then
+      description: >-
+        A second action fed from the first one's answer: action, data,
+        pass (field <- answer key) and unless (an answer key that skips it).
+      selector:
+        object:
+    open:
+      name: Can be opened
+      description: >-
+        Whether the card can show the answer again. False gives the row only
+        Dismiss.
+      default: true
+      selector:
+        boolean:
+    kind:
+      name: Kind
+      description: What sort of answer it is, for the card that opens it.
+      example: recipe
+      selector:
+        text:
+    require:
+      name: Required answer
+      description: >-
+        The answer's key that must be there for it to have worked. Without
+        it, the task is Failed.
+      example: name
+      selector:
+        text:
+    missing:
+      name: When it is missing
+      description: What the Failed row says when the required answer is not there.
+      example: No recipe found in the photo
+      selector:
+        text:
+
+ai_task_result:
+  name: AI task result
+  description: >-
+    What a finished AI task came back with: the task, the first action's
+    answer as result, and the second's as then.
+  fields:
+    task_id:
+      name: Task
+      description: The id start_ai_task answered with.
+      required: true
+      selector:
+        text:

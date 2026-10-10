@@ -46,12 +46,13 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CLEANING_CLEAR as CLEAR,
+    TABS,
     APPLIANCE_RUNNING,
     ATTR_HOURS,
     ATTR_ITEM_ID,
     ATTR_LOAD_ID,
     ATTR_SOURCE,
-    ACCENT_INFO,
     LEVEL_ATTENTION,
     LEVEL_CRITICAL,
     LEVEL_LOUDNESS,
@@ -98,6 +99,7 @@ BATTERY_ROWS_MAX = 2
 _NOISY_DOMAINS = {"update", "button", "scene", "script", "automation"}
 
 
+
 def _area_of(hass: HomeAssistant, entity_id: str) -> str | None:
     """An entity's area, via its device where it has none itself."""
     entity_registry = er.async_get(hass)
@@ -118,6 +120,10 @@ def _name_of(state: State) -> str:
     return state.attributes.get(ATTR_FRIENDLY_NAME, state.entity_id)
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
 def _battery_label(state: State) -> str:
     """The device's name, without the word the row is about to add.
 
@@ -129,6 +135,11 @@ def _battery_label(state: State) -> str:
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
+
+
+def _salt_detail(readings: list[tuple[str, float]]) -> str:
+    """ "Left 30%, Right 0%" -- the same line wherever the salt is a row."""
+    return ", ".join(f"{side} {level:.0f}%" for side, level in readings)
 
 
 def _salt_side(state: State) -> str:
@@ -182,6 +193,198 @@ def _snooze(item_id: str, hours: int = 8) -> dict[str, Any]:
     """
     return {"service": f"{DOMAIN}.{SERVICE_SNOOZE}",
             "data": {ATTR_ITEM_ID: item_id, ATTR_HOURS: hours}}
+
+
+def _tab_summary(jobs: list[dict[str, Any]]) -> str:
+    """One line for a rail button: the loudest job, and how many more.
+
+    "Laundry needs hanging ×2", "Washing machine is leaking · +1 more".
+    """
+    if not jobs:
+        return "Nothing waiting"
+    top = loudest(job.get("level") for job in jobs)
+    first = next(job for job in jobs if job.get("level") == top) if top else jobs[0]
+    title = first.get("title") or ""
+    same = sum(1 for job in jobs if job.get("title") == title)
+    text = f"{title} \u00d7{same}" if same > 1 else title
+    rest = len(jobs) - same
+    return f"{text} \u00b7 +{rest} more" if rest else text
+
+
+def loudest(levels: Any) -> str | None:
+    """The loudest of some levels, or None when none is a level."""
+    found = [lv for lv in levels if lv in LEVEL_LOUDNESS]
+    return max(found, key=LEVEL_LOUDNESS.__getitem__) if found else None
+
+def _drum_detail(attrs: dict[str, Any]) -> str:
+    finished = attrs.get("last_finished_at")
+    parsed = dt_util.parse_datetime(finished) if finished else None
+    when = "Finished " + dt_util.as_local(parsed).strftime("%H:%M") if parsed else "Finished"
+    return f"{when} \u00b7 clears when the door is opened"
+
+def _load_detail(load: dict[str, Any]) -> str:
+    finished = load.get("finished_at")
+    parsed = dt_util.parse_datetime(finished) if finished else None
+    if parsed is None:
+        return "Finished"
+    return "Finished " + dt_util.as_local(parsed).strftime("%H:%M")
+
+
+def _duration(seconds: float) -> str:
+    """How long, as a person says it: "4 min", "2h 10m", "3d 5h"."""
+    minutes = max(1, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h" if hours else f"{days}d"
+
+
+def _wet_for(attrs: dict[str, Any], rest: str) -> str:
+    """Put how long the pad has been wet in front of a leak row's detail.
+
+    How long, not since when: how long water may have been on the floor is
+    what decides how worried to be.
+    """
+    since = attrs.get("leak_since")
+    parsed = dt_util.parse_datetime(since) if since else None
+    if parsed is None:
+        return rest
+    wet = _duration((dt_util.utcnow() - parsed).total_seconds())
+    return f"Wet for {wet} \u00b7 {rest}"
+
+
+def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Water on the floor, a machine left dead, a full drum, washing to hang.
+
+    The jobs one machine raises, built from its own published attributes.
+    The cycle sensor publishes these as its `jobs` and their loudest as its
+    `level`, so the card, Needs you and the tab all read the machine's own
+    answer.
+
+    Four urgencies from one sensor, and the last two are sequential
+    rather than alternatives: a finished load is in the drum until the
+    door is opened, and a WASHED load is then still to be hung. A dryer
+    stops after the first of those, which is the whole difference
+    between the two machines.
+
+    Only the leak and the dead machine are offered a snooze. The other
+    two are cleared by doing the thing -- the door for the drum, the
+    button for the hanging.
+    """
+    rows: list[dict[str, Any]] = []
+    slug = attrs.get("slug") or entity_id
+    # Every row this machine raises colours its own card and the
+    # Cleaning tab.
+    where = {"tab": "cleaning", "card": slug}
+
+    # `leak_alarm`, not `leak`. Once somebody has switched the plug
+    # back on over a wet pad they have looked at the floor and
+    # decided to finish the wash; the pad staying damp after that
+    # is a fact for the card, not a job. Older states without the
+    # key fall back to the raw sensor rather than going quiet.
+    if attrs.get("leak_alarm", attrs.get("leak")):
+        powered = attrs.get("powered", True)
+        rows.append({
+            **where,
+            "id": f"leak_{slug}",
+            "title": f"{name} is leaking",
+            # Never claim the cut: this row also fires when the
+            # cutoff has not happened, which is the worse case.
+            "detail": _wet_for(attrs, (
+                "Power still on \u00b7 check the floor"
+                if powered
+                else "Power cut at the plug \u00b7 check the floor"
+            )),
+            "icon": "mdi:water-alert",
+            "level": LEVEL_CRITICAL,
+            "action_label": "Snooze",
+            "action": _snooze(f"leak_{slug}", hours=1),
+        })
+
+    elif attrs.get("leak"):
+        # Power restored over a wet pad. The person has decided about
+        # the floor, but the cutoff only fires on the pad GOING wet,
+        # so until it dries a second leak would cut nothing. That is
+        # a real job -- dry the pad -- and it keeps, so attention.
+        # Cleared by the pad drying, which is the only true answer.
+        rows.append({
+            **where,
+            "id": f"leak_wet_{slug}",
+            "title": f"{name} leak sensor still wet",
+            "detail": _wet_for(attrs, "Won't cut the power again until it dries"),
+            "icon": "mdi:water-alert",
+            "level": LEVEL_ATTENTION,
+        })
+
+    # Deliberately independent of the leak: the sensor stays wet long
+    # after the floor is dealt with, and the cycle still has to be
+    # finished. "It is off" stays true and stays worth saying.
+    if not attrs.get("powered", True):
+        rows.append({
+            **where,
+            "id": f"unpowered_{slug}",
+            "title": f"{name} has no power",
+            "detail": "Switched off at the plug",
+            "icon": "mdi:power-plug-off",
+            # Waiting, not attention. A machine without power
+            # mid-cycle is wet washing and a clock running: the
+            # activity is paused until somebody acts, which is
+            # exactly what the middle level is for. It shared a
+            # colour with "bins tomorrow" before there was one.
+            "level": LEVEL_WAITING,
+            "action_label": "Snooze",
+            "action": _snooze(f"unpowered_{slug}", hours=4),
+        })
+
+    # There is washing sitting in the drum. True of both machines
+    # and cleared the same way on both -- by the door, which they
+    # can see for themselves, so this row is offered no button. A
+    # job you finish by doing the obvious physical thing should not
+    # also have a way to be marked done from a screen; two ways to
+    # clear one row is how the row and the world drift apart.
+    if attrs.get("drum_full"):
+        rows.append({
+            **where,
+            "id": f"drum_{slug}",
+            "title": f"{name} needs emptying",
+            "detail": _drum_detail(attrs),
+            "icon": "mdi:door-open",
+            "level": LEVEL_ATTENTION,
+        })
+
+    # One row for however many loads are waiting, as the wall button
+    # sees it: "Hung" clears the oldest, and the count drops by one.
+    # The Hung action names that load rather than asking for "the
+    # oldest", so a double tap on a stale row cannot clear two.
+    #
+    # The id is the newest load's. A snooze then holds while loads
+    # are hung one by one, and lifts when another wash finishes --
+    # new washing is new information -- so next week's load is never
+    # silenced by last week's snooze.
+    pending = attrs.get("pending")
+    if not isinstance(pending, list):
+        return rows
+    loads = [load for load in pending if isinstance(load, dict) and load.get("id")]
+    if not loads:
+        return rows
+    count = len(loads)
+    detail = _load_detail(loads[0])
+    rows.append({
+        **where,
+        "id": f"hang_{loads[-1]['id']}",
+        "title": ("Laundry needs hanging" if count == 1
+                  else f"{count} loads need hanging"),
+        "detail": detail if count == 1 else "Oldest " + detail.lower(),
+        "icon": "mdi:hanger",
+        "level": LEVEL_ATTENTION,
+        "count": count,
+        "action_label": "Hung",
+        "action": _hung(loads[0]["id"]),
+    })
+    return rows
 
 
 class _Derived(SensorEntity):
@@ -262,8 +465,9 @@ class _Derived(SensorEntity):
         """
         return set(self._option(CONF_IGNORE_UNAVAILABLE, []) or [])
 
-    def _batteries_below(self, threshold: int) -> list[tuple[State, float]]:
-        """Battery sensors under the threshold, worst first."""
+    def _battery_readings(self) -> list[tuple[State, float]]:
+        """Every battery sensor with a reading, worst first."""
+        ignored = self._ignored()
         found: list[tuple[State, float]] = []
         for state in self.hass.states.async_all("sensor"):
             if state.attributes.get(ATTR_DEVICE_CLASS) != "battery":
@@ -274,12 +478,58 @@ class _Derived(SensorEntity):
                 level = float(state.state)
             except ValueError:
                 continue
-            if state.entity_id in self._ignored():
+            if state.entity_id in ignored:
                 continue
-            if level <= threshold:
-                found.append((state, level))
+            found.append((state, level))
         found.sort(key=lambda pair: pair[1])
         return found
+
+    def _salt_low(self) -> list[tuple[str, float]]:
+        """Every side's reading while the softener needs filling, else none.
+
+        The one place the salt rule lives. Needs you raises its row from it
+        and System health raises the Maintenance tab's level from it, and
+        two copies of a threshold is how a tab comes to go yellow for a
+        softener the list has stopped mentioning -- or the reverse.
+
+        A twin-cylinder softener alternates: one side works while the other
+        regenerates, so a single side running out is normal and survivable,
+        and both running down together is not. That is why there are two
+        thresholds rather than one. Every side at or below the first is the
+        real warning; any single side at or below the second is the earlier,
+        sharper one.
+        """
+        entity_ids = self._option(CONF_SALT_SENSORS, []) or []
+        readings: list[tuple[str, float]] = []
+        for entity_id in entity_ids:
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state in _NOT_A_READING:
+                continue
+            try:
+                readings.append((_salt_side(state), float(state.state)))
+            except (TypeError, ValueError):
+                continue
+
+        # No usable reading is not the same as a full tank. Say nothing
+        # rather than claim the softener is fine.
+        if not readings:
+            return []
+
+        both = float(self._option(CONF_SALT_BOTH_THRESHOLD, DEFAULT_SALT_BOTH_THRESHOLD))
+        one = float(self._option(CONF_SALT_ONE_THRESHOLD, DEFAULT_SALT_ONE_THRESHOLD))
+
+        levels = [level for _, level in readings]
+        all_low = all(level <= both for level in levels)
+        any_low = any(level <= one for level in levels)
+        return readings if (all_low or any_low) else []
+
+    def _batteries_below(self, threshold: int) -> list[tuple[State, float]]:
+        """Battery sensors under the threshold, worst first."""
+        return [
+            (state, level)
+            for state, level in self._battery_readings()
+            if level <= threshold
+        ]
 
     def _unavailable(self) -> list[State]:
         """Entities that have gone away, minus the ones nobody acts on.
@@ -304,6 +554,522 @@ class _Derived(SensorEntity):
         return out
 
 
+class _Owner(_Derived):
+    """A card's own sensor. It decides the card's level and the jobs behind it.
+
+    The card is the thing that owns a need, so its sensor is where the level
+    is worked out -- once. The card's outline reads `level` here; Needs you
+    collects `jobs` from here and shows them; the tab's rail button wears the
+    loudest `level` of the cards on it. Nothing downstream decides a level of
+    its own, which is how they used to drift apart.
+
+    The state is the level itself, or `clear` when nothing wants doing.
+    """
+
+    tab: str = ""
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        super().__init__(entry)
+        self._jobs: list[dict[str, Any]] = []
+        self._listeners: list[Any] = []
+
+    @callback
+    def add_listener(self, listener: Any) -> None:
+        self._listeners.append(listener)
+
+    @callback
+    def async_write_ha_state(self) -> None:
+        super().async_write_ha_state()
+        for listener in self._listeners:
+            listener.refresh()
+
+    def _jobs_now(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def _recompute(self) -> None:
+        self._jobs = self._jobs_now()
+        self._items = self._jobs
+
+    def needs_you_rows(self) -> list[dict[str, Any]]:
+        # Worked out when asked, from the house as it is now, so the card
+        # and Needs you can never be reading two different moments.
+        if self.hass is None:
+            return list(self._jobs)
+        self._jobs = self._jobs_now()
+        return list(self._jobs)
+
+    @property
+    def owner_level(self) -> str | None:
+        return loudest(row.get("level") for row in self.needs_you_rows())
+
+    @property
+    def native_value(self) -> str:
+        return self.owner_level or CLEAR
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        jobs = self.needs_you_rows()
+        return {
+            "level": loudest(row.get("level") for row in jobs),
+            "tab": self.tab,
+            "jobs": jobs,
+        }
+
+
+class BinsStatusSensor(_Owner, RestoreEntity):
+    """The Bin calendar card's sensor: bins out tonight, or not."""
+
+    tab = "cleaning"
+    _attr_name = "Bins status"
+    _attr_icon = "mdi:trash-can-outline"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_bins_status"
+        # Collections somebody has said are done. Held here, on the card's
+        # own sensor, so "Done" clears the card and the tab as well as the
+        # row -- and restored, so a restart does not un-put the bins out.
+        self._done: set[str] = set()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is not None:
+            done = last.attributes.get("done")
+            if isinstance(done, list):
+                self._done = {str(d) for d in done}
+            self._recompute()
+
+    def owns(self, item_id: str) -> bool:
+        return item_id.startswith("bin_")
+
+    @callback
+    def dismiss(self, item_id: str) -> None:
+        self._done.add(item_id)
+        self._recompute()
+        self.async_write_ha_state()
+
+    def _jobs_now(self) -> list[dict[str, Any]]:
+        """The day before a collection, because that is when they go out.
+
+        The tile says "Garden · Out tonight" all week; this row is the job,
+        and it appears for the whole of the day before rather than only the
+        evening. You decide to do it when you think of it, not at five.
+
+        The bin sensor is expected to carry `daysTo` and to read as the
+        stream — `Garden`, `Refuse + Food`.
+        """
+        entity_id = self._option(CONF_BIN_SENSOR, None)
+        if not entity_id:
+            return []
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in _NOT_A_READING:
+            return []
+        days = state.attributes.get("daysTo")
+        if days not in (0, 1):
+            return []
+
+        now = dt_util.now()
+        collection = now.date() + timedelta(days=int(days))
+        title = "Bins out tonight" if days == 1 else "Bins out now"
+        detail = f"{state.state} collected " + ("tomorrow" if days == 1 else "today")
+        row_id = f"bin_{collection.isoformat()}"
+        if row_id in self._done:
+            # "Done" reached the card: the bins are out.
+            return []
+        return [{
+            # Keyed to the collection date, so marking tonight's done does
+            # not silence next week's.
+            "id": f"bin_{collection.isoformat()}",
+            "title": title,
+            "detail": detail,
+            "icon": "mdi:trash-can-outline",
+            "level": LEVEL_ATTENTION,
+            "tab": "cleaning",
+            "card": "bins",
+            "action_label": "Done",
+            "action": _dismiss(f"bin_{collection.isoformat()}"),
+        }]
+
+    def _recompute(self) -> None:
+        # A collection that has passed cannot be done again; forget it.
+        today = dt_util.now().date().isoformat()
+        self._done = {d for d in self._done if d[len("bin_"):] >= today}
+        super()._recompute()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {**super().extra_state_attributes, "done": sorted(self._done)}
+
+
+
+class TasksStatusSensor(_Owner):
+    """The Home Tasks card's sensor: are any chores overdue."""
+
+    tab = "lists"
+    _attr_name = "Tasks status"
+    _attr_icon = "mdi:clipboard-check-outline"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_tasks_status"
+
+    def _jobs_now(self) -> list[dict[str, Any]]:
+        """Overdue chores only — the full list lives in its own pop-up."""
+        entity_id = self._option(CONF_TASKS_SENSOR, None)
+        if not entity_id:
+            return []
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state != STATE_ON:
+            return []
+        return [{
+            "id": "tasks_overdue",
+            "title": "Overdue chores",
+            "detail": _name_of(state),
+            "icon": "mdi:clipboard-alert-outline",
+            "level": LEVEL_ATTENTION,
+            "tab": "lists",
+            "card": "tasks",
+            "action_label": "Snooze",
+            "action": _snooze("tasks_overdue"),
+        }]
+
+
+
+class SoftenerStatusSensor(_Owner):
+    """The Water softener card's sensor: does it need salt."""
+
+    tab = "maintenance"
+    _attr_name = "Softener status"
+    _attr_icon = "mdi:shaker-outline"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_softener_status"
+
+    def _jobs_now(self) -> list[dict[str, Any]]:
+        """One row when the softener needs filling -- see `_salt_low`.
+
+        Always one row, never one per side. Filling the machine is a single
+        errand whichever cylinder prompted it, and two rows for one bag of
+        salt is the noise this sensor exists to avoid.
+        """
+        readings = self._salt_low()
+        if not readings:
+            return []
+
+        detail = _salt_detail(readings)
+        return [{
+            "id": "softener_salt",
+            "title": "Water softener needs salt",
+            "detail": detail,
+            "icon": "mdi:shaker-outline",
+            # Ochre, whichever rule raised it. It was terracotta when
+            # every side was low and ochre when only one was, which made
+            # the colour report the SHOPPING -- a bag to buy rather than
+            # a bag in the garage -- and not the urgency. Nobody reads a
+            # colour that way.
+            #
+            # And terracotta on this panel is for something going wrong
+            # now: water on the floor, the house left unlocked. A
+            # softener running low is slow, recoverable, and fixed by an
+            # errand. Ochre already means exactly that -- something wants
+            # doing, and there is a row for it -- which is what this is.
+            #
+            # The row appearing at all is the signal. Splitting it into
+            # two colours spent the loudest one in the house on a chore.
+            "level": LEVEL_ATTENTION,
+            "tab": "maintenance",
+            "card": "softener",
+            # A snooze, because the softener reports late. Its salt
+            # reading moves a day or more after the tank is filled, so
+            # without one the row went on asking for salt that was
+            # already in the machine, with nothing to do about it but
+            # wait. A day is long enough to cover that lag and short
+            # enough that a tank that really is low comes straight back.
+            "action_label": "Snooze",
+            "action": _snooze("softener_salt", hours=24),
+            # Snooze, never dismiss. Salt does not wait -- it runs out,
+            # and then the softener is passing hard water through the
+            # house until somebody notices limescale -- so a "Done", or
+            # a forever-suppression from anything else calling the
+            # service, must not be able to lose the row for good. It
+            # still clears itself the moment the level comes back up.
+            "snooze_only": True,
+        }]
+
+
+
+class BatteriesStatusSensor(_Owner):
+    """The Batteries card's sensor: which batteries want changing."""
+
+    tab = "maintenance"
+    _attr_name = "Batteries status"
+    _attr_icon = "mdi:battery-alert-variant-outline"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_batteries_status"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The card's own data as well as its level and jobs.
+
+        Every battery, not just the flat ones, so the Batteries card can say
+        how the rest stand. `low` is decided here, on the same threshold as
+        the jobs, rather than by the card drawing a line of its own: two
+        places holding the line is how a card comes to call a battery fine
+        that Needs you is asking somebody to change.
+        """
+        threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
+        readings = self._battery_readings() if self.hass is not None else []
+        low = [
+            {
+                "entity_id": state.entity_id,
+                "name": _name_of(state),
+                "area": _area_of(self.hass, state.entity_id),
+                # "percent", not "level": a level is one of the three names
+                # a job carries.
+                "percent": percent,
+            }
+            for state, percent in readings
+            if percent <= threshold
+        ]
+        return {
+            **super().extra_state_attributes,
+            "batteries": [
+                {
+                    "entity_id": state.entity_id,
+                    "name": _battery_label(state),
+                    "area": _area_of(self.hass, state.entity_id),
+                    "percent": percent,
+                    "low": percent <= threshold,
+                }
+                for state, percent in readings
+            ],
+            "low_batteries": low,
+            "battery_count": len(low),
+            "battery_threshold": threshold,
+        }
+
+    def _jobs_now(self) -> list[dict[str, Any]]:
+        """A row each while that is still a list, one row once it is a job.
+
+        One flat battery is an errand. Seven is an afternoon, and seven rows
+        would bury everything else on the band — the same reasoning that
+        keeps offline to a single row.
+        """
+        threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
+        flat = self._batteries_below(threshold)
+        if not flat:
+            return []
+
+        if len(flat) > BATTERY_ROWS_MAX:
+            names = ", ".join(_battery_label(state) for state, _ in flat[:3])
+            return [{
+                "id": "batteries",
+                "action": _snooze("batteries", 24),
+                "title": f"{len(flat)} low batteries",
+                "detail": f"{names} and {len(flat) - 3} more"
+                          if len(flat) > 3 else names,
+                "icon": "mdi:battery-alert-variant-outline",
+                "level": LEVEL_ATTENTION,
+                "tab": "maintenance",
+                "card": "batteries",
+                "action_label": "Snooze",
+            }]
+
+        rows: list[dict[str, Any]] = []
+        for state, level in flat:
+            area = _area_of(self.hass, state.entity_id)
+            rows.append({
+                "id": f"battery_{state.entity_id}",
+                "action": _snooze(f"battery_{state.entity_id}", 24),
+                "title": f"{_battery_label(state)} battery",
+                "detail": f"{level:.0f}%" + (f" · {area}" if area else ""),
+                "icon": "mdi:battery-alert-variant-outline",
+                "level": LEVEL_ATTENTION,
+                "tab": "maintenance",
+                "card": "batteries",
+                "action_label": "Snooze",
+            })
+        return rows
+
+
+
+class PeopleStatusSensor(_Owner, RestoreEntity):
+    """The Who's home card's sensor: is anybody impossible to locate."""
+
+    tab = "security"
+    _attr_name = "People status"
+    _attr_icon = "mdi:account-question"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_people_status"
+        # person -> when their trackers went quiet. Held here rather than
+        # read off `last_changed`, because a person's `last_changed` is
+        # reset by a restart -- so a grace period measured from it would
+        # start again at every reboot and a tracker quiet since breakfast
+        # would never get past it.
+        self._dark_since: dict[str, datetime] = {}
+        # person -> {"state", "since"}: where they are and since when, for
+        # the card's "3h ago". Held here for the same reason as
+        # `_dark_since` -- read off the person's own `last_changed`, every
+        # restart told the panel that everybody had just walked in.
+        self._at: dict[str, dict[str, Any]] = {}
+        # person -> where they were when their tracker went quiet, and when
+        # it did. A phone that drops out for ten minutes and comes back in
+        # the same place has not moved, and must not restart the clock.
+        self._before: dict[str, dict[str, Any]] = {}
+
+    def _watched(self) -> list[str]:
+        return super()._watched() + list(self._option(CONF_PEOPLE, []) or [])
+
+    def _grace(self) -> timedelta:
+        return timedelta(
+            minutes=float(
+                self._option(
+                    CONF_PRESENCE_GRACE_MINUTES, DEFAULT_PRESENCE_GRACE_MINUTES
+                )
+            )
+        )
+
+    def _recompute(self) -> None:
+        super()._recompute()
+        self._track_presence()
+
+    def _track_presence(self) -> None:
+        """Keep each person's "since" honest across restarts and blips.
+
+        Only a change of place moves the clock. A restart is not one: the
+        restored record already says where they were, and a person who is
+        still there keeps the time they arrived. Nor is a spell of silence
+        shorter than the presence grace period: the tunnel, the reboot, the
+        minute after Home Assistant starts when a tracker has not reported
+        yet. Coming back to the same place picks the old time back up.
+        """
+        now = dt_util.utcnow()
+        for entity_id in list(self._option(CONF_PEOPLE, []) or []):
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                continue
+            dark = state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+            where = STATE_UNKNOWN if dark else state.state
+            held = self._at.get(entity_id)
+            if held is not None and held["state"] == where:
+                # Quiet is quiet since whenever the job says, which may be
+                # older than this record: the job's memory can be restored
+                # after the first scan has already guessed "just now".
+                quiet = self._dark_since.get(entity_id) if dark else None
+                if quiet is not None and quiet < held["since"]:
+                    held["since"] = quiet
+                continue
+            before = self._before.pop(entity_id, None)
+            if (
+                held is not None
+                and held["state"] == STATE_UNKNOWN
+                and before is not None
+                and before["state"] == where
+                and now - before["left"] < self._grace()
+            ):
+                self._at[entity_id] = {"state": where, "since": before["since"]}
+                continue
+            if held is not None and dark:
+                self._before[entity_id] = {**held, "left": now}
+            # Quiet since when the job says so, which survives a restart;
+            # anything else since the change we just saw.
+            since = (
+                self._dark_since.get(entity_id, state.last_changed)
+                if dark else state.last_changed
+            )
+            self._at[entity_id] = {"state": where, "since": since}
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is None:
+            return
+        dark = last.attributes.get("dark_since")
+        if isinstance(dark, dict):
+            for entity_id, when in dark.items():
+                parsed = dt_util.parse_datetime(when) if when else None
+                if parsed is not None:
+                    self._dark_since[entity_id] = parsed
+        presence = last.attributes.get("presence")
+        if isinstance(presence, dict):
+            for entity_id, held in presence.items():
+                if not isinstance(held, dict) or not held.get("state"):
+                    continue
+                when = held.get("since")
+                parsed = dt_util.parse_datetime(when) if when else None
+                if parsed is not None:
+                    self._at[entity_id] = {"state": held["state"], "since": parsed}
+        self._recompute()
+
+    def _jobs_now(self) -> list[dict[str, Any]]:
+        """A person nobody can locate at all.
+
+        Not "away" -- that is a reading, and a perfectly good one. This
+        is the absence of any reading: no tracker of theirs is
+        reporting, so every presence automation in the house is now
+        guessing. The card draws it in the warning colour, and on this
+        panel yellow is a promise that something wants doing, so the
+        job has to exist here or the colour is a lie.
+
+        A grace period, because a phone can be in a tunnel, on a plane
+        or rebooting and none of those is a job. Measured from when we
+        first saw them go dark and held across a restart, for the
+        reason given where `_dark_since` is declared.
+        """
+        watched = list(self._option(CONF_PEOPLE, []) or [])
+        if not watched:
+            return []
+        grace = self._grace()
+        now = dt_util.utcnow()
+        rows: list[dict[str, Any]] = []
+        for entity_id in watched:
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                continue
+            if state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+                # A positive reading of any kind -- home, away, a zone --
+                # is the tracker working. Forget that it ever was not.
+                self._dark_since.pop(entity_id, None)
+                continue
+            since = self._dark_since.setdefault(entity_id, state.last_changed)
+            if now - since < grace:
+                continue
+            rows.append({
+                "id": f"dark_{entity_id}",
+                "title": f"{_name_of(state)} cannot be located",
+                "detail": (
+                    "No tracker reporting \u00b7 "
+                    f"quiet since {dt_util.as_local(since).strftime('%H:%M')}"
+                ),
+                "icon": "mdi:map-marker-question",
+                "level": LEVEL_ATTENTION,
+                "tab": "security",
+                "card": "people",
+                "action_label": "Snooze",
+                "action": _snooze(f"dark_{entity_id}", hours=12),
+            })
+        return rows
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            **super().extra_state_attributes,
+            "dark_since": {
+                entity_id: when.isoformat()
+                for entity_id, when in self._dark_since.items()
+            },
+            # What the Who's home card reads for "3h ago".
+            "presence": {
+                entity_id: {"state": held["state"], "since": held["since"].isoformat()}
+                for entity_id, held in self._at.items()
+            },
+        }
+
+
 class NeedsYouSensor(_Derived, RestoreEntity):
     """What a human has to do, and nothing that is merely true.
 
@@ -326,15 +1092,12 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         # id -> when it becomes actionable again. A dismissal is a snooze with
         # no end, so one structure covers both.
         self._suppressed: dict[str, datetime | None] = {}
-        # person -> when their trackers went quiet. Held here rather than
-        # read off `last_changed`, because a person's `last_changed` is
-        # reset by a restart -- so a grace period measured from it would
-        # start again at every reboot and a tracker quiet since breakfast
-        # would never get past it.
-        self._dark_since: dict[str, datetime] = {}
-        # Set by the platform. The door is decided in one place -- the
-        # grace, the jam, the blip-proof clock -- and this only reads it.
-        self.security: SecurityStatusSensor | None = None
+        self._levels: dict[str, str | None] = {f"tab_{tab}": None for tab in TABS}
+        # The cards' own sensors, set by the platform. Each decides its
+        # card's level and the jobs behind it; this collects the jobs and
+        # never works out a level of its own. The washing machines are
+        # found by their published state instead -- see `_owner_rows`.
+        self.owners: list[Any] = []
 
     async def async_added_to_hass(self) -> None:
         """Restore suppressions, then recompute so a restart does not un-dismiss.
@@ -348,13 +1111,6 @@ class NeedsYouSensor(_Derived, RestoreEntity):
 
         if (last := await self.async_get_last_state()) is None:
             return
-        dark = last.attributes.get("dark_since")
-        if isinstance(dark, dict):
-            for entity_id, when in dark.items():
-                parsed = dt_util.parse_datetime(when) if when else None
-                if parsed is not None:
-                    self._dark_since[entity_id] = parsed
-
         restored = last.attributes.get("suppressed")
         if isinstance(restored, dict):
             for item_id, until in restored.items():
@@ -368,7 +1124,19 @@ class NeedsYouSensor(_Derived, RestoreEntity):
 
     @callback
     def suppress(self, item_id: str, hours: float | None = None) -> None:
-        """Dismiss (no hours) or snooze an item by its stable id."""
+        """Dismiss (no hours) or snooze an item by its stable id.
+
+        A snooze is this list's business: it hides the row for a while and
+        the card goes on saying the thing is true. A dismissal -- "Done" --
+        says the job is finished, so it goes to the card that owns the job,
+        and the card, the tab and the row all clear together.
+        """
+        if hours is None:
+            for owner in self.owners:
+                owns = getattr(owner, "owns", None)
+                if owns is not None and owns(item_id):
+                    owner.dismiss(item_id)
+                    return
         self._suppressed[item_id] = (
             None if hours is None else dt_util.utcnow() + timedelta(hours=hours)
         )
@@ -408,30 +1176,55 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             return False
         return True
 
+    def _hides(self, row: dict[str, Any]) -> bool:
+        """Whether a suppression takes this row off the list.
+
+        `sticky` rows cannot be put off at all. `snooze_only` rows honour a
+        snooze but not a dismissal: a row that stays true until it is fixed
+        must come back when the snooze runs out.
+        """
+        if row.get("sticky"):
+            return False
+        item_id = row["id"]
+        if row.get("snooze_only") and self._suppressed.get(item_id, 0) is None:
+            return False
+        return self._is_suppressed(item_id)
+
     def _recompute(self) -> None:
-        candidates: list[dict[str, Any]] = []
-        candidates.extend(self._security())
-        candidates.extend(self._bins())
-        candidates.extend(self._tasks())
-        candidates.extend(self._batteries())
-        candidates.extend(self._salt())
+        owned = self._owner_rows()
+        candidates = [row for _, _, rows in owned for row in rows]
         # No overnight-baseline row. It reported a night that had already
         # happened, with no action beyond Dismiss, which is the one thing
         # a Needs-you row may not be: it did not need doing. The figures
         # stay where they always were, on sensor.energy_day, where the
         # Electricity card reads them -- what leaves is the claim that
         # they were a job.
-        candidates.extend(self._appliances())
-        candidates.extend(self._people())
-        candidates.extend(self._offline())
 
         # A dismissal only clears the occurrence it was made against, so
         # "bin out" returns next week rather than never coming back. That is
         # what the date in the id is doing.
         self._items = [
             c for c in candidates
-            if c.get("sticky") or not self._is_suppressed(c["id"])
+            if not self._hides(c)
         ]
+        # Loudest first: red, orange, yellow, blue. Stable, so rows at one
+        # level keep the order their cards gave them.
+        self._items.sort(key=lambda c: -LEVEL_LOUDNESS.get(c.get("level"), -1))
+
+        # The rail button's level: the loudest card on each tab. Taken from
+        # the cards' own levels, not from these rows, so a snoozed row goes
+        # on colouring its tab exactly as it goes on colouring its card.
+        self._levels = {f"tab_{tab}": None for tab in TABS}
+        by_tab: dict[str, list[dict[str, Any]]] = {tab: [] for tab in TABS}
+        for tab, level, rows in owned:
+            key = f"tab_{tab}"
+            self._levels[key] = loudest([self._levels.get(key), level])
+            by_tab.setdefault(tab, []).extend(rows)
+        # What the rail button says under its name. Taken from every job on
+        # the tab, snoozed ones included, for the same reason the level is:
+        # the words and the colour describe the same thing.
+        for tab, rows in by_tab.items():
+            self._levels[f"summary_{tab}"] = _tab_summary(rows)
 
         # Clean up suppressions whose item is gone, so the dict cannot grow
         # without bound across months of restarts.
@@ -439,262 +1232,39 @@ class NeedsYouSensor(_Derived, RestoreEntity):
         for stale in [k for k in self._suppressed if k not in live]:
             del self._suppressed[stale]
 
-    # --- the providers ------------------------------------------------
-
-    def _security(self) -> list[dict[str, Any]]:
-        """A door left unlocked or open, as a job rather than a banner.
-
-        It used to be a separate red alert card above this list, which
-        broke two rules at once: a job that lived somewhere other than
-        here, and red from the first second -- the loudest colour in the
-        house on somebody carrying the shopping in. Now it is a row like
-        any other, `waiting` inside the grace and `critical` past it, and
-        the level is read off `Security status` so the row, the card and
-        the tab can never disagree about which it is.
-
-        No snooze. A door does not keep; the row clears when it shuts.
-        """
-        if self.security is None:
-            return []
-        level = self.security.level
-        if level is None:
-            return []
-        rows: list[dict[str, Any]] = []
-        for door in self.security.unlocked:
-            since = dt_util.parse_datetime(door["since"])
-            when = dt_util.as_local(since).strftime("%H:%M") if since else None
-            jammed = door.get("jammed")
-            rows.append({
-                "id": f"unlocked_{door['entity_id']}",
-                "title": f"{door['name']} {'jammed' if jammed else 'unlocked'}",
-                "detail": f"Unlocked since {when}" if when else "Unlocked",
-                "icon": door["icon"],
-                "level": level,
-                "sticky": True,
-                "action_label": "Lock",
-                "action": {"service": "lock.lock",
-                           "target": {"entity_id": door["entity_id"]}},
-            })
-        for door in self.security.opened:
-            since = dt_util.parse_datetime(door["since"])
-            when = dt_util.as_local(since).strftime("%H:%M") if since else None
-            rows.append({
-                "id": f"open_{door['entity_id']}",
-                "title": f"{door['name']} open",
-                "detail": f"Open since {when}" if when else "Open",
-                "icon": door["icon"],
-                "level": level,
-                "sticky": True,
-            })
-        return rows
-
-    def _bins(self) -> list[dict[str, Any]]:
-        """The day before a collection, because that is when they go out.
-
-        The tile says "Garden · Out tonight" all week; this row is the job,
-        and it appears for the whole of the day before rather than only the
-        evening. You decide to do it when you think of it, not at five.
-
-        The bin sensor is expected to carry `daysTo` and to read as the
-        stream — `Garden`, `Refuse + Food`.
-        """
-        entity_id = self._option(CONF_BIN_SENSOR, None)
-        if not entity_id:
-            return []
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state in _NOT_A_READING:
-            return []
-        days = state.attributes.get("daysTo")
-        if days not in (0, 1):
-            return []
-
-        now = dt_util.now()
-        collection = now.date() + timedelta(days=int(days))
-        title = "Bins out tonight" if days == 1 else "Bins out now"
-        detail = f"{state.state} collected " + ("tomorrow" if days == 1 else "today")
-        return [{
-            # Keyed to the collection date, so marking tonight's done does
-            # not silence next week's.
-            "id": f"bin_{collection.isoformat()}",
-            "title": title,
-            "detail": detail,
-            "icon": "mdi:trash-can-outline",
-            "level": LEVEL_ATTENTION,
-            "action_label": "Done",
-            "action": _dismiss(f"bin_{collection.isoformat()}"),
-        }]
-
-    def _tasks(self) -> list[dict[str, Any]]:
-        """Overdue chores only — the full list lives in its own pop-up."""
-        entity_id = self._option(CONF_TASKS_SENSOR, None)
-        if not entity_id:
-            return []
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state != STATE_ON:
-            return []
-        return [{
-            "id": "tasks_overdue",
-            "title": "Overdue chores",
-            "detail": _name_of(state),
-            "icon": "mdi:clipboard-alert-outline",
-            "level": LEVEL_ATTENTION,
-            "action_label": "Snooze",
-            "action": _snooze("tasks_overdue"),
-        }]
-
-    def _salt(self) -> list[dict[str, Any]]:
-        """One row when the softener needs filling, under either of two rules.
-
-        A twin-cylinder softener alternates: one side works while the other
-        regenerates, so a single side running out is normal and survivable,
-        and both running down together is not. That is why there are two
-        thresholds rather than one. Every side at or below the first is the
-        real warning; any single side at or below the second is the earlier,
-        sharper one.
-
-        Always one row, never one per side. Filling the machine is a single
-        errand whichever cylinder prompted it, and two rows for one bag of
-        salt is the noise this sensor exists to avoid.
-        """
-        entity_ids = self._option(CONF_SALT_SENSORS, []) or []
-        if not entity_ids:
-            return []
-
-        readings: list[tuple[str, float]] = []
-        for entity_id in entity_ids:
+    def _owner_rows(self) -> list[tuple[str, str | None, list[dict[str, Any]]]]:
+        """(tab, level, jobs) for every card that owns a need."""
+        owned: list[tuple[str, str | None, list[dict[str, Any]]]] = []
+        for owner in self.owners:
+            # An owner whose rows can land on more than one tab -- the AI
+            # tasks, which go wherever the card that started them is --
+            # reports each tab on its own.
+            by_tab = getattr(owner, "by_tab", None)
+            if by_tab is not None:
+                owned.extend(by_tab())
+            else:
+                owned.append((owner.tab, owner.owner_level, owner.needs_you_rows()))
+        # The washing machines, by their published state: their card reads
+        # that same state, so this reads exactly what the card shows. A
+        # state from before the machines published `jobs` is read the old
+        # way, through the same function the machine itself uses.
+        for entity_id in self._appliance_entities():
             state = self.hass.states.get(entity_id)
             if state is None or state.state in _NOT_A_READING:
                 continue
-            try:
-                readings.append((_salt_side(state), float(state.state)))
-            except (TypeError, ValueError):
-                continue
-
-        # No usable reading is not the same as a full tank. Say nothing
-        # rather than claim the softener is fine.
-        if not readings:
-            return []
-
-        both = float(self._option(CONF_SALT_BOTH_THRESHOLD, DEFAULT_SALT_BOTH_THRESHOLD))
-        one = float(self._option(CONF_SALT_ONE_THRESHOLD, DEFAULT_SALT_ONE_THRESHOLD))
-
-        levels = [level for _, level in readings]
-        all_low = all(level <= both for level in levels)
-        any_low = any(level <= one for level in levels)
-        if not (all_low or any_low):
-            return []
-
-        detail = ", ".join(f"{side} {level:.0f}%" for side, level in readings)
-        return [{
-            "id": "softener_salt",
-            "title": "Water softener needs salt",
-            "detail": detail,
-            "icon": "mdi:shaker-outline",
-            # Ochre, whichever rule raised it. It was terracotta when
-            # every side was low and ochre when only one was, which made
-            # the colour report the SHOPPING -- a bag to buy rather than
-            # a bag in the garage -- and not the urgency. Nobody reads a
-            # colour that way.
-            #
-            # And terracotta on this panel is for something going wrong
-            # now: water on the floor, the house left unlocked. A
-            # softener running low is slow, recoverable, and fixed by an
-            # errand. Ochre already means exactly that -- something wants
-            # doing, and there is a row for it -- which is what this is.
-            #
-            # The row appearing at all is the signal. Splitting it into
-            # two colours spent the loudest one in the house on a chore.
-            "level": LEVEL_ATTENTION,
-            # No snooze, and not suppressible at all.
-            #
-            # Everything else on this list can be put off because
-            # putting it off costs nothing: the bins come round again,
-            # the washing waits. Salt does not wait -- it runs out,
-            # and then the softener is passing hard water through the
-            # house until somebody notices limescale. The row is only
-            # ever true when there is a bag to fetch or a bag to buy,
-            # and it clears itself the moment the level comes back up.
-            #
-            # `sticky` rather than just dropping the button, because
-            # the button is not the only way in: the service is there
-            # for anything to call, and a row that cannot be cleared
-            # by hand should not be clearable by a stale suppression
-            # either.
-            "sticky": True,
-        }]
-
-    def _batteries(self) -> list[dict[str, Any]]:
-        """A row each while that is still a list, one row once it is a job.
-
-        One flat battery is an errand. Seven is an afternoon, and seven rows
-        would bury everything else on the band — the same reasoning that
-        keeps offline to a single row.
-        """
-        threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
-        flat = self._batteries_below(threshold)
-        if not flat:
-            return []
-
-        if len(flat) > BATTERY_ROWS_MAX:
-            names = ", ".join(_battery_label(state) for state, _ in flat[:3])
-            return [{
-                "id": "batteries",
-                "action": _snooze("batteries", 24),
-                "title": f"{len(flat)} low batteries",
-                "detail": f"{names} and {len(flat) - 3} more"
-                          if len(flat) > 3 else names,
-                "icon": "mdi:battery-alert-variant-outline",
-                "level": LEVEL_ATTENTION,
-                "action_label": "Snooze",
-            }]
-
-        rows: list[dict[str, Any]] = []
-        for state, level in flat:
-            area = _area_of(self.hass, state.entity_id)
-            rows.append({
-                "id": f"battery_{state.entity_id}",
-                "action": _snooze(f"battery_{state.entity_id}", 24),
-                "title": f"{_battery_label(state)} battery",
-                "detail": f"{level:.0f}%" + (f" · {area}" if area else ""),
-                "icon": "mdi:battery-alert-variant-outline",
-                "level": LEVEL_ATTENTION,
-                "action_label": "Snooze",
-            })
-        return rows
+            attrs = state.attributes
+            jobs = attrs.get("jobs")
+            if not isinstance(jobs, list):
+                jobs = appliance_jobs(_name_of(state), entity_id, attrs)
+            level = attrs["level"] if "level" in attrs else loudest(
+                row.get("level") for row in jobs
+            )
+            owned.append((attrs.get("tab") or "cleaning", level, list(jobs)))
+        return owned
 
     def _watched(self) -> list[str]:
-        """Also the appliance sensors, so a finished wash appears at once.
-
-        Overridden here rather than added to the base: `System health` and
-        `Security status` share that base and have no business knowing what
-        an appliance is. Reaching into the subclass from the base crashed
-        both of them on setup, which is a whole entity missing from the
-        house for a line that belongs one level down.
-        """
-        return (
-            super()._watched()
-            + self._appliance_entities()
-            + list(self._option(CONF_PEOPLE, []) or [])
-        )
-
-    def _energy_entity(self) -> str | None:
-        """The day sensor this integration publishes, found by its shape.
-
-        Looked up rather than injected, for the reasons the appliance lookup
-        gives: setup order stops mattering, and this reads the same state a
-        card reads.
-
-        Matched on the two keys the day sensor publishes whatever state it
-        is in. A signature built from `baseline_watts` would stop matching
-        the moment the data went stale -- which happens to give the right
-        answer, by failing to find the sensor at all, and would leave the
-        staleness check below as dead code that only looked like the reason.
-        """
-        for state in self.hass.states.async_all("sensor"):
-            attrs = state.attributes
-            if "for_day" in attrs and "days_late" in attrs:
-                return state.entity_id
-        return None
+        """Also the appliance sensors, so a finished wash appears at once."""
+        return super()._watched() + self._appliance_entities()
 
     def _appliance_entities(self) -> list[str]:
         """The cycle sensors this integration publishes, found by their id.
@@ -709,333 +1279,19 @@ class NeedsYouSensor(_Derived, RestoreEntity):
                 found.append(state.entity_id)
         return found
 
-    def _appliances(self) -> list[dict[str, Any]]:
-        """Water on the floor, a machine left dead, a full drum, washing to hang.
-
-        Four urgencies from one sensor, and the last two are sequential
-        rather than alternatives: a finished load is in the drum until the
-        door is opened, and a WASHED load is then still to be hung. A dryer
-        stops after the first of those, which is the whole difference
-        between the two machines.
-
-        Only the leak and the dead machine are offered a snooze. The other
-        two are cleared by doing the thing -- the door for the drum, the
-        button for the hanging.
-        """
-        rows: list[dict[str, Any]] = []
-        for entity_id in self._appliance_entities():
-            state = self.hass.states.get(entity_id)
-            if state is None or state.state in _NOT_A_READING:
-                continue
-            attrs = state.attributes
-            name = _name_of(state)
-            slug = attrs.get("slug") or entity_id
-
-            if attrs.get("leak"):
-                rows.append({
-                    "id": f"leak_{slug}",
-                    "title": f"{name} is leaking",
-                    "detail": "Power cut at the plug \u00b7 check the floor",
-                    "icon": "mdi:water-alert",
-                    "level": LEVEL_CRITICAL,
-                    "action_label": "Snooze",
-                    "action": _snooze(f"leak_{slug}", hours=1),
-                })
-
-            # Deliberately independent of the leak: the sensor stays wet long
-            # after the floor is dealt with, and the cycle still has to be
-            # finished. "It is off" stays true and stays worth saying.
-            if not attrs.get("powered", True):
-                rows.append({
-                    "id": f"unpowered_{slug}",
-                    "title": f"{name} has no power",
-                    "detail": "Switched off at the plug",
-                    "icon": "mdi:power-plug-off",
-                    # Waiting, not attention. A machine without power
-                    # mid-cycle is wet washing and a clock running: the
-                    # activity is paused until somebody acts, which is
-                    # exactly what the middle level is for. It shared a
-                    # colour with "bins tomorrow" before there was one.
-                    "level": LEVEL_WAITING,
-                    "action_label": "Snooze",
-                    "action": _snooze(f"unpowered_{slug}", hours=4),
-                })
-
-            # There is washing sitting in the drum. True of both machines
-            # and cleared the same way on both -- by the door, which they
-            # can see for themselves, so this row is offered no button. A
-            # job you finish by doing the obvious physical thing should not
-            # also have a way to be marked done from a screen; two ways to
-            # clear one row is how the row and the world drift apart.
-            if attrs.get("drum_full"):
-                rows.append({
-                    "id": f"drum_{slug}",
-                    "title": f"{name} needs emptying",
-                    "detail": self._drum_detail(attrs),
-                    "icon": "mdi:door-open",
-                    "level": LEVEL_ATTENTION,
-                })
-
-            # One row per load, keyed to the cycle that produced it, so
-            # clearing one leaves the other alone and next week's wash is
-            # never silenced by last week's dismissal.
-            pending = attrs.get("pending")
-            if not isinstance(pending, list):
-                continue
-            for load in pending:
-                if not isinstance(load, dict) or not load.get("id"):
-                    continue
-                rows.append({
-                    "id": load["id"],
-                    "title": "Laundry needs hanging",
-                    "detail": self._load_detail(load),
-                    "icon": "mdi:hanger",
-                    "level": LEVEL_ATTENTION,
-                    "action_label": "Hung",
-                    "action": _hung(load["id"]),
-                })
-        return rows
-
-    @staticmethod
-    def _drum_detail(attrs: dict[str, Any]) -> str:
-        finished = attrs.get("last_finished_at")
-        parsed = dt_util.parse_datetime(finished) if finished else None
-        when = "Finished " + dt_util.as_local(parsed).strftime("%H:%M") if parsed else "Finished"
-        return f"{when} \u00b7 clears when the door is opened"
-
-    @staticmethod
-    def _load_detail(load: dict[str, Any]) -> str:
-        finished = load.get("finished_at")
-        parsed = dt_util.parse_datetime(finished) if finished else None
-        if parsed is None:
-            return "Finished"
-        return "Finished " + dt_util.as_local(parsed).strftime("%H:%M")
-
-    def _people(self) -> list[dict[str, Any]]:
-        """A person nobody can locate at all.
-
-        Not "away" -- that is a reading, and a perfectly good one. This
-        is the absence of any reading: no tracker of theirs is
-        reporting, so every presence automation in the house is now
-        guessing. The card draws it in the warning colour, and on this
-        panel yellow is a promise that something wants doing, so the
-        job has to exist here or the colour is a lie.
-
-        A grace period, because a phone can be in a tunnel, on a plane
-        or rebooting and none of those is a job. Measured from when we
-        first saw them go dark and held across a restart, for the
-        reason given where `_dark_since` is declared.
-        """
-        watched = list(self._option(CONF_PEOPLE, []) or [])
-        if not watched:
-            return []
-        grace = timedelta(
-            minutes=float(
-                self._option(
-                    CONF_PRESENCE_GRACE_MINUTES, DEFAULT_PRESENCE_GRACE_MINUTES
-                )
-            )
-        )
-        now = dt_util.utcnow()
-        rows: list[dict[str, Any]] = []
-        for entity_id in watched:
-            state = self.hass.states.get(entity_id)
-            if state is None:
-                continue
-            if state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-                # A positive reading of any kind -- home, away, a zone --
-                # is the tracker working. Forget that it ever was not.
-                self._dark_since.pop(entity_id, None)
-                continue
-            since = self._dark_since.setdefault(entity_id, state.last_changed)
-            if now - since < grace:
-                continue
-            rows.append({
-                "id": f"dark_{entity_id}",
-                "title": f"{_name_of(state)} cannot be located",
-                "detail": (
-                    "No tracker reporting \u00b7 "
-                    f"quiet since {dt_util.as_local(since).strftime('%H:%M')}"
-                ),
-                "icon": "mdi:map-marker-question",
-                "level": LEVEL_ATTENTION,
-                "action_label": "Snooze",
-                "action": _snooze(f"dark_{entity_id}", hours=12),
-            })
-        return rows
-
-    def _offline(self) -> list[dict[str, Any]]:
-        """One row for all of them, not one each.
-
-        Twenty-seven unavailable entities is one problem — an integration is
-        down — and twenty-seven rows would bury everything else.
-        """
-        gone = self._unavailable()
-        if not gone:
-            return []
-        names = ", ".join(_name_of(s) for s in gone[:3])
-        if len(gone) > 3:
-            names += f" and {len(gone) - 3} more"
-        return [{
-            "id": "offline",
-            "action": _snooze("offline", 12),
-            "title": f"{len(gone)} entities offline",
-            "detail": names,
-            "icon": "mdi:lan-disconnect",
-            # Nothing is accruing damage and nothing is paused waiting
-            # for a person: 31 offline entities is an investigation for
-            # today or tomorrow. It was the loudest thing on the panel
-            # and it was pushing the Maintenance tile red every morning,
-            # which is how a red stops meaning anything.
-            "level": LEVEL_ATTENTION,
-            "action_label": "Snooze",
-        }]
-
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "items": list(self._items),
+            # `tab_<tab>`: the loudest card level on each tab, for its rail
+            # button, and `summary_<tab>`: what the button says. Flat keys,
+            # so a button can read one directly.
+            **self._levels,
             "suppressed": {
                 item_id: (until.isoformat() if until else None)
                 for item_id, until in self._suppressed.items()
             },
-            # Persisted for the same reason it is not read off
-            # `last_changed`: a restart would otherwise restart the
-            # grace period, and a tracker quiet since breakfast would
-            # never get past it on a box that reboots twice a day.
-            "dark_since": {
-                entity_id: when.isoformat()
-                for entity_id, when in self._dark_since.items()
-            },
         }
-
-
-class SystemHealthSensor(_Derived):
-    """What is wrong with the house's plumbing, as opposed to its jobs.
-
-    Separate from `Needs you` on purpose: this is ambient status and stays
-    true for as long as it is true. It carries the raw lists as well as the
-    rows, because an agent asking "what is offline?" wants entity ids, not a
-    sentence assembled for a card.
-    """
-
-    _attr_name = "System health"
-    _attr_icon = "mdi:heart-pulse"
-    _attr_native_unit_of_measurement = "issues"
-
-    def __init__(self, entry: ConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = f"{entry.entry_id}_system_health"
-        self._batteries: list[dict[str, Any]] = []
-        self._offline: list[dict[str, Any]] = []
-        self._updates: list[dict[str, Any]] = []
-
-    def _recompute(self) -> None:
-        threshold = int(self._option(CONF_BATTERY_THRESHOLD, DEFAULT_BATTERY_THRESHOLD))
-        self._batteries = [
-            {
-                "entity_id": state.entity_id,
-                "name": _name_of(state),
-                "area": _area_of(self.hass, state.entity_id),
-                # "percent", not "level". A level is now one of the three
-                # names a job can carry, and a dict published to a card
-                # with a level key meaning 41.0 is a trap waiting for the
-                # first person who renders low_batteries as rows.
-                "percent": percent,
-            }
-            for state, percent in self._batteries_below(threshold)
-        ]
-        self._offline = [
-            {
-                "entity_id": state.entity_id,
-                "name": _name_of(state),
-                "area": _area_of(self.hass, state.entity_id),
-            }
-            for state in self._unavailable()
-        ]
-        self._updates = [
-            {
-                "entity_id": state.entity_id,
-                "name": _name_of(state),
-                "installed": state.attributes.get("installed_version"),
-                "latest": state.attributes.get("latest_version"),
-            }
-            for state in sorted(self.hass.states.async_all("update"), key=_name_of)
-            if state.state == STATE_ON
-        ]
-
-        rows: list[dict[str, Any]] = []
-        if self._batteries:
-            worst = self._batteries[0]
-            rows.append({
-                "id": "batteries",
-                "name": "Low batteries",
-                "sub": f"{worst['name']} at {worst['percent']:.0f}%",
-                "value": str(len(self._batteries)),
-                "icon": "mdi:battery-alert-variant-outline",
-                "level": LEVEL_ATTENTION,
-            })
-        if self._offline:
-            rows.append({
-                "id": "offline",
-                "name": "Offline",
-                "sub": self._offline[0]["name"],
-                "value": str(len(self._offline)),
-                "icon": "mdi:lan-disconnect",
-                "level": LEVEL_ATTENTION,
-            })
-        if self._updates:
-            rows.append({
-                "id": "updates",
-                "name": "Updates pending",
-                "sub": self._updates[0]["name"],
-                "value": str(len(self._updates)),
-                "icon": "mdi:package-up",
-                # No level, deliberately. An update pending needs no
-                # doing today or tomorrow, nothing is paused on it, and
-                # nothing is accruing -- so it fails every one of the
-                # three timelines. It is information on a card, and it
-                # takes a decorative accent like any other fact.
-                "accent": ACCENT_INFO,
-            })
-        self._items = rows
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        return {
-            "items": list(self._items),
-            # The worst thing in the list, so a tab tile can wear the
-            # level of what is actually there instead of a fixed one.
-            # The Maintenance tile was hardcoded ochre and so was yellow
-            # on a morning with nothing wrong -- and yellow is now one of
-            # the three colours that promise something wants doing.
-            #
-            # None when nothing carries a level, so the tile goes back to
-            # its own accent rather than to the quietest alarm.
-            "level": self._worst(),
-            "low_batteries": list(self._batteries),
-            "offline": list(self._offline),
-            "updates_pending": list(self._updates),
-            "battery_count": len(self._batteries),
-            "offline_count": len(self._offline),
-            "update_count": len(self._updates),
-        }
-
-    def _worst(self) -> str | None:
-        """The most serious level among the rows, or None for none.
-
-        Rows carrying no level are skipped rather than ranked last: a
-        card full of information is a card with nothing wrong, and a
-        tile that colours for it is a tile that is always on.
-        """
-        worst = None
-        for row in self._items:
-            level = row.get("level")
-            if level not in LEVEL_LOUDNESS:
-                continue
-            if worst is None or LEVEL_LOUDNESS[level] > LEVEL_LOUDNESS[worst]:
-                worst = level
-        return worst
 
 
 @callback
@@ -1056,6 +1312,7 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
     reasonably still be carrying anything.
     """
 
+    tab = "security"
     _attr_name = "Security status"
     _attr_icon = "mdi:shield-home"
     _attr_device_class = SensorDeviceClass.ENUM
@@ -1100,6 +1357,10 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
     @property
     def opened(self) -> list[dict[str, Any]]:
         return list(self._open)
+
+    @property
+    def not_reporting(self) -> list[dict[str, Any]]:
+        return list(self._unreadable)
 
     async def async_added_to_hass(self) -> None:
         """Restore when the house stopped being shut, so red survives a restart.
@@ -1398,6 +1659,8 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
             #
             # None on green, because a house that is shut asks nothing.
             "level": self._level(),
+            "tab": self.tab,
+            "jobs": self.needs_you_rows(),
             "since": self._since.isoformat() if self._since else None,
             "unlocked": list(self._unlocked),
             "open": list(self._open),
@@ -1406,6 +1669,74 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
             "open_count": len(self._open),
             "grace_minutes": self._grace().total_seconds() / 60,
         }
+
+    def needs_you_rows(self) -> list[dict[str, Any]]:
+        """A door left unlocked or open, as a job rather than a banner.
+
+        It used to be a separate red alert card above this list, which
+        broke two rules at once: a job that lived somewhere other than
+        here, and red from the first second -- the loudest colour in the
+        house on somebody carrying the shopping in. Now it is a row like
+        any other, `waiting` inside the grace and `critical` past it, and
+        the level is this sensor's own, so the row, the card and the tab
+        can never disagree about which it is.
+
+        No snooze. A door does not keep; the row clears when it shuts.
+        """
+        level = self._level()
+        if level is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for door in self._unlocked:
+            since = dt_util.parse_datetime(door["since"])
+            when = dt_util.as_local(since).strftime("%H:%M") if since else None
+            jammed = door.get("jammed")
+            rows.append({
+                "id": f"unlocked_{door['entity_id']}",
+                "title": f"{door['name']} {'jammed' if jammed else 'unlocked'}",
+                "detail": f"Unlocked since {when}" if when else "Unlocked",
+                "icon": door["icon"],
+                "level": level,
+                "tab": "security",
+                "card": "doors",
+                "sticky": True,
+                "action_label": "Lock",
+                "action": {"service": "lock.lock",
+                           "target": {"entity_id": door["entity_id"]}},
+            })
+        for door in self._open:
+            since = dt_util.parse_datetime(door["since"])
+            when = dt_util.as_local(since).strftime("%H:%M") if since else None
+            rows.append({
+                "id": f"open_{door['entity_id']}",
+                "title": f"{door['name']} open",
+                "detail": f"Open since {when}" if when else "Open",
+                "icon": door["icon"],
+                "level": level,
+                "tab": "security",
+                "card": "doors",
+                "sticky": True,
+            })
+        # A lock or door that has stopped reporting. The status already
+        # goes amber for it -- not proof of a problem, not proof of safety
+        # -- so the card and the tab were coloured with no row to say why.
+        # The row takes the same level they do.
+        for door in self._unreadable:
+            rows.append({
+                "id": f"silent_{door['entity_id']}",
+                "title": f"{door['name']} not reporting",
+                "detail": "Can't tell whether it is shut",
+                "icon": door["icon"],
+                "level": level,
+                "tab": "security",
+                "card": "doors",
+                "sticky": True,
+            })
+        return rows
+
+    @property
+    def owner_level(self) -> str | None:
+        return self._level()
 
     def _level(self) -> str | None:
         """Critical past the grace, waiting inside it, nothing when shut.

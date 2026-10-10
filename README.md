@@ -30,11 +30,23 @@ One merged, newest-first feed of things that happened in the house.
 - **State** — when anything last happened anywhere. `device_class: timestamp`,
   so a card renders it as a relative time ("Quiet 2m") with no second sensor.
 - **`events`** — the rows, newest first, capped by `max_events`. Each carries
-  `entity_id`, `name`, `area`, `kind`, `state` and `at`.
+  `entity_id`, `name`, `area`, `kind`, `state` and `at`. Consecutive events
+  from the same entity fold into one row — the cap counts rows, not
+  happenings — and a folded row adds `count` and `first_at` (when the run
+  began; `at` is the newest).
 - **`tracked_count`** — how many entities are being watched, so a card can tell
   "nothing has happened" apart from "nothing is configured".
+- **`by_area`** — the last hour, per room: `{"Hall": {"kind", "at", "times"}}`,
+  where `times` is epoch seconds, newest first. It is what a floor plan
+  reads. The rail's `events` are capped by length — twenty rows is about ten
+  minutes of an ordinary evening — and a plan that fades over an hour cannot
+  be drawn from ten minutes. So it has its own record, capped by **age**
+  instead (60 minutes, at most 120 per room), in bare numbers so a busy hour
+  stays a few kilobytes. An entity with no area is on the rail and not here:
+  there is nowhere to draw it.
 
-`kind` is one of `button`, `lock`, `motion`, `door`, `other`. It is a contract
+`kind` is one of `button`, `lock`, `motion`, `door`, `other`, or what a
+camera saw: `person`, `animal`, `vehicle`, `crying`, `camera`. It is a contract
 with the frontend: a rail draws its icon from the kind, and a button press is
 the interesting one because it proves a person rather than a cat.
 
@@ -50,6 +62,14 @@ that sensor says *when* something happened and nothing about what.
 
 - **Motion and door** — only the transition *to* on. Motion clearing is not
   something that happened.
+- **What a camera sees** — only the transition *to* on, and never
+  configured. Every camera's detection sensors join the feed by being on a
+  device with a camera, the same discovery as `sensor.camera_sightings`, so
+  the card and the feed agree about what a camera noticed. The kind is
+  read off the sensor's name (`Baby crying` is `crying`), and the row reads
+  "Riley's Room · crying". A camera's plain **motion** sensor is left
+  out: a person, an animal and a cry are said by name, and pixel motion on
+  a camera is mostly the light changing and night vision switching over.
 - **Buttons and locks** — any change to a real state. An `event` entity's state
   is the timestamp of the press, so every press is a change.
 - **Never** — `unknown`, `unavailable`, or a state appearing with no previous
@@ -119,23 +139,23 @@ It is dismissable and keyed to the night, because "I know what that was" is
 a real answer to it — and answering for Saturday must not silence Sunday.
 No snooze: a night is over, and there is nothing to come back to later.
 
-### Salt is the one row you cannot put off
-
-Every other row can be dismissed or snoozed, because putting a job off
-is a real answer to it: the bins come round again, the washing waits.
+### Salt can be snoozed, never dismissed
 
 Salt does not wait. It runs out, and then the softener passes hard water
 through the house until somebody notices the limescale. The row is only
 ever true when there is a bag to fetch from the garage or a bag to buy,
-and it clears itself the moment the level comes back up — so there is
-nothing a snooze could usefully do except hide it.
+and it clears itself the moment the level comes back up.
 
-It carries `sticky: True` rather than simply dropping its button,
-because the button is not the only way in. The `snooze` and `dismiss`
-services are there for anything to call, and a suppression restored from
-before the button went would still be sitting in the record. A row that
-cannot be cleared by hand must not be clearable by any of those either,
-or "you cannot snooze it" is only true of the card.
+But the softener reports late: its salt reading moves a day or more after
+the tank is filled, so the row went on asking for salt already in the
+machine. It offers a 24-hour **Snooze** to ride out that lag — long
+enough to cover it, short enough that a tank that really is low comes
+straight back. Like every snoozed row it still colours the card and the
+Maintenance tab, because the reading still says low.
+
+It carries `snooze_only: True`, so a dismissal — from the `dismiss`
+service, an automation, or a suppression restored from before — is
+ignored. Only a timed snooze hides it, and the snooze always runs out.
 
 ### Dismissing
 
@@ -148,7 +168,7 @@ that memory lives. Dismissals survive a restart, and they are keyed to the
 **occurrence**: dismissing `bin_2026-09-16` clears tonight's bins and lets
 next week's come back.
 
-## The three levels
+## The levels
 
 A card may state any fact it likes. But a **level** is a promise that
 something wants doing, and on this panel the thing that wants doing lives
@@ -159,6 +179,12 @@ in `Needs you` and nowhere else.
 | `attention` | needs doing today or tomorrow. Real, but it keeps. |
 | `waiting` | something is paused or degrading until a person acts. |
 | `critical` | damage or risk is accruing now. |
+| `notice` | something you asked for is under way or has landed. Nothing gets worse while it waits. |
+
+`notice` is the quietest, and the only one that promises no deadline. It
+exists for work the house did on somebody's behalf — an AI task reading a
+recipe off a page — where somebody still has to look at the answer. It is
+blue. See [AI tasks](#sensorai_tasks).
 
 The name is the test a new row has to pass. Before there were three, ten
 of the twelve rows were the same "warning" whatever they meant, and the
@@ -168,24 +194,69 @@ thirty-one entities that had gone quiet.
 **Every levelled thing must have a row behind it**, or the colour is a
 lie: a job that exists only on the panel, that nobody can clear from a
 phone, and that no amount of doing the thing will make go away. That rule
-is why `_people` exists — the card draws an unlocatable person at a level,
-so the row has to be real — and why `system_health` publishes a `level`,
-so a tab tile wears the level of what is actually there instead of a fixed
-colour.
+is why `sensor.people_status` exists — the card draws an unlocatable
+person at a level, so the row has to be real — and why a tab tile wears
+the level of what is actually there instead of a fixed colour.
+
+`sensor.people_status` also carries **`presence`**: for each watched
+person, where they are and since when. The Who's home card reads its
+"3h ago" from here rather than from the person's own `last_changed`,
+which Home Assistant resets on every restart. The time moves only when
+the person does. A restart keeps it, and so does a spell of silence
+shorter than `presence_grace_minutes` that ends in the same place.
+Unknown takes the same "quiet since" time as the Needs you row.
 
 **It cuts the other way too.** A thing that needs no doing takes no level.
 An open appliance door used to be drawn in ochre and has no row and never
 should: a machine spends half its life with the door open. That chip is
-neutral now. So are pending updates, which is why `system_health` gives
-that row a decorative accent and no level at all — and why
-`_worst()` skips unlevelled rows rather than ranking them last, so a card
-full of information leaves the tile uncoloured.
+neutral now. So are pending updates, which `sensor.devices` lists with no
+level at all — and `loudest()` skips anything that is not a level rather
+than ranking it last, so a card full of information leaves the tile
+uncoloured.
 
 **A level is not an accent.** An accent is decorative: it says which tab a
 card belongs to. The two used to be the same six numbers, which is how a
 row came to claim an alarm by naming a hue. A Needs-you row publishes
 `level` and never `accent`, and `tests/test_levels.py` asserts both halves
 over every state the washer can be in.
+
+### The card decides; the row and the tab follow
+
+The card is the thing that owns a need, so its sensor is where the level is
+worked out — once. Each card that can ask for something has its own sensor
+publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
+(the Needs-you rows behind it):
+
+| Card | Its sensor |
+| --- | --- |
+| Washing machine, Tumble dryer, Dishwasher | `sensor.washing_machine`, `sensor.tumble_dryer`, `sensor.dishwasher` |
+| Front door | `sensor.security_status` |
+| Who's home | `sensor.people_status` |
+| Bin calendar | `sensor.bins_status` |
+| Home Tasks | `sensor.tasks_status` |
+| Water softener | `sensor.softener_status` |
+| A Frigate camera | `sensor.camera_status`, by its `cameras` map |
+| Batteries | `sensor.batteries_status` |
+| Devices | `sensor.devices` |
+| Meals (prep) | the meal prep sensor |
+| Whichever card started an AI task | `sensor.ai_tasks`, by its `cards` map |
+
+The card's outline reads its sensor's `level`. `sensor.needs_you` collects
+every card's `jobs` and works out no level of its own; it publishes
+`tab_<tab>` — the loudest card `level` on each tab — and `summary_<tab>` —
+the loudest job and how many more — for the rail buttons.
+When each worked its own level out they drifted: the Cleaning tab skipped a
+dead plug whenever a pad was wet, a silent lock coloured the door with no
+row, and bins, overdue chores and a lost phone had rows that coloured
+nothing.
+
+**Snooze** is Needs you's business: it hides the row, and the card and tab
+stay coloured because the thing is still true. **Done** goes to the card
+that owns the job — "Bins out" tells `sensor.bins_status` — so the card, the
+tab and the row clear together.
+
+A lock or door that stops reporting is its own row, `silent_<entity>`, at
+the level the door already wears.
 
 ### What left when the levels arrived
 
@@ -195,31 +266,165 @@ the one thing a row may not be: it did not need doing. The figures are
 still published on `sensor.energy_day`, where the Electricity card reads
 them and always did. What left is the claim that they were a job.
 
-## `sensor.system_health`
+## `sensor.ai_tasks`
 
-What is wrong with the house's plumbing, as opposed to its jobs. Ambient
-status, so it stays true for as long as it is true and is never dismissable.
+Reading a recipe off a page takes a model the best part of a minute, and
+splitting it into what can be done ahead takes another. The card used to
+wait for both inside a sheet that said "Reading the page…" and nothing
+else: close the sheet and the answer arrived to nobody, and nobody could
+tell whether anything was happening at all.
 
-- **State** — how many kinds of problem there are.
-- **`items`** — rows for a card.
-- **`level`** — the worst level among those rows, or `null` when none of
-  them carries one, so a tab tile can wear what is actually there instead
-  of a fixed colour.
-- **`low_batteries`, `offline`, `updates_pending`** — the raw lists, with
-  entity ids and areas, plus a count of each. A battery's charge is
-  `percent`, not `level`: `level` now names one of the three job levels,
-  and a dict published to a card with a `level` of `41.0` is a trap set
-  for whoever first renders `low_batteries` as rows.
+So the card hands the work over with `home_signals.start_ai_task`, which
+answers at once with a `task_id` and runs the action in the background:
 
-The raw lists are the point. An agent asking "what is offline?" wants entity
-ids, not a sentence assembled for a card — and an agent never looks at a
-card. That is the whole reason both of these are entities rather than card
-logic: **a card is only true while somebody is watching it.**
+```yaml
+action: home_signals.start_ai_task
+data:
+  title: Recipe from a link
+  action: script.recipe_import       # anything that answers with a response
+  data: {url: "https://…"}
+  card: meals                        # which card started it
+  tab: kitchen                       # whose rail button it colours
+  label: recipe                      # the answer key that names what came back
+  open: true                         # the card can show the answer again (default)
+  kind: import                       # what the answer is, for the card that opens it
+  require: slug                      # the answer must have this, or it is Failed
+  missing: No recipe found on that page   # ...and this is what the row then says
+  then:                              # optional: a second action, fed from the first
+    action: script.recipe_split
+    pass: {recipe: slug}             # its field <- the first answer's key
+    unless: already                  # skip it when the first answer says this
+```
 
-Entities in an entity category, and the `update`, `button`, `scene`, `script`
-and `automation` domains, are excluded from the offline count. They go
-unavailable constantly and nobody acts on it. Anything else noisy can be
-listed under "Never report these as offline".
+**Running is already blue.** The sensor's state is `running`, and the card,
+the tab and a row — "Recipe from a link · Running · step 1 of 2" — wear
+`notice` from the moment it starts, so it can be seen from anywhere that the
+house is working on something you asked for. The row has Dismiss, which
+quietens it while it runs; when it lands that is news again, and it comes
+back as Done or Failed.
+
+**Finished is a `notice`, on all three, for two minutes.** The card
+(`cards: {meals: notice}`), the tab (`tab_kitchen` on Needs you) and a row —
+"Recipe from a link · Done · Chicken pie". Two minutes after it lands, all
+three go back to how they were on their own; a notice is news, not a chore.
+Needs you sorts its rows loudest first — critical, waiting, attention,
+notice — so blue is always at the bottom.
+
+The row has two buttons. **Dismiss** (`secondary_action`) clears all three
+at once. **Open** is there only when the answer can be shown again —
+`open: true` when the task was started, and a card to show it on. It is not
+a service: it carries `open_task`, `card` and `tab`, and the panel switches
+to that tab and the card opens the answer, which it reads with
+`home_signals.ai_task_result`. Opening it clears all three too. A task with
+nothing to open has Dismiss alone, as its main button. `kind` says what the
+answer is, for the card that opens it.
+
+**Every finished task says which way it went** — `Done` or `Failed` at the
+start of the row's detail, a tick or an alert for its icon, and `outcome:
+success | failure` for anything reading the row. A failure is a notice
+too: something you asked for did not happen, and only the person who asked
+can try again. It has nothing to open, so it has Dismiss alone, and the
+reason is in the row. Failing is not only raising: an answer that carries its
+own `error`, or that lacks the `require` key (a photo with no recipe on it
+answers with an empty name), found nothing, and is Failed too, saying
+`missing`. A second step that answers with an error or `mode: error` leaves
+the task Done, and says the second step did not finish. If the first action answered and only the second
+failed, the task is done, and says so — the recipe is in the box, just not
+split.
+
+Answers are kept in storage, not in the state, for their two minutes, and
+the recorder never holds a whole recipe. A task still running at a restart
+comes back failed and says why: the call it was waiting on died with the
+old instance.
+
+## Where `sensor.system_health` went
+
+It summarised the Maintenance tab: a level, a row per problem, and the raw
+lists. Each piece now lives with the card it belongs to, so nothing works
+out a Maintenance level twice:
+
+- **The Batteries card's data** — every battery with `low` decided on the
+  same threshold as the jobs, `low_batteries`, `battery_count`,
+  `battery_threshold` — is on `sensor.batteries_status`.
+- **Salt** is `sensor.softener_status`.
+- **The raw lists for an agent** — `unavailable_entities` and
+  `updates_pending` / `update_count` — are on `sensor.devices`. Pending
+  updates are a fact, not a job: no level, no row.
+- **The rail button** reads `tab_maintenance` and `summary_maintenance` on
+  `sensor.needs_you`.
+
+## `sensor.camera_sightings`
+
+When each camera last saw something. The state is when any camera last
+saw anything; `sightings` maps each detection sensor to
+`{on, since, started}`, where `since` is the moment the sighting ended,
+or the moment it began while it is still going on.
+
+```yaml
+since: {entity: sensor.camera_sightings, attribute: sightings,
+        key: [binary_sensor.rileys_room_camera_person, since],
+        format: relative}
+```
+
+A detection sensor's own `last_changed` is the last time it changed state
+for any reason, and that is not the same thing. A Reolink in privacy mode
+makes every detection sensor unavailable, and opening the lens brings them
+back as `off`. Read off `last_changed`, the panel said "Crying 5s ago" in
+a house where nobody had cried. A restart and an integration reload do the
+same. So only the two edges are written down, a detection starting and a
+detection ending, and the record is restored across restarts. A sensor
+going unavailable while it was seeing something ends the sighting there;
+a sensor coming back from unavailable as `off` is not a sighting of
+anything. One that has never seen anything has no entry at all.
+
+Which sensors count is not configured: a detection is a binary sensor on
+a device that also has a camera, named for something seen (person, animal,
+vehicle, crying, motion) or of a seeing device class (motion, occupancy,
+presence, sound). The second half matters: a kiosk wall tablet has a camera
+of its own, and its charging and connectivity sensors are not sightings. That is true of a Reolink now and of
+Frigate's object sensors later, and a new camera is picked up when it
+appears in the registry, without a restart.
+
+## `sensor.devices`
+
+How many of the house's devices are answering, counted as **things** rather
+than entities. A car that loses its cloud connection is eighteen entities and
+one car.
+
+- **State** — how many devices are offline or partly offline.
+- **`connected`, `offline`, `partial`, `total`** — the counts. A device is
+  *offline* when every entity it has is unavailable, *partial* when some are.
+- **`problems`** — one row per device that is not fully answering: `name`,
+  `area`, `network`, `state`, `detail` (for a partial device, what is missing:
+  `No temperature`, or `5 of 8 missing`) and `since`.
+- **`networks`** — `online`/`offline`/`partial` per network: Hue, Zigbee,
+  Tado, Cast, and everything else as `Wi-Fi & cloud`.
+- **`level`** — `attention` while anything is not answering, else `null`. The
+  same devices are already behind the offline row in `Needs you`.
+
+**One count, three places.** The offline row in `Needs you`, the offline row in
+`System health` and this sensor all come from the same device scan, so they
+say the same number ("7 devices offline, 3 partly"). The row used to count
+entities and read "31 entities offline" beside a card saying 7. System
+health's raw `offline` list stays entity-level, for an agent asking which
+entity ids are down.
+
+**`since` is remembered, not read.** Home Assistant resets every `last_changed`
+on a restart, so a bulb dead for a week would read as having died at the last
+reboot. This writes the time down when a device first stops answering and
+restores it across restarts. A device already down the first time it looks
+gets `null` rather than a guess, and keeps it until it comes back.
+
+Not counted: service devices (backups, AI models, the sun), and the registry
+entries that are groups rather than things — Hue rooms and zones and Cast
+speaker groups, which would report one dead bulb or speaker twice. A Tado
+"Zone" is counted: it is the room's heating control, not a group, and when it
+goes unavailable nothing else says so. Buttons and
+updates, and anything under "Never report these", don't count towards a device
+being unavailable. Diagnostic entities (signal strength, battery) only decide
+for a device that has nothing else — a ZHA button, whose presses are events
+rather than entities — so a bulb whose signal reading goes quiet is still a
+working bulb, and a button that stops checking in still shows as offline.
 
 ## `sensor.energy_day`
 
@@ -239,6 +444,18 @@ card is the difference between one Python function and a template per tile.
 - **`week_*`, `month_*`, `vs_week_*`, `vs_month_*`** — the day against its
   own two windows; the comparison that works without a live meter.
 - **`recent_days`** — the rolling five weeks the windows are built from.
+- **`months`** — the last twelve calendar months, newest first, already
+  shaped as list rows (`name`, `sub`, `value`) beside the raw `cost`, `kwh`,
+  `days` and `days_in_month`. A month with nothing recorded is still listed,
+  as "Not filled yet"; one short of its days says how many it has. Totalled
+  from `recent_days` and kept past them, so a month outlives the five weeks
+  of days it was made from.
+- **`month_blocks`** — the same twelve months, oldest first, shaped like
+  `block_days` so the stacked time-of-day chart draws them: each month's
+  four blocks summed under the month's standing charge, which is the first
+  segment, so the bar and the total under it are the bill; and a `note` on
+  a part-month. An empty month keeps its column with no blocks.
+  `month_block_names` names the stack, standing charge first.
 - **`cost_series`, `kwh_series`, `baseline_series`, `series_labels`** — plain
   arrays, oldest first, for a chart to read straight off.
 - **`baseline_norm`, `baseline_excess_pct`, `baseline_trend_pct`,
@@ -375,7 +592,8 @@ underneath a state nobody reads, which is precisely the failure the
 staleness rule exists to prevent.
 
 Past that point the sensor publishes only what *explains* the silence:
-`for_day`, `for_date`, `days_late`, `stale`. Plus `recent_days`, which
+`for_day`, `for_date`, `days_late`, `stale`, and `months` — a finished
+month does not go stale. Plus `recent_days`, which
 nothing draws and the restore reads back — it is the one thing here that
 cannot be recomputed from a source sensor holding a single day, so throwing
 it away while Octopus is quiet would cost the house its history at the next
@@ -619,7 +837,7 @@ There is also a band, `ENERGY_SAME_PCT`. Without it a perfectly ordinary day
 reads as "3% down", and a comparison that always has something to say is one
 nobody reads.
 
-## `sensor.washing_machine_cycle` (and the tumble dryer)
+## `sensor.washing_machine_cycle` (and the tumble dryer, and the dishwasher)
 
 Whether an appliance is running, worked out from nothing but the watts its
 plug reports.
@@ -745,6 +963,23 @@ after the floor has been dealt with, and the cycle still has to be finished —
 so `leak` and `powered` are never inferred from each other, and nothing here
 stops power being restored while the sensor is still wet.
 
+What *does* change when power is restored is whether the leak is still a
+job. `leak_alarm` is the pad being wet **and** nobody having switched the
+plug back on since it went wet; that, not `leak`, raises the critical
+`Needs you` row and puts the Cleaning tab at `critical`. Only a real off → on counts,
+so a plug the cutoff never reached keeps the alarm — and the row then says
+the power is still on rather than claiming a cut. The pad going wet again
+re-arms it.
+
+`leak_since` is when the pad went wet, kept across a restart and cleared
+when it dries. Both leak rows lead with how long — "Wet for 12 min" — because
+how long water may have been on the floor is what decides how worried to be.
+
+Stood down is not the same as quiet. The cutoff fires only on the pad
+*going* wet, so while it stays wet a second leak would cut nothing. Until it
+dries there is an `attention` row, "leak sensor still wet", and the Cleaning
+tab is at `attention` too. It clears itself when the pad dries.
+
 ### A dryer only tumbles, and says so
 
 The washer's phase bands were measured on the washer, off one wash, so
@@ -760,6 +995,37 @@ know nothing about the difference.
 `tracks_phases` picks the classifier; `only_phase` names the single
 phase for a machine that has just the one. A machine sets one or the
 other, never both.
+
+### The dishwasher is the dryer again, with one split it can make
+
+`sensor.dishwasher` is the same machine a third time, configured from the
+`dishwasher_*` options. It is the dryer's shape: clean dishes are put away
+straight out of the rack, and the rack coming out *is* the door opening, so
+`queues_loads` is false and there is no button.
+
+**No door, no full drum.** A finished load fills the drum only where a door
+is configured, because a drum nothing can empty would raise a `Needs you`
+row that nothing could ever clear. Without the contact sensor the card says
+when it ran and what it cost, and no more; the day a door sensor is set in
+the options, "Dishwasher needs emptying" starts appearing on its own. (The
+config flow always said a missing door meant never full. Now the code does
+too, for every machine.)
+
+**Heating or washing, and nothing finer.** A dishwasher's draw tells exactly
+two things apart on any machine: the element, in kilowatts, and the pump, in
+tens of watts. So it reports `heat` and `wash` and nothing else, split at
+600 W — the geometric mean of a generous pump (200 W) and a small element
+(1.8 kW), the same rule the washer's bands use. Pre-wash, main wash and
+rinse are all the pump, and naming them would be reading the order things
+happened in as evidence. There is no `fill`: it fills at the same draw as
+everything after it. `phase_bands`, `base_phase` and `opening_fill` are the
+spec keys that say this; the washer keeps the class defaults.
+
+**A higher idle floor.** A dishwasher goes quiet mid-programme — a soak, a
+pause before the rinse, a passive dry — for longer than a washer ever does,
+so its idle floor is at least 20 minutes whatever the shared option says. It
+is a guess until the first load: `longest_lull_seconds` is the number to set
+it from.
 
 ### What the wash cost
 
@@ -827,38 +1093,20 @@ become nothing, not the words.
 There is no configuration for this and no override. A panel earns the right
 to be believed about money by never being nearly right.
 
-## `sensor.cleaning_status`
+## Where `sensor.cleaning_status` went
 
-The same three colours as `security_status`, for the same reason: a tab on a
-wall panel can be a colour before anybody reads a word of it.
-
-- **red** — water on the floor.
-- **amber** — a job: a drum to empty, washing to hang, or a machine left
-  without power.
-- **green** — nothing waiting.
-
-It also publishes **`level`**, and that is what a tab tile should read.
-Amber covers three different jobs and they are not one level: a machine
-left without power mid-cycle is wet washing and a clock running, which is
-`waiting`, while a drum to empty or washing to hang is `attention`. Green
-carries **no level at all** — not the quietest one — so the tile goes back
-to its own accent rather than being coloured on a morning with nothing
-wrong.
-
-The colour and the level are published side by side rather than one being
-derived from the other, because green/amber/red is this sensor's own
-vocabulary. Anything translating it into a level for itself is a second
-place the levels have to be kept right — and that is exactly what drifted:
-the dock button's map named decorative accent slots 1 and 2, written when
-those slots were the orange and the yellow, so once the levels took those
-hues out of the palette a load to hang painted the tab bone-white and a
-leak painted it tan.
+It gave the Cleaning tab a level and a line of text, worked out from the
+washing machines alone — so bins on the same tab never showed. The rail
+button now reads `tab_cleaning` (the loudest card level on the tab) and
+`summary_cleaning` (the loudest job, and how many more) on
+`sensor.needs_you`, which covers every card on the tab.
 
 ## Laundry in `Needs you`
 
 Every action an appliance can ask of you is a Needs you row, and only a Needs
 you row. The card states facts and offers one optional control; it never
-carries a to-do. Two loads are two rows, so hanging one leaves the other.
+carries a to-do. Waiting loads are one row per machine — "3 loads need
+hanging" — and its Hung clears the oldest, so the count drops by one.
 
 `home_signals.laundry_hung` clears one load — with a `load_id` for a specific
 one, or without for the oldest, which is what the wall button sends. It is
@@ -956,6 +1204,46 @@ on the way out, because nothing was running at midnight after an overnight
 reboot and that timer never fired — without the second check the panel
 comes up showing yesterday under today's heading.
 
+## `sensor.camera_status`
+
+What a Frigate camera is asking somebody to do. A camera card states facts:
+what it can see, what it saw, what Frigate made of it. Two things it sees
+are jobs, and this is where their rows come from.
+
+- **Bring the parcel in** (`attention`). Frigate keeps tracking an object
+  that has stopped moving, so a camera's `package` occupancy stays on for
+  as long as the parcel is there. The row is that occupancy and nothing
+  else: it appears when a parcel is seen and clears itself when the parcel
+  is gone. Snooze only. Pressing a button does not bring a parcel in, and
+  a Done that hid the row while it sat in the rain would leave the card
+  and the row disagreeing.
+- **<Camera> camera has stopped** (`waiting`). No frames from the camera,
+  unbroken, for five minutes, read off Frigate's camera fps sensor (or
+  that sensor being unavailable, which is Frigate itself gone). Footage is
+  not being recorded until somebody looks, which is the promise `waiting`
+  makes. A shorter gap is a camera rebooting itself, and not news. While a
+  camera is stopped it raises no parcel row: its occupancy sensors hold
+  whatever they last said, and a row from them would be a guess.
+
+The cameras are **found, not configured**: every camera the Frigate
+integration has registered, read off its unique id (`<entry>:camera:<name>`)
+rather than its state, because an unavailable camera loses its attributes
+and an unavailable camera is half of what this is for. A camera added to
+Frigate is watched the moment it is registered.
+
+The state is the loudest level, or `clear`, with `level`, `tab`
+(`security`) and `jobs` as every card's sensor has. **`cameras`** maps
+Frigate's name for each camera to its own `name`, `entity`, `level` and
+`jobs`, so a card reads its own camera and a parcel at the back door does
+not colour the gate:
+
+```yaml
+outline: {entity: sensor.camera_status, attribute: cameras, key: [front_gate, level]}
+```
+
+The parcel's time is the occupancy sensor's `last_changed`, which a
+restart resets. A parcel there before a restart reads as arriving at it.
+
 ## `sensor.security_status`
 
 Is the house shut, as one of three colours: `green`, `amber` or `red`. It
@@ -999,6 +1287,191 @@ somebody is making a sandwich teaches people to ignore it.
 This does not replace the "Front door unlocked" alert card, which is the
 thing that asks somebody to do something about it. Status is ambient;
 actions are actions.
+
+## Writing recipes to Mealie
+
+`home_signals.save_recipe` and `home_signals.delete_recipe` do what Home
+Assistant's own Mealie integration cannot: create a recipe, change one, and
+delete one. The integration reads recipes and imports one from a link, and
+that is all. So a family recipe with no web page, or a quantity that needs
+fixing after an import, meant opening Mealie's own interface. The meal card
+exists so that nobody has to.
+
+```yaml
+action: home_signals.save_recipe
+data:
+  name: Nana's curry          # leave out `recipe` to create a new one
+  servings: 4
+  total_time: 1 hour
+  ingredients: |
+    2 onions
+    1 tin chopped tomatoes
+  method: |
+    Fry the onions until soft.
+    Add the tomatoes and simmer for 40 minutes.
+response_variable: saved      # {slug, recipe_id, name}
+```
+
+Name an existing recipe with `recipe` (its slug or id) to change it. Only the
+fields you send are touched: a save that leaves out `method` leaves the
+method alone, and one that sends an empty method clears it.
+
+**The address and token are borrowed from the Mealie integration**, not set
+up again here. A second copy of the token is a second place for it to go
+stale, and Home Assistant has already been told where Mealie is.
+
+**An ingredient line that has not changed keeps Mealie's parse of it.** On
+import Mealie works out the food, the unit and the quantity of each line,
+which is what its shopping lists add up. An edited line becomes plain text.
+Rewriting every line as text on every save would throw that parse away the
+first time anybody fixed a typo in the method.
+
+**Pasted numbering is dropped.** Mealie numbers the method itself, so a
+pasted "1. Heat the oil" would otherwise show as "1. 1. Heat the oil".
+Bullets go the same way. A quantity at the start of an ingredient ("1.5 kg
+potatoes") is not a list number and stays.
+
+A rename moves the recipe to a new slug, so the answer is read from what
+Mealie sent back rather than from what was asked for.
+
+## Finding a meal: the recipe index, tags, favourites, last made
+
+`home_signals.recipe_index` answers every recipe in Mealie with what a
+picker filters on:
+
+```yaml
+recipes:
+  - recipe_id: 464a3de1-…
+    slug: chicken-fajitas
+    name: Chicken fajitas
+    total_time: 45 minutes
+    image: pfLf                  # set when Mealie has a photo
+    tags: [Dinner, Quick, Chicken, Mexican]
+    ingredients: [500g chicken thighs, 2 peppers, …]
+    last_made: 2026-09-01        # local date, or null
+    date_added: 2026-08-20
+    favourite: true              # the token user's favourite
+    source: https://...          # where it was imported from, when it was
+tags: [Chicken, Dinner, Mexican, Quick]
+```
+
+Mealie's recipe list carries no ingredients, so each full recipe is read
+once and kept until Mealie's `updatedAt` for it changes. A repeat call reads
+only the list.
+
+`save_recipe` also takes `tags` (names; replaces the recipe's tags, creating
+any Mealie does not have, matched ignoring case) and `favourite` (true or
+false, for the Mealie user whose token the integration uses). Either works
+on its own: `{recipe: chicken-fajitas, favourite: true}` changes nothing
+else.
+
+Tags are matched by slug, as Mealie matches them, so "quick", "Quick" and
+"'Quick'" are one tag; a tag found under another spelling is renamed to the
+one asked for. `home_signals.prune_tags` deletes every tag no recipe uses and
+answers `{deleted: [names]}`.
+
+`home_signals.mark_made` records that a recipe was eaten on a day (today
+unless `date` is given). It never moves the date backwards, so marking an
+older meal after a newer one is harmless. The meal scripts call it each
+night for the day that has just gone.
+
+## Prep ahead: noting what can be done early
+
+`save_recipe` takes an optional `prep`, which says which of a recipe's steps
+can be done ahead of time. Prepping is optional, so the method itself is
+never moved or rewritten: the notes sit beside it, by step number.
+
+- `{"mode": "split", "steps": [...]}` -- one note per step that can go
+  ahead: `n` (its number in the method, from 1), `ahead_max` and
+  `ahead_min` (hours), `minutes`, `keeps` (e.g. "Fridge") and `source`
+  ("page" or "house"). A step that does two things names its halves:
+  `ahead` (done early) and `cook` (left for the stove). What only applies
+  when it was made ahead is two lines, because it is said at two times:
+  `store`, how to keep it, said at the prep ("Cover and chill"), and
+  `if_ahead`, what that changes on the night, said at the stove ("Take it
+  out 20 mins before cooking"). A part of the dish made ahead as a whole
+  can carry `reheat`, and `reheat_at`, the step it takes the place of on
+  the night; its storing goes in the `store` of its last step.
+- `sections` (a separate field) titles the method's groups of steps, the
+  way Mealie keeps them: `[{"n": 1, "title": "The chicken"}, {"n": 3,
+  "title": "The sauce"}]`, each title on the step its group starts at. The
+  titles given are all there are; `[]` clears them. The index carries them
+  back as each recipe's `sections`.
+- `{"mode": "none"}` -- looked at, and there is nothing worth doing ahead.
+- `{"mode": "order"}` -- take the notes off again.
+
+They live in the recipe's `extras` as `prep`, and the recipe index carries
+them back as each recipe's `prep`. A split saved before this, with no `n`,
+moved its prep steps to the front of the method; it is still read, by its
+order.
+
+## Where a recipe came from
+
+Each recipe keeps, in `extras` as `provenance`, where it came from and what
+AI did to it. `save_recipe` takes both:
+
+- `source`: `{kind, url, from}`, kind being `page`, `video`, `photo`,
+  `said`, `typed` or `written` (by AI, from a name). A new recipe with
+  nothing said is `typed`. `import_recipe` records the page or video it read,
+  and a video's steps are marked as read by Mealie's own AI.
+- `ai`: `{what, by, model, note, mark, steps}` records one event -- `read`,
+  `wrote`, `split`, `tagged` or `checked` -- with the time. `mark`
+  (`interpreted`, `created` or `enhanced`) goes on the steps listed, or all
+  of them. A step a person rewrites loses its mark.
+
+The index carries it as each recipe's `provenance`: `{source, events,
+marks}`, marks keyed by step number.
+
+## Prep sessions: `sensor.meal_prep`
+
+A session is one sitting in which the prep for one or more meals is done,
+and it is exactly **one Home Tasks item** with a deadline, named "Prep:" and
+the meals, with each meal's steps in its description. The house plans to do
+prep in as few sittings as it can, so one item per session rather than one
+per meal.
+
+| Action | What it does |
+| --- | --- |
+| `home_signals.save_prep_session` | Create or change a session (`id`, `due`, `items`) and its task. No items removes it. |
+| `home_signals.remove_prep_session` | Forget a session and remove its task. |
+| `home_signals.prep_done` | Tick the session's task. |
+| `home_signals.prep_settings` | Meal times (default 07:00, 12:00, 17:00), prep times (Sunday 16:00, weekday evenings 19:30) and the list. |
+
+The task is the job; the sensor keeps the plan behind it and reads the
+task's status back, so ticking it on a phone clears everything. Deleting the
+task counts as done too -- somebody has answered it.
+
+A session raises a `Needs you` row, and the sensor's `level`, only while it
+matters:
+
+- `attention` -- due today and not done;
+- `waiting` -- past due, not done, and a meal it was for is still ahead.
+
+The row belongs to the Kitchen tab and its meals card, so it is published
+as `tab_kitchen` and `card_meals` on `sensor.needs_you` like any other row.
+
+Once its meals have passed it takes no level at all, and a day later it is
+forgotten (the task stays on the list).
+
+## Recipe photos and saved photos
+
+**`GET /api/home_signals/recipe_image/<recipe_id>/<size>`** passes a recipe's
+photo through from Mealie, with `size` one of `tiny`, `min` or `original`. The
+meal cards cannot reach Mealie themselves, because the app sits behind
+ingress. The path needs Home Assistant's authentication. An `<img>` cannot
+send a token, so the card signs the path first with `auth/sign_path` and
+uses the signed URL. The browser keeps each photo for a day.
+
+**`home_signals.save_photo`** keeps a photo sent by a card (base64 or a data
+URL, JPEG, PNG or WebP, under 3 MB) in local media under
+`home_signals/<folder>/`. It answers with the `media_content_id` an
+`ai_task.generate_data` attachment takes. Only the newest twelve per folder
+are kept.
+
+**`save_recipe` takes `image`**, the recipe's own photo in the same form
+(base64 or a data URL, JPEG, PNG or WebP, under 3 MB), and puts it on the
+recipe in Mealie in place of any photo it had. A photo that is not one is
+refused before anything is written, so a new recipe is never left half made.
 
 ## Setup
 

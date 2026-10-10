@@ -50,6 +50,10 @@ from .const import (
     ATTR_ITEM_ID,
     ATTR_LOAD_ID,
     ATTR_SOURCE,
+    CONF_DISHWASHER_DOOR,
+    CONF_DISHWASHER_ENERGY,
+    CONF_DISHWASHER_PLUG,
+    CONF_DISHWASHER_POWER,
     CONF_DRYER_DOOR,
     CONF_DRYER_ENERGY,
     CONF_DRYER_PLUG,
@@ -70,7 +74,9 @@ from .const import (
     DEFAULT_MIN_KWH,
     DEFAULT_MIN_MINUTES,
     DEFAULT_START_WATTS,
+    PHASE_HEAT,
     PHASE_TUMBLE,
+    PHASE_WASH,
     SERVICE_LAUNDRY_HUNG,
     SOURCE_BUTTON,
     SOURCE_UI,
@@ -78,23 +84,42 @@ from .const import (
     CONF_ENTITIES,
     CONF_MAX_EVENTS,
     DEFAULT_MAX_EVENTS,
+    BY_AREA_MAX_TIMES,
+    BY_AREA_WINDOW_MINUTES,
     KIND_BUTTON,
     KIND_DOOR,
     KIND_LOCK,
     KIND_MOTION,
     KIND_OTHER,
+    KIND_ANIMAL,
+    KIND_CAMERA,
+    KIND_CRYING,
+    KIND_PERSON,
+    KIND_VEHICLE,
     DOMAIN,
     SERVICE_DISMISS,
     SERVICE_RESET,
     SERVICE_SNOOZE,
 )
+from .ai_tasks import AiTasksSensor, async_register_ai_task_services
 from .appliance import (
     AppliancePressSensor,
     ApplianceCycleSensor,
-    CleaningStatusSensor,
 )
-from .derived import NeedsYouSensor, SecurityStatusSensor, SystemHealthSensor
+from .derived import (
+    BatteriesStatusSensor,
+    BinsStatusSensor,
+    NeedsYouSensor,
+    PeopleStatusSensor,
+    SecurityStatusSensor,
+    SoftenerStatusSensor,
+    TasksStatusSensor,
+)
+from .cameras import CameraSightingsSensor, camera_detections, camera_kind
+from .devices import DevicesSensor
 from .energy import EnergyDaySensor
+from .frigate_status import CameraStatusSensor
+from .prep import MealPrepSensor, async_register_prep_services
 from .todo_done import TodoDoneTodaySensor
 
 LOGGER = logging.getLogger(__name__)
@@ -111,6 +136,8 @@ _MOTION_CLASSES = {
 # the frontend draws an icon from it: an unknown kind would silently render
 # as nothing.
 _KINDS = {KIND_BUTTON, KIND_LOCK, KIND_MOTION, KIND_DOOR, KIND_OTHER}
+# What a camera saw. Like motion, a detection ending is not an event.
+_CAMERA_KINDS = {KIND_PERSON, KIND_ANIMAL, KIND_VEHICLE, KIND_CRYING, KIND_CAMERA}
 
 _DOOR_CLASSES = {
     BinarySensorDeviceClass.DOOR,
@@ -120,12 +147,15 @@ _DOOR_CLASSES = {
 }
 
 
+DISHWASHER_MIN_IDLE_MINUTES = 20.0
+
+
 def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
     """The appliances that have been given a power sensor, and only those.
 
-    Two slots rather than an open-ended list because the config flow has no
-    way to draw a repeating record, and because two is the real number. The
-    code below never counts them, so a third is a schema entry rather than a
+    Fixed slots rather than an open-ended list because the config flow has
+    no way to draw a repeating record. The code below never counts them, and
+    the dishwasher was the proof: the third was a schema entry rather than a
     rewrite.
     """
 
@@ -190,6 +220,52 @@ def _appliance_specs(entry: ConfigEntry) -> list[dict[str, Any]]:
             "only_phase": PHASE_TUMBLE,
             **shared,
         },
+        {
+            "slug": "dishwasher",
+            "name": "Dishwasher",
+            "power_sensor": option(CONF_DISHWASHER_POWER),
+            "plug": option(CONF_DISHWASHER_PLUG),
+            "door": option(CONF_DISHWASHER_DOOR),
+            "leak": None,
+            "energy_sensor": option(CONF_DISHWASHER_ENERGY),
+            "icon": "mdi:dishwasher",
+            # The dryer's shape. Clean dishes are put away straight out
+            # of the rack, and the rack coming out is the door opening --
+            # so a finished load is a full drum until the door opens,
+            # and nothing after that. With no door configured it is
+            # never full at all; see `_finish`.
+            "queues_loads": False,
+            # Two phases, and only two, because only two can be told
+            # apart from the plug on any dishwasher: the heating element,
+            # which draws kilowatts, and the pump pushing water through
+            # the arms, which draws tens of watts. Nothing else in the
+            # machine comes near the element, so the split needs no
+            # trace to be safe. The floor is the geometric mean of a
+            # generous pump (200 W) and a small element (1.8 kW), the
+            # same rule the washer's bands use, and `phase_evidence`
+            # says where the real ones sit after the first few loads.
+            #
+            # What the plug cannot tell is pre-wash from main wash from
+            # rinse: all three are the pump. Naming them would be
+            # inventing detail from the order things happened in.
+            "tracks_phases": True,
+            "phase_bands": ((600.0, PHASE_HEAT),),
+            "base_phase": PHASE_WASH,
+            # A washer's opening run is its fill. A dishwasher fills
+            # too, but at the same pump draw as everything after it,
+            # and calling the first minutes "filling" would be a guess.
+            "opening_fill": False,
+            **shared,
+            # A dishwasher goes quiet mid-programme -- a soak, a pause
+            # before the rinse, a passive dry with the element off --
+            # for longer than a washer ever does. Five minutes would
+            # split one load into several. Twenty is a guess, and it is
+            # an override only upward: `longest_lull_seconds` after the
+            # first real load is what this should be set from.
+            "idle_minutes": max(
+                float(shared["idle_minutes"]), DISHWASHER_MIN_IDLE_MINUTES
+            ),
+        },
     ]
     return [c for c in candidates if c["power_sensor"]]
 
@@ -202,14 +278,32 @@ async def async_setup_entry(
     """Set up the derived signal sensors."""
     needs_you = NeedsYouSensor(entry)
     security = SecurityStatusSensor(entry)
-    security.add_listener(needs_you)
-    needs_you.security = security
+    prep = MealPrepSensor(entry)
+    ai_tasks = AiTasksSensor(entry)
+    # Every card that owns a need has its own sensor, which decides the
+    # card's level and the jobs behind it. Needs you only collects them.
+    # (The washing machines are owners too, found by their state.)
+    owners = [
+        security,
+        prep,
+        ai_tasks,
+        DevicesSensor(entry),
+        BinsStatusSensor(entry),
+        TasksStatusSensor(entry),
+        PeopleStatusSensor(entry),
+        SoftenerStatusSensor(entry),
+        BatteriesStatusSensor(entry),
+        CameraStatusSensor(entry),
+    ]
+    for owner in owners:
+        owner.add_listener(needs_you)
+    needs_you.owners = owners
     entities: list[SensorEntity] = [
         ActivityFeedSensor(entry),
+        CameraSightingsSensor(entry),
         needs_you,
-        SystemHealthSensor(entry),
-        security,
         EnergyDaySensor(entry),
+        *owners,
     ]
 
     specs = _appliance_specs(entry)
@@ -228,12 +322,13 @@ async def async_setup_entry(
             cycle.add_listener(needs_you)
         entities.extend(cycles)
         entities.extend(presses)
-        entities.append(CleaningStatusSensor(entry, cycles))
 
     entities.extend(_done_today_sensors(hass, entry))
 
     async_add_entities(entities)
     _async_register_services(hass, needs_you, cycles, presses)
+    async_register_prep_services(hass, prep)
+    async_register_ai_task_services(hass, ai_tasks)
 
 
 def _done_today_sensors(
@@ -392,6 +487,15 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         self._attr_unique_id = f"{entry.entry_id}_activity_feed"
         self._events: deque[dict[str, Any]] = deque(maxlen=self._max_events)
         self._last: datetime | None = None
+        # Area -> {kind, at, times}: the last hour, per room, for a floor
+        # plan. Kept apart from `events` because the rail's cap is a length
+        # and the plan's is an age.
+        self._by_area: dict[str, dict[str, Any]] = {}
+        # Camera detection sensor -> the kind it detects. Found, not
+        # configured: see `_watch`.
+        self._cameras: dict[str, str] = {}
+        self._watching: list[str] = []
+        self._unwatch: Any = None
 
     @property
     def _max_events(self) -> int:
@@ -420,21 +524,81 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
                 self._last = dt_util.parse_datetime(last.state)
             restored = last.attributes.get("events")
             if isinstance(restored, list):
-                self._events.extend(
-                    row for row in restored[: self._max_events] if isinstance(row, dict)
-                )
+                # Oldest first, through `_push`, so a feed saved before rows
+                # were folded comes back folded, and the cap is still rows.
+                for row in reversed(restored):
+                    if isinstance(row, dict):
+                        self._push(row)
+            by_area = last.attributes.get("by_area")
+            if isinstance(by_area, dict):
+                for area, row in by_area.items():
+                    if (
+                        isinstance(row, dict)
+                        and isinstance(row.get("times"), list)
+                        and row["times"]
+                    ):
+                        self._by_area[str(area)] = {
+                            "kind": row.get("kind"),
+                            "at": row.get("at"),
+                            "times": [
+                                int(t) for t in row["times"]
+                                if isinstance(t, (int, float))
+                            ][:BY_AREA_MAX_TIMES],
+                        }
+                self._prune_by_area(dt_util.utcnow())
 
-        tracked = self._tracked
-        if not tracked:
+        if not self._tracked:
             LOGGER.warning(
                 "Home Signals has no entities configured; the activity feed will "
-                "stay empty until some are selected"
+                "carry only what the cameras see until some are selected"
             )
-            return
-
+        self._watch()
+        # A new camera joins the feed when it joins the registry.
         self.async_on_remove(
-            async_track_state_change_event(self.hass, tracked, self._handle_event)
+            self.hass.bus.async_listen(
+                er.EVENT_ENTITY_REGISTRY_UPDATED, self._registry_changed
+            )
         )
+        self.async_on_remove(self._stop_watching)
+
+    @callback
+    def _registry_changed(self, _event: Event) -> None:
+        self._watch()
+
+    @callback
+    def _stop_watching(self) -> None:
+        if self._unwatch is not None:
+            self._unwatch()
+            self._unwatch = None
+
+    @callback
+    def _watch(self) -> None:
+        """Listen to the configured entities and to every camera's detections.
+
+        A camera's detections are its binary sensors, named by what they
+        see -- the same discovery `camera_sightings` uses, so the card and
+        the feed never disagree about what a camera noticed. Its plain
+        motion sensor is left out: a person, an animal and a cry are said
+        by name, and pixel motion on a camera is mostly the light changing
+        and the night vision switching over.
+        """
+        registry = er.async_get(self.hass)
+        cameras: dict[str, str] = {}
+        for entity_id in camera_detections(registry):
+            entry = registry.async_get(entity_id)
+            kind = camera_kind(entry) if entry else KIND_CAMERA
+            if kind != KIND_MOTION:
+                cameras[entity_id] = kind
+        self._cameras = cameras
+        watching = sorted(set(self._tracked) | set(cameras))
+        if watching == self._watching and self._unwatch is not None:
+            return
+        self._stop_watching()
+        self._watching = watching
+        if watching:
+            self._unwatch = async_track_state_change_event(
+                self.hass, watching, self._handle_event
+            )
 
     @callback
     def _handle_event(self, event: Event[EventStateChangedData]) -> None:
@@ -451,29 +615,61 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
             return
 
         entity_id = new_state.entity_id
-        kind = self._kind(
+        kind = self._cameras.get(entity_id) or self._kind(
             entity_id,
             new_state.attributes.get(ATTR_DEVICE_CLASS),
             new_state.attributes.get("kind"),
         )
 
-        # Motion clearing is not an event. A button or a lock changing is.
-        if kind in (KIND_MOTION, KIND_DOOR) and new_state.state != STATE_ON:
+        # Motion clearing is not an event, and nor is a camera no longer
+        # seeing something. A button or a lock changing is.
+        if (
+            kind in (KIND_MOTION, KIND_DOOR) or kind in _CAMERA_KINDS
+        ) and new_state.state != STATE_ON:
             return
 
         now = dt_util.utcnow()
-        self._events.appendleft(
+        area = self._area_name(entity_id)
+        self._push(
             {
                 "entity_id": entity_id,
                 "name": new_state.attributes.get(ATTR_FRIENDLY_NAME, entity_id),
-                "area": self._area_name(entity_id),
+                "area": area,
                 "kind": kind,
                 "state": new_state.state,
                 "at": now.isoformat(),
             }
         )
         self._last = now
+        if area is not None:
+            row = self._by_area.setdefault(area, {"times": []})
+            row["kind"] = kind
+            row["at"] = now.isoformat()
+            row["times"] = [int(now.timestamp()), *row["times"]][:BY_AREA_MAX_TIMES]
+        self._prune_by_area(now)
         self.async_write_ha_state()
+
+    def _push(self, row: dict[str, Any]) -> None:
+        """Put a row on top, or fold it into the top row if it is the same thing.
+
+        `max_events` caps ROWS, not happenings. Four hall trips in a row are
+        one row on the rail ("Hall · motion ×4"), and spending four of the
+        twenty slots on it pushed older rows off the end for the sake of
+        entries the card was only going to merge back into one.
+        The top row keeps the newest `at` and `state`, `first_at` says when
+        the run began, and `count` how long it is.
+        """
+        top = self._events[0] if self._events else None
+        if top is not None and top.get("entity_id") == row.get("entity_id"):
+            # Replaced rather than edited: the state machine keeps the old
+            # attributes to compare against.
+            self._events[0] = {
+                **row,
+                "count": int(top.get("count") or 1) + int(row.get("count") or 1),
+                "first_at": top.get("first_at") or top.get("at"),
+            }
+            return
+        self._events.appendleft(row)
 
     @staticmethod
     def _kind(
@@ -517,6 +713,21 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         area = ar.async_get(self.hass).async_get_area(area_id)
         return area.name if area else None
 
+    def _prune_by_area(self, now: datetime) -> None:
+        """Forget what is older than the window, and rooms left with nothing.
+
+        Only runs when something is written, so a quiet house keeps its last
+        hour on the entity past the hour. That is harmless: every time
+        carries its own age, and the reader fades by that, not by presence.
+        """
+        cutoff = now.timestamp() - BY_AREA_WINDOW_MINUTES * 60
+        for area in list(self._by_area):
+            times = [t for t in self._by_area[area]["times"] if t >= cutoff]
+            if times:
+                self._by_area[area]["times"] = times
+            else:
+                del self._by_area[area]
+
     @property
     def native_value(self) -> datetime | None:
         """When anything last happened anywhere."""
@@ -527,5 +738,12 @@ class ActivityFeedSensor(SensorEntity, RestoreEntity):
         """The feed itself, newest first."""
         return {
             "events": list(self._events),
+            # Copied, not shared: the state machine keeps the previous
+            # attributes to compare against, and a row mutated in place
+            # would change the old state along with the new one.
+            "by_area": {
+                area: {**row, "times": list(row["times"])}
+                for area, row in self._by_area.items()
+            },
             "tracked_count": len(self._tracked),
         }

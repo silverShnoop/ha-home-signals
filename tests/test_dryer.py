@@ -21,13 +21,13 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.home_signals.appliance import (
     ApplianceCycleSensor,
-    CleaningStatusSensor,
 )
+from tests.owners import Tab
 from custom_components.home_signals.const import (
     APPLIANCE_IDLE,
     APPLIANCE_RUNNING,
-    CLEANING_AMBER,
-    CLEANING_GREEN,
+    CLEANING_CLEAR,
+    LEVEL_ATTENTION,
 )
 
 DRYER_POWER = "sensor.dryer_power"
@@ -207,7 +207,7 @@ async def test_two_loads_do_not_accumulate_anything_to_clear(dryer: Dryer) -> No
 # --- the cleaning light -----------------------------------------------
 
 
-async def test_a_full_dryer_turns_the_cleaning_light_amber(
+async def test_a_full_dryer_puts_the_cleaning_tab_at_attention(
     hass: HomeAssistant, dryer: Dryer
 ) -> None:
     """Without this the dryer is invisible from the rail.
@@ -216,16 +216,16 @@ async def test_a_full_dryer_turns_the_cleaning_light_amber(
     pending count and never will, so a light that only reads that one would
     stay green with a full drum sitting in the garage.
     """
-    status = CleaningStatusSensor(FakeEntry(), [dryer.sensor])
-    assert status.native_value == CLEANING_GREEN
+    status = Tab(hass)
+    assert status.native_value == CLEANING_CLEAR
 
     await dryer.run_a_load()
-    assert status.native_value == CLEANING_AMBER
+    assert status.native_value == LEVEL_ATTENTION
     assert "Tumble dryer" in status.extra_state_attributes["detail"]
     assert "empty" in status.extra_state_attributes["detail"]
 
     await dryer.open_door()
-    assert status.native_value == CLEANING_GREEN
+    assert status.native_value == CLEANING_CLEAR
 
 
 # --- it only ever does the one thing, and says so ---------------------

@@ -64,7 +64,11 @@ async def test_a_configured_washer_produces_its_entities(hass: HomeAssistant) ->
     assert hass.states.get("sensor.washing_machine") is not None, (
         "the cycle sensor did not appear"
     )
-    assert hass.states.get("sensor.cleaning_status") is not None
+    # The Cleaning tab's level and words now come from Needs you.
+    needs = hass.states.get("sensor.needs_you").attributes
+    assert "tab_cleaning" in needs and "summary_cleaning" in needs
+    assert hass.states.get("sensor.cleaning_status") is None
+    assert hass.states.get("sensor.system_health") is None
     assert hass.states.get("sensor.washing_machine_button") is not None
     assert hass.services.has_service(DOMAIN, SERVICE_LAUNDRY_HUNG)
 
@@ -386,6 +390,43 @@ async def test_the_washer_still_queues_its_hanging(hass: HomeAssistant) -> None:
     assert row["action_label"] == "Hung"
 
 
+async def test_waiting_loads_are_one_row_and_hung_clears_one(
+    hass: HomeAssistant,
+) -> None:
+    """Three loads are one row with a count, like the wall button sees them."""
+    await _start(hass, {**OPTIONS, **DRYER})
+
+    cycle = _cycle(hass, "washing_machine")
+    for stamp in ("2026-09-19T08:00:00", "2026-09-19T12:00:00", "2026-09-19T16:00:00"):
+        cycle._pending.append({  # noqa: SLF001
+            "id": f"washing_machine_{stamp}",
+            "finished_at": f"{stamp}+00:00",
+            "duration_minutes": 118,
+            "energy_kwh": 1.12,
+        })
+    cycle._publish()  # noqa: SLF001
+    await hass.async_block_till_done()
+
+    def hanging() -> list[dict]:
+        items = hass.states.get("sensor.needs_you").attributes.get("items", [])
+        return [i for i in items if i.get("icon") == "mdi:hanger"]
+
+    rows = hanging()
+    assert len(rows) == 1, rows
+    assert rows[0]["title"] == "3 loads need hanging"
+    assert rows[0]["detail"].startswith("Oldest finished")
+    assert rows[0]["action"]["data"]["load_id"] == "washing_machine_2026-09-19T08:00:00"
+
+    action = rows[0]["action"]
+    domain, service = action["service"].split(".")
+    await hass.services.async_call(domain, service, action["data"], blocking=True)
+    await hass.async_block_till_done()
+
+    rows = hanging()
+    assert len(rows) == 1 and rows[0]["title"] == "2 loads need hanging", rows
+    assert hass.states.get("sensor.washing_machine").attributes["pending_count"] == 2
+
+
 async def test_each_appliance_wears_its_own_icon(hass: HomeAssistant) -> None:
     """A dryer drawn as a washing machine, which is what shipped first.
 
@@ -488,3 +529,58 @@ async def test_the_dryer_is_wired_for_one_phase_and_no_classifier(
     assert specs["washing_machine"].get("only_phase") is None, (
         "the washer would report one phase forever instead of classifying"
     )
+
+
+async def test_every_card_that_owns_a_need_has_its_own_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """The card decides its level; Needs you and the tab only read it."""
+    await _start(hass, OPTIONS)
+
+    for entity_id in (
+        "sensor.washing_machine",
+        "sensor.security_status",
+        "sensor.devices",
+        "sensor.bins_status",
+        "sensor.tasks_status",
+        "sensor.people_status",
+        "sensor.softener_status",
+        "sensor.batteries_status",
+    ):
+        state = hass.states.get(entity_id)
+        assert state is not None, f"{entity_id} did not appear"
+        assert "level" in state.attributes, entity_id
+        assert isinstance(state.attributes.get("jobs"), list), entity_id
+        assert state.attributes.get("tab"), entity_id
+
+    # A dead plug: the machine raises the job and decides the level; the
+    # row and the tab follow it.
+    hass.states.async_set("switch.washer_plug", "off")
+    await hass.async_block_till_done()
+    machine = hass.states.get("sensor.washing_machine").attributes
+    needs = hass.states.get("sensor.needs_you").attributes
+    assert machine["level"] == "waiting"
+    assert any(r["id"] == "unpowered_washing_machine" for r in needs["items"])
+    assert needs["tab_cleaning"] == machine["level"]
+
+
+# --- the dishwasher ---------------------------------------------------
+
+
+async def test_a_dishwasher_appears_as_itself_with_no_button(
+    hass: HomeAssistant,
+) -> None:
+    """Configured with no door, which is how it was first installed."""
+    hass.states.async_set("switch.dishwasher_plug", "on")
+    hass.states.async_set("sensor.dishwasher_plug_power", "0")
+    await _start(hass, {
+        **OPTIONS,
+        "dishwasher_power": "sensor.dishwasher_plug_power",
+        "dishwasher_plug": "switch.dishwasher_plug",
+    })
+
+    state = hass.states.get("sensor.dishwasher")
+    assert state is not None, "no dishwasher appeared"
+    assert state.attributes["icon"] == "mdi:dishwasher"
+    assert state.attributes["tab"] == "cleaning"
+    assert hass.states.get("sensor.dishwasher_button") is None

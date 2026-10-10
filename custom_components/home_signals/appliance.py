@@ -59,18 +59,13 @@ from .const import (
     APPLIANCE_IDLE,
     APPLIANCE_OFF,
     APPLIANCE_RUNNING,
-    CLEANING_AMBER,
-    CLEANING_GREEN,
-    CLEANING_RED,
     DOMAIN,
-    LEVEL_ATTENTION,
-    LEVEL_CRITICAL,
-    LEVEL_WAITING,
     PHASE_FILL,
     PHASE_HEAT,
     PHASE_SPIN,
     PHASE_TUMBLE,
 )
+from .derived import appliance_jobs, loudest
 from .money import money as _money
 
 LOGGER = logging.getLogger(__name__)
@@ -190,6 +185,15 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self._pending: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = []
         self._door_was_open = False
+        # Whether somebody has switched the plug back on since the pad
+        # last went wet. See _sync_leak.
+        self._leak_was_wet = False
+        self._plug_was_on: bool | None = None
+        self._leak_handled = False
+        # When the pad went wet, so the card and the rows can say for how
+        # long -- how long water may have been on the floor is the thing
+        # that decides how worried to be. Held across a restart.
+        self._leak_since: datetime | None = None
         # Things to poke when this changes. Needs you and the cleaning light
         # are both derived from `pending`, which lives in here rather than in
         # any entity they could subscribe to — a state subscription would
@@ -237,6 +241,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         self.async_on_remove(
             async_track_time_interval(self.hass, self._async_tick, SCAN_INTERVAL)
         )
+        # "Wet for 12 min" has to count up while nothing else changes, and
+        # the five-minute tick would let it lag. Only publishes while wet.
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass, self._async_wet_tick, timedelta(minutes=1)
+            )
+        )
         if watched := self._watched():
             self.async_on_remove(
                 async_track_state_change_event(self.hass, watched, self._async_changed)
@@ -260,10 +271,19 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         history = attrs.get("finished")
         if isinstance(history, list):
             self._history = [h for h in history if isinstance(h, dict)][:MAX_HISTORY]
-        self._drum_full = bool(attrs.get("drum_full"))
+        # Same rule as `_finish`: a door taken out of the options takes
+        # with it the only thing that could have emptied the drum.
+        self._drum_full = bool(attrs.get("drum_full")) and bool(self._spec.get("door"))
         self._rewashing = bool(attrs.get("rewashing"))
         load = attrs.get("rewashing_load")
         self._rewashing_load = str(load) if load else None
+        # Somebody already turned the power back on over a wet pad. A
+        # restart is not new information about the floor, so it must not
+        # turn their decision back into an alarm.
+        self._leak_handled = bool(attrs.get("leak_handled"))
+        self._leak_was_wet = self._leak_handled
+        since = attrs.get("leak_since")
+        self._leak_since = dt_util.parse_datetime(since) if since else None
         # A cycle in flight is not resumed, so the re-wash it was part of
         # is over as far as we can tell. Put the fullness back rather
         # than lose it: the washing is still in the drum either way.
@@ -285,18 +305,26 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
     @callback
     def _async_started(self, _hass: HomeAssistant) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
     @callback
     def _async_changed(self, _event: Event[EventStateChangedData]) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
     @callback
+    def _async_wet_tick(self, _now: datetime) -> None:
+        if self._leak_since is not None:
+            self._publish()
+
+    @callback
     def _async_tick(self, _now: datetime) -> None:
         self._sync_door()
+        self._sync_leak()
         self._evaluate()
         self._publish()
 
@@ -334,6 +362,49 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._rewashing = False
             self._rewashing_load = None
         self._door_was_open = open_now
+
+    # --- the leak -----------------------------------------------------
+
+    def _sync_leak(self) -> None:
+        """Whether a wet pad is still news, or somebody has already acted.
+
+        The pad going wet is critical: the leak automation cuts the plug,
+        and water may be on the floor. The pad STAYS wet long after the
+        floor has been dealt with, though, and switching the plug back on
+        over it is a person deciding to finish the wash. We trust them to
+        have looked, so from then on "wet" is a fact on the card and no
+        longer a job.
+
+        Only a real off -> on of the plug counts. A plug that was never
+        cut -- the cutoff failed, or the plug is not reporting -- has not
+        been restored by anybody, so the leak stays an alarm. The pad
+        going wet again is new information and re-arms it.
+        """
+        wet = _is_on(self.hass, self._spec.get("leak"), default=False)
+        plug = self._spec.get("plug")
+        state = self.hass.states.get(plug) if plug else None
+        plug_on = (
+            None
+            if state is None or state.state in _NOT_A_READING
+            else state.state == STATE_ON
+        )
+
+        if not wet:
+            self._leak_handled = False
+            self._leak_since = None
+        elif not self._leak_was_wet:
+            # Went wet just now: new, whatever anybody decided last time.
+            self._leak_handled = False
+            # Unless this is a restart finding the pad still wet: then the
+            # restored time is the real one, and "now" would be a lie.
+            if self._leak_since is None:
+                self._leak_since = dt_util.utcnow()
+        elif plug_on and self._plug_was_on is False:
+            self._leak_handled = True
+
+        self._leak_was_wet = wet
+        if plug_on is not None:
+            self._plug_was_on = plug_on
 
     def _lock_released(self) -> None:
         """The door just opened. A short run was the lock, not a wash.
@@ -586,16 +657,22 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
     def _classify(self, watts: float) -> str:
         """Which band this reading falls in. Tumble is the fallthrough.
 
+        A machine may bring its own bands and its own fallthrough --
+        `phase_bands` and `base_phase` in its spec. The washer's are the
+        class defaults because they were measured on the washer; the
+        dishwasher's say only "heater or pump", which is the one thing
+        a dishwasher's draw can tell apart. See `_appliance_specs`.
+
         There is deliberately no floor under tumble. This is only ever
         asked about a reading the plug has already put at or above
         `start_watts` -- the machine is doing SOMETHING, and the quietest
         something it does is tumble. A second floor here would be a copy
         of that one, free to drift away from it.
         """
-        for floor, kind in self.PHASE_BANDS:
+        for floor, kind in self._cfg("phase_bands", self.PHASE_BANDS):
             if watts >= floor:
                 return kind
-        return PHASE_TUMBLE
+        return self._cfg("base_phase", PHASE_TUMBLE)
 
     def _note_phase(self, now: datetime, watts: float) -> None:
         """Fold this reading into the phase timeline.
@@ -619,9 +696,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # its own band. Anchoring it to "no phases yet" ended the fill at
         # the first commit, 30 seconds in, and filed the rest of the same
         # unbroken low-power run as tumble. See PHASE_BANDS.
-        opening = not self._phases or (
+        opening = self._cfg("opening_fill", True) and (not self._phases or (
             len(self._phases) == 1 and self._phases[0]["kind"] == PHASE_FILL
-        )
+        ))
         if kind == PHASE_TUMBLE and opening:
             kind = PHASE_FILL
 
@@ -937,7 +1014,12 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             self._pending.append(record)
         self._history.insert(0, record)
         del self._history[MAX_HISTORY:]
-        self._drum_full = fills_drum
+        # Only where there is a door to empty it. With no contact sensor
+        # nothing in the house could ever clear a full drum, and a row
+        # that cannot be cleared is the one kind Needs you must not hold
+        # -- so a machine without a door is never reported full, and
+        # gains the job the day it gains the sensor.
+        self._drum_full = fills_drum and bool(self._spec.get("door"))
         self._rewashing = False
         self._rewashing_load = None
         # This run WAS a wash, so its own timeline is the one to keep.
@@ -1007,7 +1089,7 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             if _ran_today(h) or h.get("id") in hanging_ids
         ]
 
-        return {
+        attrs: dict[str, Any] = {
             "slug": self._slug,
             # Whether a finished load leaves a second job behind it after
             # the drum is emptied. Needs you reads state attributes rather
@@ -1016,6 +1098,15 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "power_w": watts,
             "powered": powered,
             "leak": leak,
+            # The pad is wet AND nobody has switched the plug back on over
+            # it. This, not `leak`, is what raises the Needs-you row, the
+            # tab and the card's outline: `leak` alone stays true for hours
+            # after the floor is dry and somebody has chosen to carry on.
+            "leak_alarm": leak and not self._leak_handled,
+            "leak_handled": leak and self._leak_handled,
+            "leak_since": (
+                self._leak_since.isoformat() if leak and self._leak_since else None
+            ),
             "door_open": door_open,
             # Whether there is washing in the drum. Not the same question as
             # whether there is washing to hang, and cleared by a different
@@ -1070,7 +1161,14 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             "start_watts": float(self._cfg("start_watts", 8)),
             "idle_watts": float(self._cfg("idle_watts", 4)),
         }
-
+        # The machine owns its jobs and so its level: the card's outline
+        # reads `level` here, Needs you shows `jobs`, and the Cleaning tab
+        # wears the loudest `level` on it. Nothing downstream decides one.
+        jobs = appliance_jobs(self.name or self._slug, self.entity_id or "", attrs)
+        attrs["tab"] = "cleaning"
+        attrs["jobs"] = jobs
+        attrs["level"] = loudest(row.get("level") for row in jobs)
+        return attrs
 
 class AppliancePressSensor(SensorEntity, RestoreEntity):
     """When the appliance's own button was last pressed.
@@ -1123,106 +1221,3 @@ class AppliancePressSensor(SensorEntity, RestoreEntity):
         whose id ends in `_button` is a button.
         """
         return {"kind": KIND_BUTTON}
-
-
-class CleaningStatusSensor(SensorEntity):
-    """Is anything in the utility corner asking for attention, as a colour.
-
-    The same shape as `security_status`, and for the same reason: a tab on a
-    wall panel can be a colour long before anybody reads a word of it. Red is
-    water on the floor. Amber is a job — washing to hang, or a machine left
-    without power.
-    """
-
-    _attr_should_poll = False
-    _attr_has_entity_name = False
-    _attr_name = "Cleaning status"
-    _attr_icon = "mdi:washing-machine"
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = [CLEANING_GREEN, CLEANING_AMBER, CLEANING_RED]
-
-    def __init__(self, entry: ConfigEntry, sensors: list[ApplianceCycleSensor]) -> None:
-        self._entry = entry
-        self._sensors = sensors
-        self._attr_unique_id = f"{entry.entry_id}_cleaning_status"
-        for sensor in sensors:
-            sensor.add_listener(self)
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            async_track_time_interval(self.hass, self._async_tick, SCAN_INTERVAL)
-        )
-
-    @callback
-    def refresh(self) -> None:
-        """An appliance changed. Everything this reads is read on demand."""
-        if self.hass is not None:
-            self.async_write_ha_state()
-
-    @callback
-    def _async_tick(self, _now: datetime) -> None:
-        self.async_write_ha_state()
-
-    def _read(self) -> tuple[str, str, str | None]:
-        leaking: list[str] = []
-        unpowered: list[str] = []
-        full: list[str] = []
-        waiting = 0
-        for sensor in self._sensors:
-            attrs = sensor.extra_state_attributes
-            if attrs.get("leak"):
-                leaking.append(sensor.name or sensor.slug)
-            elif not attrs.get("powered", True):
-                # Only worth saying while there is no leak: with water on the
-                # floor, "it has no power" is the automation working, not a
-                # second problem.
-                unpowered.append(sensor.name or sensor.slug)
-            waiting += int(attrs.get("pending_count") or 0)
-            # Every appliance has this one, and the door clears it on both.
-            if attrs.get("drum_full"):
-                full.append(sensor.name or sensor.slug)
-
-        # The level is not the colour, and this is the sensor where the
-        # difference shows. Amber covers three different jobs, and one of
-        # them -- a machine left without power mid-cycle -- is wet washing
-        # and a clock running, which is `waiting` rather than `attention`.
-        # The Needs-you row has said so since the levels arrived; the tab
-        # tile could not, because it was reading the three-colour state.
-        #
-        # So the level rides alongside the colour instead of being derived
-        # from it. A dock button that mapped amber to a level itself would
-        # be a second place the levels have to be kept right -- and that
-        # second place is what drifted: the map named decorative accent
-        # slots 1 and 2 from back when they were the orange and the
-        # yellow, so once those hues left the palette a load to hang
-        # painted the tab bone-white and a leak painted it tan.
-        if leaking:
-            return CLEANING_RED, f"{leaking[0]} leaking", LEVEL_CRITICAL
-        if unpowered:
-            return (
-                CLEANING_AMBER,
-                f"{unpowered[0]} has no power",
-                LEVEL_WAITING,
-            )
-        if waiting:
-            plural = "s" if waiting > 1 else ""
-            return (
-                CLEANING_AMBER,
-                f"{waiting} load{plural} to hang",
-                LEVEL_ATTENTION,
-            )
-        if full:
-            return CLEANING_AMBER, f"{full[0]} to empty", LEVEL_ATTENTION
-        # No level at all, not the quietest one. Nothing is waiting, so
-        # nothing wants doing, and the tile goes back to its own accent.
-        return CLEANING_GREEN, "Nothing waiting", None
-
-    @property
-    def native_value(self) -> str:
-        return self._read()[0]
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        status, detail, level = self._read()
-        return {"detail": detail, "status": status, "level": level}

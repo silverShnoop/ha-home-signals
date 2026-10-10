@@ -23,6 +23,7 @@ from custom_components.home_signals.const import (
     LEVEL_CRITICAL,
     LEVEL_WAITING,
 )
+from tests.owners import attach, owner
 from custom_components.home_signals.derived import (
     NeedsYouSensor,
     SecurityStatusSensor,
@@ -55,8 +56,7 @@ async def _pair(hass: HomeAssistant) -> tuple[NeedsYouSensor, SecurityStatusSens
     security = SecurityStatusSensor(entry)
     security.hass = hass
     security.entity_id = "sensor.security_status"
-    security.add_listener(needs)
-    needs.security = security
+    attach(hass, needs, security)
     await needs.async_added_to_hass()
     await security.async_added_to_hass()
     await hass.async_block_till_done()
@@ -188,3 +188,24 @@ async def test_a_lock_that_loads_after_the_sensor_is_heard_at_once(
     await hass.async_block_till_done()
     assert security.native_value == "green"
     assert writes[-1] == "green"
+
+
+async def test_a_silent_lock_is_a_row_at_the_level_the_door_wears(
+    hass: HomeAssistant, clock
+) -> None:
+    """The Nuki drops out about once a day. The door card and the tab
+    already went amber for it; now there is a row saying why."""
+    hass.states.async_set(FRONT, "unavailable", {"friendly_name": "Front door"})
+    hass.states.async_set(BACK, "off", {"friendly_name": "Back door"})
+    needs, security = await _pair(hass)
+    row = _row(needs, f"silent_{FRONT}")
+    assert row is not None
+    assert row["level"] == security.level == LEVEL_WAITING
+    attrs = needs.extra_state_attributes
+    assert security.extra_state_attributes["level"] == LEVEL_WAITING
+    assert attrs["tab_security"] == LEVEL_WAITING
+
+    hass.states.async_set(FRONT, "locked", {"friendly_name": "Front door"})
+    await hass.async_block_till_done()
+    assert _row(needs, f"silent_{FRONT}") is None
+    assert needs.extra_state_attributes["tab_security"] is None

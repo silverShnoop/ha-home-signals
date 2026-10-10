@@ -1290,3 +1290,205 @@ async def test_one_night_has_nothing_to_compare_against(
     a = m.attrs
     assert "baseline_vs_prev_text" not in a
     assert a["baseline_watts"] == 280, "the night itself is still reported"
+
+
+# --- month by month ---------------------------------------------------
+
+
+async def test_every_month_of_the_year_is_listed_filled_or_not(meter: Meter) -> None:
+    """Twelve rows from the first day, newest first.
+
+    A month with nothing in it says so rather than being left out, so the
+    card shows what it is going to fill in -- and a gap reads as a gap.
+    """
+    months = meter.attrs["months"]
+    assert [m["month"] for m in months[:3]] == ["2026-09", "2026-08", "2026-07"]
+    assert len(months) == 12
+    assert months[-1]["month"] == "2025-10"
+
+    empty = months[1]
+    assert empty["name"] == "August 2026"
+    assert empty["days"] == 0
+    assert empty["cost"] is None
+    assert empty["value"] is None
+    assert empty["sub"] == "Not filled yet"
+
+
+async def test_the_current_month_is_so_far(hass: HomeAssistant, freezer) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    for day in ("2026-09-18", "2026-09-19"):
+        publish(hass, day)
+        await m.settle()
+
+    september = m.attrs["months"][0]
+    assert september["days"] == 2
+    assert september["days_in_month"] == 30
+    assert september["complete"] is False
+    assert september["kwh"] == pytest.approx(round(sum(SATURDAY) * 2, 3))
+    assert september["cost"] == pytest.approx(
+        sum(row["cost"] for row in m.attrs["recent_days"])
+    )
+    assert september["sub"] == f"{round(sum(SATURDAY) * 2)} kWh · so far, 2 of 30 days"
+
+
+async def test_days_fall_into_their_own_month(hass: HomeAssistant, freezer) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    for day in ("2026-08-31", "2026-09-01"):
+        publish(hass, day)
+        await m.settle()
+
+    by_month = {row["month"]: row for row in m.attrs["months"]}
+    assert by_month["2026-09"]["days"] == 1
+    assert by_month["2026-08"]["days"] == 1
+    # A past month short of its days says so: its total is real, but it is
+    # not the month's bill.
+    assert by_month["2026-08"]["sub"].endswith("1 of 31 days recorded")
+
+
+async def test_a_revised_day_is_revised_in_its_month(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-09-19")
+    await m.settle()
+    publish(hass, "2026-09-19", [c * 2 for c in SATURDAY])
+    await m.settle()
+
+    september = m.attrs["months"][0]
+    assert september["days"] == 1
+    assert september["kwh"] == pytest.approx(round(sum(SATURDAY) * 2, 3))
+
+
+async def test_a_month_outlives_the_days_it_was_made_from(
+    hass: HomeAssistant, freezer
+) -> None:
+    """The history is five weeks; a month has to be written down before it goes."""
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-08-30")
+    await m.settle()
+    publish(hass, "2026-08-31")
+    await m.settle()
+    august = m.sensor._months["2026-08"]
+    assert august["days"] == 2
+
+    # The oldest August day leaves the history, as it would weeks later.
+    m.sensor._history = [r for r in m.sensor._history if r["day"] != "2026-08-30"]
+    m.sensor._fold_months()
+    assert m.sensor._months["2026-08"] == august
+
+
+async def test_the_months_come_back_after_a_restart(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-08-31")
+    await m.settle()
+    publish(hass, "2026-09-19")
+    await m.settle()
+    months = m.attrs["months"]
+
+    # Restored without the days -- the months must stand on their own.
+    fresh = EnergyDaySensor(FakeEntry({"energy_cost_sensor": SOURCE}))
+    fresh.hass = hass
+    fresh._restore({"months": months})
+    assert fresh._month_rows() == months
+
+
+async def test_a_year_is_all_that_is_kept(hass: HomeAssistant, freezer) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-09-19")
+    await m.settle()
+    old = [
+        {"month": f"2024-{n:02d}", "cost": 1.0, "kwh": 1.0, "days": 1}
+        for n in range(1, 13)
+    ]
+    m.sensor._restore({"months": old, "recent_days": m.attrs["recent_days"]})
+    assert len(m.sensor._months) == 12
+    assert "2026-09" in m.sensor._months
+    assert "2024-01" not in m.sensor._months
+
+
+# --- month by month, as a chart ---------------------------------------
+
+
+async def test_the_month_chart_is_twelve_columns_oldest_first(meter: Meter) -> None:
+    """Shaped like `block_days`, so the same stacked chart can draw it."""
+    columns = meter.attrs["month_blocks"]
+    assert len(columns) == 12
+    assert columns[0]["month"] == "2025-10"
+    assert columns[-1]["month"] == "2026-09"
+    assert columns[-1]["label"] == "Sep"
+
+
+async def test_a_month_column_is_its_days_blocks_added_up(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    for day in ("2026-09-18", "2026-09-19"):
+        publish(hass, day)
+        await m.settle()
+
+    september = m.attrs["month_blocks"][-1]
+    day = m.attrs["block_days"][-1]
+    # The standing charge is the base of the stack, then the four blocks.
+    assert september["cost"][1:] == pytest.approx([2 * v for v in day["cost"]], abs=0.02)
+    assert september["kwh"][1:] == pytest.approx([2 * v for v in day["kwh"]], abs=0.002)
+    assert september["cost"][0] == pytest.approx(2 * STANDING, abs=0.02)
+    assert september["kwh"][0] == 0
+    # So the bar is the bill.
+    assert september["total_cost"] == pytest.approx(
+        sum(r["cost"] for r in m.attrs["recent_days"]), abs=0.01
+    )
+    assert m.attrs["month_block_names"] == [
+        "Standing", "Overnight", "Morning", "Afternoon", "Evening",
+    ]
+    assert september["total_kwh"] == round(sum(SATURDAY) * 2)
+    assert september["note"] == "so far"
+
+
+async def test_an_empty_month_keeps_its_column(meter: Meter) -> None:
+    """No blocks and no totals, but still there and still labelled."""
+    august = meter.attrs["month_blocks"][-2]
+    assert august["label"] == "Aug"
+    assert august["cost"] == []
+    assert august["total_cost_text"] is None
+    assert august["note"] is None
+
+
+async def test_a_part_month_in_the_past_says_how_many_days(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-08-31")
+    await m.settle()
+    august = m.attrs["month_blocks"][-2]
+    assert august["note"] == "1/31 days"
+    assert august["cost"]
+
+
+async def test_a_months_blocks_come_back_after_a_restart(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-08-31")
+    await m.settle()
+    publish(hass, "2026-09-19")
+    await m.settle()
+
+    fresh = EnergyDaySensor(FakeEntry({"energy_cost_sensor": SOURCE}))
+    fresh.hass = hass
+    fresh._restore({"months": m.attrs["months"]})
+    assert fresh._month_blocks() == m.attrs["month_blocks"]
+
+
+async def test_a_ragged_block_list_is_not_added_into_a_month(
+    hass: HomeAssistant, freezer
+) -> None:
+    m = await _meter(hass, freezer, {"energy_cost_sensor": SOURCE})
+    publish(hass, "2026-09-19")
+    await m.settle()
+    m.sensor._history[0]["block_cost"] = [1.0, 2.0]
+    m.sensor._months.clear()
+    m.sensor._fold_months()
+    assert m.sensor._months["2026-09"]["block_cost"] is None
+    assert m.attrs["month_blocks"][-1]["cost"] == []

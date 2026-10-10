@@ -29,7 +29,13 @@ from custom_components.home_signals.const import (
     LEVEL_LOUDNESS,
     LEVEL_WAITING,
 )
-from custom_components.home_signals.derived import NeedsYouSensor
+from tests.owners import attach, owner
+from custom_components.home_signals.derived import (
+    BinsStatusSensor,
+    NeedsYouSensor,
+    appliance_jobs,
+    loudest,
+)
 
 WASHER = "sensor.washing_machine"
 
@@ -40,6 +46,7 @@ def _sensor(hass: HomeAssistant) -> NeedsYouSensor:
     sensor = NeedsYouSensor(entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
     return sensor
 
 
@@ -82,6 +89,58 @@ async def test_a_leak_is_critical(hass: HomeAssistant) -> None:
     """Water on the floor is the one thing accruing damage right now."""
     _machine(hass, leak=True)
     assert (await _row(hass, "leak_"))["level"] == LEVEL_CRITICAL
+
+
+async def test_a_leak_somebody_restored_power_over_is_attention(
+    hass: HomeAssistant,
+) -> None:
+    """The person has decided about the floor; the pad still has to dry.
+
+    Until it does the cutoff cannot fire again, which is a job -- but one
+    that keeps, so not critical, and not the leak row.
+    """
+    _machine(hass, leak=True, leak_alarm=False, powered=True)
+    rows = await _rows(hass)
+    ids = [r["id"] for r in rows]
+    assert "leak_washing_machine" not in ids
+    wet = next(r for r in rows if r["id"].startswith("leak_wet_"))
+    assert wet["level"] == LEVEL_ATTENTION
+
+
+async def test_a_dry_pad_leaves_no_leak_row(hass: HomeAssistant) -> None:
+    _machine(hass, leak=False, leak_alarm=False)
+    assert await _row(hass, "leak_") is None
+
+
+async def test_a_leak_row_never_claims_a_cut_that_did_not_happen(
+    hass: HomeAssistant,
+) -> None:
+    _machine(hass, leak=True, leak_alarm=True, powered=True)
+    row = await _row(hass, "leak_")
+    assert row["level"] == LEVEL_CRITICAL
+    assert "cut" not in row["detail"].lower()
+
+
+async def test_a_leak_row_says_how_long_the_pad_has_been_wet(
+    hass: HomeAssistant,
+) -> None:
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    since = (dt_util.utcnow() - timedelta(minutes=12)).isoformat()
+    _machine(hass, leak=True, leak_alarm=True, powered=False, leak_since=since)
+    assert (await _row(hass, "leak_"))["detail"].startswith("Wet for 12 min")
+
+
+async def test_so_does_the_still_wet_row(hass: HomeAssistant) -> None:
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    since = (dt_util.utcnow() - timedelta(hours=2, minutes=5)).isoformat()
+    _machine(hass, leak=True, leak_alarm=False, leak_since=since)
+    assert (await _row(hass, "leak_wet_"))["detail"].startswith("Wet for 2h 5m")
 
 
 async def test_a_dead_plug_is_waiting_not_an_errand(
@@ -127,6 +186,7 @@ async def test_a_leak_and_a_dead_plug_are_separate_rows_at_separate_levels(
         {"powered": False},
         {"drum_full": True},
         {"leak": True, "powered": False, "drum_full": True},
+        {"leak": True, "leak_alarm": False},
     ],
 )
 async def test_every_row_carries_a_real_level_and_no_accent(
@@ -146,6 +206,102 @@ async def test_every_row_carries_a_real_level_and_no_accent(
     for row in rows:
         assert row.get("level") in LEVEL_LOUDNESS, row
         assert "accent" not in row, row
+        # And it says where it is shown, or it colours nothing.
+        assert row.get("tab") == "cleaning", row
+        assert row.get("card") == "washing_machine", row
+
+
+# --- the card decides; the row and the tab follow ----------------------
+
+
+async def _tabs(hass: HomeAssistant, sensor: NeedsYouSensor | None = None) -> dict:
+    sensor = sensor or _sensor(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+    attrs = sensor.extra_state_attributes
+    return {k: v for k, v in attrs.items() if k.startswith("tab_")}
+
+
+def _publish(hass: HomeAssistant, level: str | None, **attrs: Any) -> None:
+    """The machine as it now publishes itself: its own jobs and level."""
+    jobs = appliance_jobs("Washing machine", WASHER, {
+        "slug": "washing_machine", "powered": True, "leak": False,
+        "drum_full": False, "pending": [], **attrs,
+    })
+    _machine(hass, jobs=jobs, level=level, tab="cleaning", **attrs)
+
+
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ({"leak": True}, LEVEL_CRITICAL),
+        ({"leak": True, "leak_alarm": False}, LEVEL_ATTENTION),
+        ({"powered": False}, LEVEL_WAITING),
+        # The one that drifted: a dead plug over a pad that is still wet
+        # after the power came back. Rows are attention + waiting.
+        ({"leak": True, "leak_alarm": False, "powered": False}, LEVEL_WAITING),
+        ({"leak": True, "powered": False, "drum_full": True}, LEVEL_CRITICAL),
+        ({"drum_full": True}, LEVEL_ATTENTION),
+    ],
+)
+async def test_the_machine_decides_its_level_from_its_own_jobs(
+    attrs: dict, expected: str
+) -> None:
+    """The card's level is the loudest of the jobs the machine raises."""
+    jobs = appliance_jobs("Washing machine", WASHER, {"slug": "washing_machine", **attrs})
+    assert loudest(j["level"] for j in jobs) == expected
+
+
+async def test_the_tab_wears_the_card_level_not_the_rows(
+    hass: HomeAssistant,
+) -> None:
+    """The rail button follows the card. Here the card says waiting while
+    the only row it raises is attention -- the tab must say waiting."""
+    _publish(hass, LEVEL_WAITING, drum_full=True)
+    tabs = await _tabs(hass)
+    assert tabs["tab_cleaning"] == LEVEL_WAITING
+
+
+async def test_nothing_waiting_is_no_level_anywhere(hass: HomeAssistant) -> None:
+    _publish(hass, None)
+    tabs = await _tabs(hass)
+    assert all(v is None for v in tabs.values()), tabs
+
+
+async def test_a_snoozed_row_still_colours_the_tab(hass: HomeAssistant) -> None:
+    """Snooze puts the reminder off; it does not make the thing untrue."""
+    _publish(hass, LEVEL_WAITING, powered=False)
+    sensor = _sensor(hass)
+    await _tabs(hass, sensor)
+    sensor.suppress("unpowered_washing_machine", hours=4)
+    attrs = sensor.extra_state_attributes
+    assert not any(r["id"] == "unpowered_washing_machine" for r in attrs["items"])
+    assert attrs["tab_cleaning"] == LEVEL_WAITING
+
+
+async def test_done_reaches_the_card_that_owns_the_job(hass: HomeAssistant) -> None:
+    """"Done" goes to the card's own sensor, so card, tab and row clear together."""
+    hass.states.async_set("sensor.bins", "Garden", {"daysTo": 1})
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={"bin_sensor": "sensor.bins"})
+    entry.add_to_hass(hass)
+    sensor = NeedsYouSensor(entry)
+    sensor.hass = hass
+    sensor.entity_id = "sensor.needs_you"
+    attach(hass, sensor)
+    bins = owner(sensor, BinsStatusSensor)
+    tabs = await _tabs(hass, sensor)
+    [row] = [r for r in sensor.extra_state_attributes["items"] if r["id"].startswith("bin_")]
+    assert bins.owner_level == LEVEL_ATTENTION
+    assert tabs["tab_cleaning"] == LEVEL_ATTENTION
+
+    sensor.suppress(row["id"])
+    await hass.async_block_till_done()
+    sensor._recompute()  # noqa: SLF001
+    attrs = sensor.extra_state_attributes
+    assert bins.owner_level is None
+    assert bins.extra_state_attributes["level"] is None
+    assert not any(r["id"] == row["id"] for r in attrs["items"])
+    assert attrs["tab_cleaning"] is None
 
 
 async def test_a_quiet_machine_raises_nothing(hass: HomeAssistant) -> None:

@@ -6,7 +6,7 @@
         "description": "Pick the entities the activity feed should watch, then tell Needs you where to look. Every Needs you field is optional — leave one empty and that check simply contributes nothing.",
         "data": {
           "entities": "Entities to watch",
-          "max_events": "Events to keep",
+          "max_events": "Rows to keep",
           "battery_threshold": "Battery warning level (%)",
           "bin_sensor": "Next bin collection sensor",
           "tasks_sensor": "Overdue chores binary sensor",
@@ -34,7 +34,7 @@
         "description": "Change what the activity feed watches and what Needs you reports.",
         "data": {
           "entities": "Entities to watch",
-          "max_events": "Events to keep",
+          "max_events": "Rows to keep",
           "battery_threshold": "Battery warning level (%)",
           "bin_sensor": "Next bin collection sensor",
           "tasks_sensor": "Overdue chores binary sensor",
@@ -80,6 +80,252 @@
     "reset": {
       "name": "Reset dismissals",
       "description": "Bring every dismissed and snoozed row back."
+    },
+    "save_recipe": {
+      "name": "Save recipe",
+      "description": "Create a recipe in Mealie, or change one.",
+      "fields": {
+        "recipe": {
+          "name": "Recipe",
+          "description": "The slug or id of the recipe to change. Omit to create one."
+        },
+        "name": {
+          "name": "Name",
+          "description": "What the recipe is called."
+        },
+        "description": {
+          "name": "Description",
+          "description": "A line or two about it."
+        },
+        "total_time": {
+          "name": "Total time",
+          "description": "How long it takes, in words."
+        },
+        "servings": {
+          "name": "Servings",
+          "description": "How many it feeds."
+        },
+        "ingredients": {
+          "name": "Ingredients",
+          "description": "One per line. Replaces the whole list."
+        },
+        "method": {
+          "name": "Method",
+          "description": "One step per line. Replaces the whole method."
+        },
+        "tags": {
+          "name": "Tags",
+          "description": "Tag names, replacing the recipe's tags. Missing tags are created."
+        },
+        "favourite": {
+          "name": "Favourite",
+          "description": "Whether it is a favourite of the Mealie user whose token this is."
+        },
+        "prep": {
+          "name": "Prep and cook",
+          "description": "Split the method into prep ahead and to cook: {mode: split, steps: [timing of each prep step]} with the prep steps first in the method; {mode: none} for a recipe with nothing to do ahead; {mode: order} to take a split off. An unchecked split may carry original, the method's lines as they were, kept until it is checked."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "import_recipe": {
+      "name": "Import recipe",
+      "description": "Import a recipe into Mealie from a web page or a video link.",
+      "fields": {
+        "url": {
+          "name": "Link",
+          "description": "The recipe page or video."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "delete_recipe": {
+      "name": "Delete recipe",
+      "description": "Delete a recipe from Mealie.",
+      "fields": {
+        "recipe": {
+          "name": "Recipe",
+          "description": "The slug or id of the recipe."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "recipe_index": {
+      "name": "Recipe index",
+      "description": "Every recipe with its tags, ingredients, when it was last made and whether it is a favourite.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "mark_made": {
+      "name": "Mark made",
+      "description": "Record that a recipe was eaten on a day.",
+      "fields": {
+        "recipe": {
+          "name": "Recipe",
+          "description": "The slug or id of the recipe."
+        },
+        "date": {
+          "name": "Date",
+          "description": "The day it was eaten. Today if not given."
+        },
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "prune_tags": {
+      "name": "Prune tags",
+      "description": "Delete every Mealie tag that no recipe uses.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Mealie",
+          "description": "Which Mealie, if there is more than one."
+        }
+      }
+    },
+    "save_photo": {
+      "name": "Save photo",
+      "description": "Keep a photo sent by a card where an AI task can see it.",
+      "fields": {
+        "image": {
+          "name": "Photo",
+          "description": "A JPEG, PNG or WebP as base64, or as a data URL. Under 3 MB."
+        },
+        "folder": {
+          "name": "Folder",
+          "description": "Where under local media/home_signals to keep it."
+        }
+      }
+    },
+    "save_prep_session": {
+      "name": "Save prep session",
+      "description": "Plan one sitting of meal prep: when it has to be done by, and which meals' ahead-of-time steps it covers. Kept as one Home Tasks item with that deadline, created or updated. Give no items to remove the session.",
+      "fields": {
+        "id": {
+          "name": "Session",
+          "description": "The session to change. Leave out to start a new one."
+        },
+        "due": {
+          "name": "Due",
+          "description": "When the prep has to be done by."
+        },
+        "items": {
+          "name": "Meals",
+          "description": "One per meal: date, entry_type, name, and optionally recipe_id, slug, steps (the prep steps as text) and minutes."
+        },
+        "title": {
+          "name": "Title",
+          "description": "The task's name. Defaults to \"Prep:\" and the meals."
+        }
+      }
+    },
+    "remove_prep_session": {
+      "name": "Remove prep session",
+      "description": "Forget a prep session and remove its Home Tasks item.",
+      "fields": {
+        "id": {
+          "name": "Session"
+        }
+      }
+    },
+    "prep_done": {
+      "name": "Prep done",
+      "description": "Tick a prep session's Home Tasks item.",
+      "fields": {
+        "id": {
+          "name": "Session"
+        }
+      }
+    },
+    "prep_settings": {
+      "name": "Prep settings",
+      "description": "When meals are eaten, when prep usually happens, and which list holds it.",
+      "fields": {
+        "meal_times": {
+          "name": "Meal times"
+        },
+        "prep_times": {
+          "name": "Prep times",
+          "description": "Weekdays are 0 (Monday) to 6 (Sunday)."
+        },
+        "todo": {
+          "name": "List"
+        }
+      }
+    },
+    "start_ai_task": {
+      "name": "Start AI task",
+      "description": "Run a slow action -- usually a script that calls an AI task -- in the background, so it outlives the card that asked for it. Answers at once with a task_id. While it runs it is a fact on the card; when it finishes it is a blue notice on the card, its tab and Needs you.",
+      "fields": {
+        "title": {
+          "name": "Title",
+          "description": "What the Needs you row says, such as \"Recipe from a link\"."
+        },
+        "action": {
+          "name": "Action",
+          "description": "The action to run. It must answer with a response."
+        },
+        "data": {
+          "name": "Data",
+          "description": "What to call the action with."
+        },
+        "card": {
+          "name": "Card",
+          "description": "Which card started it, so that card can find and show it."
+        },
+        "tab": {
+          "name": "Tab",
+          "description": "The tab whose rail button turns blue when it finishes."
+        },
+        "label": {
+          "name": "Label",
+          "description": "The key in the answer that names what came back, for the row."
+        },
+        "then": {
+          "name": "Then",
+          "description": "A second action fed from the first one's answer: action, data, pass (field <- answer key) and unless (an answer key that skips it)."
+        },
+        "open": {
+          "name": "Can be opened",
+          "description": "Whether the card can show the answer again. False gives the row only Dismiss."
+        },
+        "kind": {
+          "name": "Kind",
+          "description": "What sort of answer it is, for the card that opens it."
+        },
+        "require": {
+          "name": "Required answer",
+          "description": "The answer's key that must be there for it to have worked. Without it, the task is Failed."
+        },
+        "missing": {
+          "name": "When it is missing",
+          "description": "What the Failed row says when the required answer is not there."
+        }
+      }
+    },
+    "ai_task_result": {
+      "name": "AI task result",
+      "description": "What a finished AI task came back with: the task, the first action's answer as result, and the second's as then.",
+      "fields": {
+        "task_id": {
+          "name": "Task",
+          "description": "The id start_ai_task answered with."
+        }
+      }
     }
   }
 }
