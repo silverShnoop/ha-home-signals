@@ -67,7 +67,7 @@ that sensor says *when* something happened and nothing about what.
   device with a camera, the same discovery as `sensor.camera_sightings`, so
   the card and the feed agree about what a camera noticed. The kind is
   read off the sensor's name (`Baby crying` is `crying`), and the row reads
-  "Anaya's Bedroom · crying". A camera's plain **motion** sensor is left
+  "Riley's Room · crying". A camera's plain **motion** sensor is left
   out: a person, an animal and a cry are said by name, and pixel motion on
   a camera is mostly the light changing and night vision switching over.
 - **Buttons and locks** — any change to a real state. An `event` entity's state
@@ -362,7 +362,7 @@ or the moment it began while it is still going on.
 
 ```yaml
 since: {entity: sensor.camera_sightings, attribute: sightings,
-        key: [binary_sensor.anaya_s_room_anayas_room_camera_person, since],
+        key: [binary_sensor.rileys_room_camera_person, since],
         format: relative}
 ```
 

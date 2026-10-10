@@ -36,10 +36,10 @@ from custom_components.home_signals.const import (
 from tests.owners import attach, owner
 from custom_components.home_signals.derived import NeedsYouSensor, PeopleStatusSensor
 
-JAINA = "person.jaina"
+CASEY = "person.casey"
 
 
-_WATCHING = {"people": [JAINA], "presence_grace_minutes": 60}
+_WATCHING = {"people": [CASEY], "presence_grace_minutes": 60}
 
 
 def _sensor(hass: HomeAssistant, options: dict | None = None) -> NeedsYouSensor:
@@ -63,12 +63,12 @@ def _titles(sensor: NeedsYouSensor) -> list[str]:
 
 
 async def _dark_for(hass: HomeAssistant, minutes: float) -> State:
-    """Put Jaina's tracker into silence, starting `minutes` ago."""
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    """Put Casey's tracker into silence, starting `minutes` ago."""
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     await hass.async_block_till_done()
-    state = hass.states.get(JAINA)
+    state = hass.states.get(CASEY)
     return State(
-        JAINA, "unknown", {"friendly_name": "Jaina"},
+        CASEY, "unknown", {"friendly_name": "Casey"},
         last_changed=dt_util.utcnow() - timedelta(minutes=minutes),
         last_updated=state.last_updated,
     )
@@ -76,7 +76,7 @@ async def _dark_for(hass: HomeAssistant, minutes: float) -> State:
 
 async def test_a_phone_in_a_tunnel_is_not_a_job(hass: HomeAssistant) -> None:
     """Five minutes of silence is a tunnel, a reboot, or a lift."""
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
@@ -87,24 +87,24 @@ async def test_a_phone_in_a_tunnel_is_not_a_job(hass: HomeAssistant) -> None:
 
 
 async def test_but_an_hour_of_silence_is(hass: HomeAssistant) -> None:
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
     # Backdate the moment we first saw them go quiet, which is what the
     # sensor measures from -- see the restart test for why it is not
     # read off the entity.
-    owner(sensor, PeopleStatusSensor)._dark_since[JAINA] = dt_util.utcnow() - timedelta(minutes=61)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(minutes=61)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
-    assert _titles(sensor) == ["Jaina cannot be located"], _titles(sensor)
+    assert _titles(sensor) == ["Casey cannot be located"], _titles(sensor)
 
 
 async def test_away_is_a_reading_and_not_a_job(hass: HomeAssistant) -> None:
     """The distinction the whole thing rests on."""
-    hass.states.async_set(JAINA, "not_home", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "not_home", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    owner(sensor, PeopleStatusSensor)._dark_since[JAINA] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == [], "being out was treated as being untrackable"
@@ -114,19 +114,19 @@ async def test_coming_back_forgets_that_they_were_ever_dark(
     hass: HomeAssistant,
 ) -> None:
     """Any positive reading is the tracker working again."""
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    owner(sensor, PeopleStatusSensor)._dark_since[JAINA] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
-    assert _titles(sensor) == ["Jaina cannot be located"]
+    assert _titles(sensor) == ["Casey cannot be located"]
 
-    hass.states.async_set(JAINA, "home", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "home", {"friendly_name": "Casey"})
     await hass.async_block_till_done()
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == [], "the row survived the tracker coming back"
-    assert JAINA not in owner(sensor, PeopleStatusSensor)._dark_since, (  # noqa: SLF001
+    assert CASEY not in owner(sensor, PeopleStatusSensor)._dark_since, (  # noqa: SLF001
         "the memory was kept, so the next blip would fire immediately"
     )
 
@@ -149,30 +149,30 @@ async def test_a_restart_does_not_restart_the_grace_period(
             State(
                 "sensor.people_status",
                 "clear",
-                {"jobs": [], "dark_since": {JAINA: quiet_since.isoformat()}},
+                {"jobs": [], "dark_since": {CASEY: quiet_since.isoformat()}},
             ),
         ),
     )
     # Home Assistant has just come back: the entity is brand new and its
     # last_changed is NOW, which is the lie.
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     # The memory lives on the Who's home card's own sensor now.
     await owner(sensor, PeopleStatusSensor).async_added_to_hass()
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
 
-    assert _titles(sensor) == ["Jaina cannot be located"], (
+    assert _titles(sensor) == ["Casey cannot be located"], (
         "the restart reset the grace period, so six hours of silence "
         "read as none"
     )
 
 
 async def test_watching_nobody_costs_nothing(hass: HomeAssistant) -> None:
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass, options={})
     await sensor.async_added_to_hass()
-    owner(sensor, PeopleStatusSensor)._dark_since[JAINA] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=9)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
 
     assert _titles(sensor) == []
@@ -180,10 +180,10 @@ async def test_watching_nobody_costs_nothing(hass: HomeAssistant) -> None:
 
 async def test_the_row_can_be_snoozed(hass: HomeAssistant) -> None:
     """A tracker you already know about should not nag all evening."""
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _sensor(hass)
     await sensor.async_added_to_hass()
-    owner(sensor, PeopleStatusSensor)._dark_since[JAINA] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
+    owner(sensor, PeopleStatusSensor)._dark_since[CASEY] = dt_util.utcnow() - timedelta(hours=4)  # noqa: SLF001
     sensor._recompute()  # noqa: SLF001
     row = sensor.extra_state_attributes["items"][0]
     assert row["action_label"] == "Snooze", row
@@ -255,8 +255,8 @@ async def test_the_rail_says_the_loudest_job_and_how_many_more() -> None:
 # resets when it starts. So after every restart the panel said everyone
 # had arrived a minute ago. The time now lives on this sensor.
 
-JAMES = "person.james"
-_BOTH = {"people": [JAMES, JAINA], "presence_grace_minutes": 60}
+MORGAN = "person.morgan"
+_BOTH = {"people": [MORGAN, CASEY], "presence_grace_minutes": 60}
 
 
 def _people(hass: HomeAssistant, options: dict | None = None) -> PeopleStatusSensor:
@@ -284,73 +284,73 @@ async def test_home_since_survives_a_restart(hass: HomeAssistant) -> None:
                 "sensor.people_status",
                 "clear",
                 {"jobs": [], "presence": {
-                    JAMES: {"state": "home", "since": arrived.isoformat()},
+                    MORGAN: {"state": "home", "since": arrived.isoformat()},
                 }},
             ),
         ),
     )
     # Home Assistant has just come back: last_changed is NOW, the lie.
-    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
     sensor = _people(hass)
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
 
-    assert _since(sensor, JAMES) == arrived.isoformat(), (
-        "the restart told the panel James had just walked in"
+    assert _since(sensor, MORGAN) == arrived.isoformat(), (
+        "the restart told the panel Morgan had just walked in"
     )
 
 
 async def test_a_move_restarts_the_clock(hass: HomeAssistant) -> None:
-    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
     sensor = _people(hass)
     await sensor.async_added_to_hass()
-    sensor._at[JAMES]["since"] = dt_util.utcnow() - timedelta(hours=3)  # noqa: SLF001
+    sensor._at[MORGAN]["since"] = dt_util.utcnow() - timedelta(hours=3)  # noqa: SLF001
 
-    hass.states.async_set(JAMES, "not_home", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "not_home", {"friendly_name": "Morgan"})
     await hass.async_block_till_done()
     sensor._recompute()  # noqa: SLF001
 
-    held = sensor.extra_state_attributes["presence"][JAMES]
+    held = sensor.extra_state_attributes["presence"][MORGAN]
     assert held["state"] == "not_home"
-    assert held["since"] == hass.states.get(JAMES).last_changed.isoformat()
+    assert held["since"] == hass.states.get(MORGAN).last_changed.isoformat()
 
 
 async def test_a_short_silence_is_not_a_move(hass: HomeAssistant) -> None:
     """Out for ten minutes of no signal, then back where they were."""
-    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
     sensor = _people(hass)
     await sensor.async_added_to_hass()
     arrived = dt_util.utcnow() - timedelta(hours=3)
-    sensor._at[JAMES]["since"] = arrived  # noqa: SLF001
+    sensor._at[MORGAN]["since"] = arrived  # noqa: SLF001
 
-    hass.states.async_set(JAMES, "unknown", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "unknown", {"friendly_name": "Morgan"})
     await hass.async_block_till_done()
     sensor._recompute()  # noqa: SLF001
-    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
     await hass.async_block_till_done()
     sensor._recompute()  # noqa: SLF001
 
-    assert _since(sensor, JAMES) == arrived.isoformat(), (
+    assert _since(sensor, MORGAN) == arrived.isoformat(), (
         "a blip in the tracker restarted the clock"
     )
 
 
 async def test_a_long_silence_then_home_is_a_new_arrival(hass: HomeAssistant) -> None:
-    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
     sensor = _people(hass)
     await sensor.async_added_to_hass()
     arrived = dt_util.utcnow() - timedelta(hours=9)
-    sensor._at[JAMES]["since"] = arrived  # noqa: SLF001
+    sensor._at[MORGAN]["since"] = arrived  # noqa: SLF001
 
-    hass.states.async_set(JAMES, "unknown", {"friendly_name": "James"})
+    hass.states.async_set(MORGAN, "unknown", {"friendly_name": "Morgan"})
     await hass.async_block_till_done()
     sensor._recompute()  # noqa: SLF001
-    sensor._before[JAMES]["left"] = dt_util.utcnow() - timedelta(hours=2)  # noqa: SLF001
-    hass.states.async_set(JAMES, "home", {"friendly_name": "James"})
+    sensor._before[MORGAN]["left"] = dt_util.utcnow() - timedelta(hours=2)  # noqa: SLF001
+    hass.states.async_set(MORGAN, "home", {"friendly_name": "Morgan"})
     await hass.async_block_till_done()
     sensor._recompute()  # noqa: SLF001
 
-    assert _since(sensor, JAMES) != arrived.isoformat()
+    assert _since(sensor, MORGAN) != arrived.isoformat()
 
 
 async def test_unknown_since_is_when_they_went_quiet(hass: HomeAssistant) -> None:
@@ -362,13 +362,13 @@ async def test_unknown_since_is_when_they_went_quiet(hass: HomeAssistant) -> Non
             State(
                 "sensor.people_status",
                 "attention",
-                {"jobs": [], "dark_since": {JAINA: quiet_since.isoformat()}},
+                {"jobs": [], "dark_since": {CASEY: quiet_since.isoformat()}},
             ),
         ),
     )
-    hass.states.async_set(JAINA, "unknown", {"friendly_name": "Jaina"})
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
     sensor = _people(hass)
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
 
-    assert _since(sensor, JAINA) == quiet_since.isoformat()
+    assert _since(sensor, CASEY) == quiet_since.isoformat()
