@@ -231,7 +231,11 @@ def _load_detail(load: dict[str, Any]) -> str:
 
 
 def _duration(seconds: float) -> str:
-    """How long, as a person says it: "4 min", "2h 10m", "3d 5h"."""
+    """How long, as a person says it: "4 min", "2h 10m", "1d 5h", "13d".
+
+    From two days on it is days alone: nobody acts differently on the
+    hours of a fortnight, and the panel's cards say it the same way.
+    """
     minutes = max(1, int(seconds // 60))
     if minutes < 60:
         return f"{minutes} min"
@@ -239,7 +243,28 @@ def _duration(seconds: float) -> str:
     if hours < 24:
         return f"{hours}h {minutes}m" if minutes else f"{hours}h"
     days, hours = divmod(hours, 24)
-    return f"{days}d {hours}h" if hours else f"{days}d"
+    if days >= 2 or not hours:
+        return f"{days}d"
+    return f"{days}d {hours}h"
+
+
+def _ago(when: datetime) -> str:
+    """"13d ago \u00b7 27 Sep": how long, then when -- the cards' wording.
+
+    A clock time alone is a lie once the day has turned: a tracker quiet
+    for a fortnight read "quiet since 21:47". Today is the clock, this
+    week the weekday and the clock, anything older the date.
+    """
+    now = dt_util.now()
+    then = dt_util.as_local(when)
+    clock = then.strftime("%H:%M")
+    if then.date() == now.date():
+        stamp = clock
+    elif now - then < timedelta(days=7):
+        stamp = f"{then.strftime('%a')} {clock}"
+    else:
+        stamp = f"{then.day} {then.strftime('%b')}"
+    return f"{_duration((now - then).total_seconds())} ago \u00b7 {stamp}"
 
 
 def _wet_for(attrs: dict[str, Any], rest: str) -> str:
@@ -1052,8 +1077,7 @@ class PeopleStatusSensor(_Owner, RestoreEntity):
                 "id": f"dark_{entity_id}",
                 "title": f"{_name_of(state)} cannot be located",
                 "detail": (
-                    "No tracker reporting \u00b7 "
-                    f"quiet since {dt_util.as_local(since).strftime('%H:%M')}"
+                    f"No tracker reporting \u00b7 quiet {_ago(since)}"
                 ),
                 "icon": "mdi:map-marker-question",
                 "level": LEVEL_ATTENTION,
