@@ -81,7 +81,8 @@ async def test_a_parcel_is_a_job_until_it_is_gone(hass: HomeAssistant) -> None:
     [job] = _jobs(sensor)
     assert job["id"] == "parcel_gate"
     assert job["title"] == "Bring the parcel in"
-    assert job["detail"].startswith("Seen by the Gate camera since ")
+    assert job["detail"] == "Gate camera"
+    assert job["since_label"] == "Seen" and job["since"]
     assert job["level"] == "attention"
     assert job["tab"] == "security"
     # Snooze only: a button does not bring a parcel in.

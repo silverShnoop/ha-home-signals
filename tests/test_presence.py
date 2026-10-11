@@ -374,11 +374,12 @@ async def test_unknown_since_is_when_they_went_quiet(hass: HomeAssistant) -> Non
     assert _since(sensor, CASEY) == quiet_since.isoformat()
 
 
-async def test_row_says_how_long_not_a_bare_clock(hass: HomeAssistant) -> None:
+async def test_row_carries_the_time_not_a_worded_clock(hass: HomeAssistant) -> None:
     """A fortnight quiet must not read "quiet since 21:47".
 
-    The row says it the way the Who's home card does: how long, then
-    the date once the day has turned -- and days alone past two days.
+    The row sends when they went quiet and the card words it, the same
+    way the Who's home card words the same timestamp -- so the two can
+    never say different things about one person.
     """
     quiet_since = dt_util.utcnow() - timedelta(days=13, hours=14)
     mock_restore_cache(
@@ -396,9 +397,8 @@ async def test_row_says_how_long_not_a_bare_clock(hass: HomeAssistant) -> None:
     await sensor.async_added_to_hass()
     await hass.async_block_till_done()
 
-    local = dt_util.as_local(quiet_since)
-    detail = sensor._jobs_now()[0]["detail"]  # noqa: SLF001
-    assert detail == (
-        "No tracker reporting · quiet 13d ago · "
-        f"{local.day} {local.strftime('%b')}"
-    ), detail
+    [row] = sensor._jobs_now()  # noqa: SLF001
+    assert row["detail"] == "No tracker reporting"
+    assert row["since_label"] == "Quiet"
+    # The very timestamp the Who's home card reads.
+    assert row["since"] == quiet_since.isoformat() == _since(sensor, CASEY)
