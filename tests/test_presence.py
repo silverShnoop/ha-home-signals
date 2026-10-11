@@ -372,3 +372,33 @@ async def test_unknown_since_is_when_they_went_quiet(hass: HomeAssistant) -> Non
     await hass.async_block_till_done()
 
     assert _since(sensor, CASEY) == quiet_since.isoformat()
+
+
+async def test_row_says_how_long_not_a_bare_clock(hass: HomeAssistant) -> None:
+    """A fortnight quiet must not read "quiet since 21:47".
+
+    The row says it the way the Who's home card does: how long, then
+    the date once the day has turned -- and days alone past two days.
+    """
+    quiet_since = dt_util.utcnow() - timedelta(days=13, hours=14)
+    mock_restore_cache(
+        hass,
+        (
+            State(
+                "sensor.people_status",
+                "attention",
+                {"jobs": [], "dark_since": {CASEY: quiet_since.isoformat()}},
+            ),
+        ),
+    )
+    hass.states.async_set(CASEY, "unknown", {"friendly_name": "Casey"})
+    sensor = _people(hass)
+    await sensor.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    local = dt_util.as_local(quiet_since)
+    detail = sensor._jobs_now()[0]["detail"]  # noqa: SLF001
+    assert detail == (
+        "No tracker reporting · quiet 13d ago · "
+        f"{local.day} {local.strftime('%b')}"
+    ), detail
