@@ -130,7 +130,10 @@ async def test_a_leak_row_says_how_long_the_pad_has_been_wet(
 
     since = (dt_util.utcnow() - timedelta(minutes=12)).isoformat()
     _machine(hass, leak=True, leak_alarm=True, powered=False, leak_since=since)
-    assert (await _row(hass, "leak_"))["detail"].startswith("Wet for 12 min")
+    row = await _row(hass, "leak_")
+    # The card words it ("Wet 12m ago · 14:02"); the row carries the time.
+    assert row["since_label"] == "Wet"
+    assert row["since"] == since
 
 
 async def test_so_does_the_still_wet_row(hass: HomeAssistant) -> None:
@@ -140,7 +143,9 @@ async def test_so_does_the_still_wet_row(hass: HomeAssistant) -> None:
 
     since = (dt_util.utcnow() - timedelta(hours=2, minutes=5)).isoformat()
     _machine(hass, leak=True, leak_alarm=False, leak_since=since)
-    assert (await _row(hass, "leak_wet_"))["detail"].startswith("Wet for 2h 5m")
+    row = await _row(hass, "leak_wet_")
+    assert row["since_label"] == "Wet"
+    assert row["since"] == since
 
 
 async def test_a_dead_plug_is_waiting_not_an_errand(

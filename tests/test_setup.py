@@ -414,7 +414,8 @@ async def test_waiting_loads_are_one_row_and_hung_clears_one(
     rows = hanging()
     assert len(rows) == 1, rows
     assert rows[0]["title"] == "3 loads need hanging"
-    assert rows[0]["detail"].startswith("Oldest finished")
+    assert rows[0]["since_label"] == "Oldest finished"
+    assert rows[0]["since"].startswith("2026-09-19T08:00:00")
     assert rows[0]["action"]["data"]["load_id"] == "washing_machine_2026-09-19T08:00:00"
 
     action = rows[0]["action"]

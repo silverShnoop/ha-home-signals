@@ -90,6 +90,11 @@ a dashboard that is permanently red stops being read.
 - **`items`** — the rows, each with `id`, `title`, `detail`, `icon`, `level`
   and `action_label`. A Spectra `list` renders these directly, so the shape
   is a contract and not free to drift.
+- **`since`** and **`since_label`** — on a row whose job started at a known
+  time, the timestamp and a word for it (`Quiet`, `Wet`, `Unlocked`). The
+  card words it the way it words every past time, `Quiet 13d ago · 27 Sep`.
+  A row never writes its own time into `detail`: that is how a tracker quiet
+  for a fortnight once read "quiet since 21:47" beside a card saying 13d.
 
 What it reports, each optional and off unless configured: bins out (only the
 evening before, when it is actionable), overdue chores, batteries under a
@@ -211,7 +216,8 @@ person, where they are and since when. The Who's home card reads its
 which Home Assistant resets on every restart. The time moves only when
 the person does. A restart keeps it, and so does a spell of silence
 shorter than `presence_grace_minutes` that ends in the same place.
-Unknown takes the same "quiet since" time as the Needs you row.
+Unknown takes the same timestamp as the Needs you row's `since`, and the
+cards word both, so the two cannot disagree.
 
 **It cuts the other way too.** A thing that needs no doing takes no level.
 An open appliance door used to be drawn in ochre and has no row and never

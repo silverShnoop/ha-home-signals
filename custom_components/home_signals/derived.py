@@ -216,69 +216,17 @@ def loudest(levels: Any) -> str | None:
     found = [lv for lv in levels if lv in LEVEL_LOUDNESS]
     return max(found, key=LEVEL_LOUDNESS.__getitem__) if found else None
 
-def _drum_detail(attrs: dict[str, Any]) -> str:
-    finished = attrs.get("last_finished_at")
-    parsed = dt_util.parse_datetime(finished) if finished else None
-    when = "Finished " + dt_util.as_local(parsed).strftime("%H:%M") if parsed else "Finished"
-    return f"{when} \u00b7 clears when the door is opened"
+def _since(value: Any) -> dict[str, str]:
+    """A row's time as a timestamp, for the card to word.
 
-def _load_detail(load: dict[str, Any]) -> str:
-    finished = load.get("finished_at")
-    parsed = dt_util.parse_datetime(finished) if finished else None
-    if parsed is None:
-        return "Finished"
-    return "Finished " + dt_util.as_local(parsed).strftime("%H:%M")
-
-
-def _duration(seconds: float) -> str:
-    """How long, as a person says it: "4 min", "2h 10m", "1d 5h", "13d".
-
-    From two days on it is days alone: nobody acts differently on the
-    hours of a fortnight, and the panel's cards say it the same way.
+    Rows never write their own "since 21:47": the card says every past
+    time the same way ("13d ago \u00b7 27 Sep"), and a row that worded its
+    own was how a tracker quiet for a fortnight read as this evening.
     """
-    minutes = max(1, int(seconds // 60))
-    if minutes < 60:
-        return f"{minutes} min"
-    hours, minutes = divmod(minutes, 60)
-    if hours < 24:
-        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
-    days, hours = divmod(hours, 24)
-    if days >= 2 or not hours:
-        return f"{days}d"
-    return f"{days}d {hours}h"
-
-
-def _ago(when: datetime) -> str:
-    """"13d ago \u00b7 27 Sep": how long, then when -- the cards' wording.
-
-    A clock time alone is a lie once the day has turned: a tracker quiet
-    for a fortnight read "quiet since 21:47". Today is the clock, this
-    week the weekday and the clock, anything older the date.
-    """
-    now = dt_util.now()
-    then = dt_util.as_local(when)
-    clock = then.strftime("%H:%M")
-    if then.date() == now.date():
-        stamp = clock
-    elif now - then < timedelta(days=7):
-        stamp = f"{then.strftime('%a')} {clock}"
-    else:
-        stamp = f"{then.day} {then.strftime('%b')}"
-    return f"{_duration((now - then).total_seconds())} ago \u00b7 {stamp}"
-
-
-def _wet_for(attrs: dict[str, Any], rest: str) -> str:
-    """Put how long the pad has been wet in front of a leak row's detail.
-
-    How long, not since when: how long water may have been on the floor is
-    what decides how worried to be.
-    """
-    since = attrs.get("leak_since")
-    parsed = dt_util.parse_datetime(since) if since else None
-    if parsed is None:
-        return rest
-    wet = _duration((dt_util.utcnow() - parsed).total_seconds())
-    return f"Wet for {wet} \u00b7 {rest}"
+    if isinstance(value, datetime):
+        return {"since": value.isoformat()}
+    parsed = dt_util.parse_datetime(value) if isinstance(value, str) and value else None
+    return {"since": parsed.isoformat()} if parsed else {}
 
 
 def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -318,11 +266,15 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             "title": f"{name} is leaking",
             # Never claim the cut: this row also fires when the
             # cutoff has not happened, which is the worse case.
-            "detail": _wet_for(attrs, (
+            # How long, not since when, leads: how long water may have
+            # been on the floor is what decides how worried to be.
+            "detail": (
                 "Power still on \u00b7 check the floor"
                 if powered
                 else "Power cut at the plug \u00b7 check the floor"
-            )),
+            ),
+            **_since(attrs.get("leak_since")),
+            "since_label": "Wet",
             "icon": "mdi:water-alert",
             "level": LEVEL_CRITICAL,
             "action_label": "Snooze",
@@ -343,7 +295,9 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             **where,
             "id": f"leak_wet_{slug}",
             "title": f"{name} leak sensor still wet",
-            "detail": _wet_for(attrs, "Won't cut the power again until it dries"),
+            "detail": "Won't cut the power again until it dries",
+            **_since(attrs.get("leak_since")),
+            "since_label": "Wet",
             "icon": "mdi:water-alert",
             "level": LEVEL_ATTENTION,
             # Only the pad drying clears it: a dismissal would hide the one
@@ -385,7 +339,9 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             **where,
             "id": f"drum_{slug}",
             "title": f"{name} needs emptying",
-            "detail": _drum_detail(attrs),
+            "detail": "Clears when the door is opened",
+            **_since(attrs.get("last_finished_at")),
+            "since_label": "Finished",
             "icon": "mdi:door-open",
             "level": LEVEL_ATTENTION,
         })
@@ -406,13 +362,13 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
     if not loads:
         return rows
     count = len(loads)
-    detail = _load_detail(loads[0])
     rows.append({
         **where,
         "id": f"hang_{loads[-1]['id']}",
         "title": ("Laundry needs hanging" if count == 1
                   else f"{count} loads need hanging"),
-        "detail": detail if count == 1 else "Oldest " + detail.lower(),
+        **_since(loads[0].get("finished_at")),
+        "since_label": "Finished" if count == 1 else "Oldest finished",
         "icon": "mdi:hanger",
         "level": LEVEL_ATTENTION,
         "count": count,
@@ -1076,9 +1032,9 @@ class PeopleStatusSensor(_Owner, RestoreEntity):
             rows.append({
                 "id": f"dark_{entity_id}",
                 "title": f"{_name_of(state)} cannot be located",
-                "detail": (
-                    f"No tracker reporting \u00b7 quiet {_ago(since)}"
-                ),
+                "detail": "No tracker reporting",
+                **_since(since),
+                "since_label": "Quiet",
                 "icon": "mdi:map-marker-question",
                 "level": LEVEL_ATTENTION,
                 "tab": "security",
@@ -1722,13 +1678,12 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
             return []
         rows: list[dict[str, Any]] = []
         for door in self._unlocked:
-            since = dt_util.parse_datetime(door["since"])
-            when = dt_util.as_local(since).strftime("%H:%M") if since else None
             jammed = door.get("jammed")
             rows.append({
                 "id": f"unlocked_{door['entity_id']}",
                 "title": f"{door['name']} {'jammed' if jammed else 'unlocked'}",
-                "detail": f"Unlocked since {when}" if when else "Unlocked",
+                **_since(door["since"]),
+                "since_label": "Unlocked",
                 "icon": door["icon"],
                 "level": level,
                 "tab": "security",
@@ -1739,12 +1694,11 @@ class SecurityStatusSensor(_Derived, RestoreEntity):
                            "target": {"entity_id": door["entity_id"]}},
             })
         for door in self._open:
-            since = dt_util.parse_datetime(door["since"])
-            when = dt_util.as_local(since).strftime("%H:%M") if since else None
             rows.append({
                 "id": f"open_{door['entity_id']}",
                 "title": f"{door['name']} open",
-                "detail": f"Open since {when}" if when else "Open",
+                **_since(door["since"]),
+                "since_label": "Open",
                 "icon": door["icon"],
                 "level": level,
                 "tab": "security",

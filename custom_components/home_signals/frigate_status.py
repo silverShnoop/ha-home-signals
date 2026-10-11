@@ -25,7 +25,7 @@ reads its own entry and does not go yellow for a parcel at the back door.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -69,10 +69,6 @@ def frigate_cameras(registry: er.EntityRegistry) -> list[tuple[str, str, str]]:
 
 def _entity(registry: er.EntityRegistry, domain: str, unique_id: str) -> str | None:
     return registry.async_get_entity_id(domain, FRIGATE, unique_id)
-
-
-def _clock(when: datetime) -> str:
-    return dt_util.as_local(when).strftime("%H:%M")
 
 
 def _snooze(item_id: str, hours: int) -> dict[str, Any]:
@@ -171,8 +167,8 @@ class CameraStatusSensor(_Owner):
             jobs.append({
                 "id": item_id,
                 "title": f"{name} camera has stopped",
-                "detail": f"No picture since {_clock(fps.last_changed)}",
                 "since": fps.last_changed.isoformat(),
+                "since_label": "No picture",
                 "icon": "mdi:cctv-off",
                 "level": LEVEL_WAITING,
                 "tab": self.tab,
@@ -197,8 +193,9 @@ class CameraStatusSensor(_Owner):
             jobs.append({
                 "id": item_id,
                 "title": "Bring the parcel in",
-                "detail": f"Seen by the {name} camera since {_clock(parcel.last_changed)}",
+                "detail": f"{name} camera",
                 "since": parcel.last_changed.isoformat(),
+                "since_label": "Seen",
                 "icon": "mdi:package-variant-closed",
                 "level": LEVEL_ATTENTION,
                 "tab": self.tab,
