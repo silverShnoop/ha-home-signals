@@ -423,7 +423,11 @@ one car.
   `area`, `network`, `state`, `detail` (for a partial device, what is missing:
   `No temperature`, or `5 of 8 missing`) and `since`.
 - **`networks`** — `online`/`offline`/`partial` per network: Hue, Zigbee,
-  Tado, Cast, and everything else as `Wi-Fi & cloud`.
+  Tado, Cast, then everything else split into `Wi-Fi` and `Cloud` by each
+  integration's own `iot_class`. A device on the house network is the house's
+  to fix and one behind a vendor's servers usually is not, which is why they
+  are not one bar. A device any integration reaches locally counts as local,
+  and an integration that declares nothing is assumed local.
 - **`level`** — `attention` while anything is not answering, else `null`. The
   same devices are already behind the offline row in `Needs you`.
 
