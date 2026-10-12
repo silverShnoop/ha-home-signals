@@ -74,7 +74,7 @@ async def test_a_device_is_counted_once_however_many_entities(
 
     assert (attrs["connected"], attrs["offline"], attrs["partial"]) == (1, 1, 0)
     assert [p["name"] for p in attrs["problems"]] == ["Car"]
-    assert attrs["problems"][0]["network"] == "Wi-Fi & cloud"
+    assert attrs["problems"][0]["network"] == "Wi-Fi"
     assert attrs["level"] == LEVEL_ATTENTION
 
 
@@ -247,3 +247,39 @@ async def test_a_tado_zone_is_a_thing_but_a_hue_zone_is_not(
     problems = _sensor(hass).extra_state_attributes["problems"]
 
     assert [p["name"] for p in problems] == ["Gym"], problems
+
+
+async def test_a_cloud_device_is_told_apart_from_one_on_the_house_network(
+    hass: HomeAssistant, monkeypatch
+) -> None:
+    """The split comes from each integration's own iot_class, not a list."""
+    classes = {"stellantis_vehicles": "cloud_polling", "reolink": "local_push"}
+    monkeypatch.setattr(
+        "custom_components.home_signals.devices._iot_class",
+        lambda _hass, domain: classes.get(domain),
+    )
+    src = _source(hass)
+    _device(hass, src, "Car", {"fuel": "unavailable"}, domain="stellantis_vehicles")
+    _device(hass, src, "Camera", {"motion": "unavailable"}, domain="reolink")
+    _device(hass, src, "Mystery", {"x": "unavailable"}, domain="unknown_thing")
+    attrs = _sensor(hass).extra_state_attributes
+
+    where = {p["name"]: p["network"] for p in attrs["problems"]}
+    assert where == {"Car": "Cloud", "Camera": "Wi-Fi", "Mystery": "Wi-Fi"}, (
+        "an integration that declares nothing is assumed local, not blamed on a cloud"
+    )
+    assert [n["name"] for n in attrs["networks"]] == ["Wi-Fi", "Cloud"]
+
+
+def test_a_device_reached_both_ways_is_on_the_house_network(
+    hass: HomeAssistant, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.home_signals.devices._iot_class",
+        lambda _hass, domain: {"a": "cloud_push", "b": "local_push"}.get(domain),
+    )
+
+    class _Device:
+        identifiers = {("a", "1"), ("b", "1")}
+
+    assert DevicesSensor._network_of(_Device(), hass) == "Wi-Fi"  # noqa: SLF001

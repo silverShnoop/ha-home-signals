@@ -26,6 +26,7 @@ from homeassistant.helpers import (
     entity_registry as er,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.loader import async_get_loaded_integration
 from homeassistant.util import dt as dt_util
 
 from .const import LEVEL_ATTENTION
@@ -40,11 +41,16 @@ from .derived import (
 )
 
 # The networks worth a bar of their own, in the order the card draws them.
-# Everything else talks to Home Assistant over the house Wi-Fi or a vendor's
-# cloud, and one bar for all of it says as much as a bar each would.
 NETWORKS = {"hue": "Hue", "zha": "Zigbee", "tado": "Tado", "cast": "Cast"}
-OTHER_NETWORK = "Wi-Fi & cloud"
-NETWORK_ORDER = [*NETWORKS.values(), OTHER_NETWORK]
+# Everything else is split by where it actually answers from. These were one
+# bar, "Wi-Fi & cloud", and that hid the one difference worth knowing when
+# something goes quiet: a device on the house network is the house's to fix,
+# and one behind a vendor's servers usually is not. Home Assistant already
+# knows which is which -- every integration declares an `iot_class` in its
+# manifest -- so this reads that rather than keeping a list of brands.
+LOCAL_NETWORK = "Wi-Fi"
+CLOUD_NETWORK = "Cloud"
+NETWORK_ORDER = [*NETWORKS.values(), LOCAL_NETWORK, CLOUD_NETWORK]
 
 # Devices in the registry that are not things. A Hue room or zone is a
 # group of bulbs the bridge happens to describe as a device, and a Cast
@@ -71,14 +77,36 @@ def _is_group(device: dr.DeviceEntry) -> bool:
     )
 
 
-def _network_of(device: dr.DeviceEntry) -> str:
+def _iot_class(hass: HomeAssistant, domain: str) -> str | None:
+    """What an integration says about how it reaches its devices, if loaded."""
+    try:
+        return async_get_loaded_integration(hass, domain).iot_class
+    except Exception:  # noqa: BLE001 - not loaded, or no manifest: unknown
+        return None
+
+
+def _network_of(device: dr.DeviceEntry, hass: HomeAssistant | None = None) -> str:
     # Only the first element of an identifier is promised. Some
     # integrations register three-part identifiers, and unpacking two
     # took the whole sensor down on the real house.
-    for identifier in device.identifiers:
-        if identifier and identifier[0] in NETWORKS:
-            return NETWORKS[identifier[0]]
-    return OTHER_NETWORK
+    domains = [i[0] for i in device.identifiers if i]
+    for domain in domains:
+        if domain in NETWORKS:
+            return NETWORKS[domain]
+    if hass is None:
+        return LOCAL_NETWORK
+    if not domains:
+        for entry_id in getattr(device, "config_entries", ()) or ():
+            if (entry := hass.config_entries.async_get_entry(entry_id)) is not None:
+                domains.append(entry.domain)
+    # Cloud only when everything that knows the device says so. A speaker
+    # one integration reaches over the internet and another over the house
+    # network is on the house network, and an integration that declares
+    # nothing is assumed local rather than blamed on somebody's servers.
+    classes = [c for c in (_iot_class(hass, d) for d in domains) if c]
+    if classes and all(c.startswith("cloud") for c in classes):
+        return CLOUD_NETWORK
+    return LOCAL_NETWORK
 
 
 def _detail(
@@ -146,7 +174,7 @@ def scan_devices(
             continue
         if _is_group(device):
             continue
-        network = _network_of(device)
+        network = _network_of(device, hass)
         missing = [entry for entry, gone in members if gone]
         if not missing:
             tally[network]["online"] += 1
@@ -294,8 +322,8 @@ class DevicesSensor(_Derived, RestoreEntity):
         }
 
     @staticmethod
-    def _network_of(device: dr.DeviceEntry) -> str:
-        return _network_of(device)
+    def _network_of(device: dr.DeviceEntry, hass: HomeAssistant | None = None) -> str:
+        return _network_of(device, hass)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
