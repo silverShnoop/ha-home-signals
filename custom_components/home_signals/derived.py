@@ -694,7 +694,18 @@ class BinsStatusSensor(_Owner, RestoreEntity):
 
 
 class TasksStatusSensor(_Owner):
-    """The Home Tasks card's sensor: are any chores overdue."""
+    """The Chores card's sensor: which chores want doing today, and which are late.
+
+    Pointed at a to-do list that carries a `board` attribute (Trello To-do),
+    it reads each open card's deadline: a chore due today is `attention`
+    until its time and `waiting` after it, and one carried over from an
+    earlier day stays `waiting` until somebody ticks it. A chore not due
+    until tomorrow asks for nothing. Each row's Done ticks the card, the
+    same as ticking it on the panel.
+
+    Pointed at a binary sensor (the older Home Tasks "overdue" sensor), it
+    raises one row while that sensor is on.
+    """
 
     tab = "lists"
     _attr_name = "Tasks status"
@@ -703,14 +714,18 @@ class TasksStatusSensor(_Owner):
     def __init__(self, entry: ConfigEntry) -> None:
         super().__init__(entry)
         self._attr_unique_id = f"{entry.entry_id}_tasks_status"
+        self._wake: CALLBACK_TYPE | None = None
 
     def _jobs_now(self) -> list[dict[str, Any]]:
-        """Overdue chores only — the full list lives in its own pop-up."""
         entity_id = self._option(CONF_TASKS_SENSOR, None)
         if not entity_id:
             return []
         state = self.hass.states.get(entity_id)
-        if state is None or state.state != STATE_ON:
+        if state is None:
+            return []
+        if split_entity_id(entity_id)[0] == "todo":
+            return chore_rows(state, dt_util.now())
+        if state.state != STATE_ON:
             return []
         return [{
             "id": "tasks_overdue",
@@ -723,6 +738,114 @@ class TasksStatusSensor(_Owner):
             "action_label": "Snooze",
             "action": _snooze("tasks_overdue"),
         }]
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._sleep)
+        await super().async_added_to_hass()
+
+    def _recompute(self) -> None:
+        super()._recompute()
+        self._set_alarm()
+
+    @callback
+    def _sleep(self) -> None:
+        if self._wake is not None:
+            self._wake()
+            self._wake = None
+
+    def _set_alarm(self) -> None:
+        """Wake at the next deadline today, so the row turns the moment it passes.
+
+        The five-minute timer would get there too, up to five minutes late,
+        and a chore that says "By 19:00" at 19:04 is a chore that is wrong.
+        """
+        if self.hass is None:
+            return
+        self._sleep()
+        entity_id = self._option(CONF_TASKS_SENSOR, None)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        if state is None or split_entity_id(entity_id)[0] != "todo":
+            return
+        now = dt_util.now()
+        ahead = [d for d in _open_deadlines(state) if now < d and d.date() == now.date()]
+        if ahead:
+            self._wake = async_track_point_in_time(
+                self.hass, self._at_deadline, min(ahead) + timedelta(seconds=1)
+            )
+
+    @callback
+    def _at_deadline(self, _now: datetime) -> None:
+        self._wake = None
+        self._recompute()
+        self.async_write_ha_state()
+
+
+def _open_deadlines(state: State) -> list[datetime]:
+    """The local deadline of every card on the board that is not done."""
+    board = state.attributes.get("board")
+    if not isinstance(board, dict):
+        return []
+    out = []
+    for card in board.get("cards") or []:
+        if card.get("done"):
+            continue
+        due = dt_util.parse_datetime(str(card.get("due") or ""))
+        if due is not None:
+            out.append(dt_util.as_local(due))
+    return out
+
+
+def chore_rows(state: State, now: datetime) -> list[dict[str, Any]]:
+    """A Needs you row for each chore due today or late, from a to-do list's board.
+
+    Only the board says which cards are done and when each is due, so a
+    list without one raises nothing. A card with no deadline never asks:
+    there is no moment at which it becomes late.
+    """
+    board = state.attributes.get("board")
+    if not isinstance(board, dict):
+        return []
+    names = {
+        m.get("id"): m.get("name") or m.get("username") or ""
+        for m in board.get("members") or []
+        if isinstance(m, dict)
+    }
+    now = dt_util.as_local(now)
+    rows = []
+    for card in board.get("cards") or []:
+        if not isinstance(card, dict) or card.get("done"):
+            continue
+        due = dt_util.parse_datetime(str(card.get("due") or ""))
+        if due is None:
+            continue
+        due = dt_util.as_local(due)
+        if due.date() > now.date():
+            continue
+        if now < due:
+            level, when = LEVEL_ATTENTION, f"By {due:%H:%M}"
+        elif due.date() == now.date():
+            level, when = LEVEL_WAITING, f"Was due {due:%H:%M}"
+        else:
+            level, when = LEVEL_WAITING, f"Was due {due:%a %H:%M}"
+        who = ", ".join(n for n in (names.get(i) for i in card.get("members") or []) if n)
+        rows.append({
+            "id": f"chore_{card.get('id')}_{due.date().isoformat()}",
+            "title": card.get("name") or "Chore",
+            "detail": f"{when} · {who}" if who else when,
+            "icon": "mdi:repeat" if card.get("routine") else "mdi:clipboard-text-clock-outline",
+            "level": level,
+            "tab": "lists",
+            "card": "tasks",
+            "due": due.isoformat(),
+            "action_label": "Done",
+            "action": {
+                "service": "todo.update_item",
+                "target": {"entity_id": state.entity_id},
+                "data": {"item": card.get("id"), "status": "completed"},
+            },
+        })
+    rows.sort(key=lambda r: r["due"])
+    return rows
 
 
 

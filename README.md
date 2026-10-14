@@ -97,7 +97,7 @@ a dashboard that is permanently red stops being read.
   for a fortnight once read "quiet since 21:47" beside a card saying 13d.
 
 What it reports, each optional and off unless configured: bins out (only the
-evening before, when it is actionable), overdue chores, batteries under a
+evening before, when it is actionable), chores due today or late, batteries under a
 threshold one row each, water softener salt, and everything offline as a
 **single** row — twenty-seven unavailable entities is one problem, an
 integration being down, and twenty-seven rows would bury everything else.
@@ -246,7 +246,7 @@ publishing `level` (its state is that level, or `clear`), `tab`, and `jobs`
 | Front door | `sensor.security_status` |
 | Who's home | `sensor.people_status` |
 | Bin calendar | `sensor.bins_status` |
-| Home Tasks | `sensor.tasks_status` |
+| Chores (a Trello To-do board) | `sensor.tasks_status` |
 | Water softener | `sensor.softener_status` |
 | A Frigate camera | `sensor.camera_status`, by its `cameras` map |
 | Batteries | `sensor.batteries_status` |
@@ -1473,10 +1473,32 @@ AI did to it. `save_recipe` takes both:
 The index carries it as each recipe's `provenance`: `{source, events,
 marks}`, marks keyed by step number.
 
+## Chores: `sensor.tasks_status`
+
+Point the *Chores to-do list* option at a [Trello To-do](https://github.com/silverShnoop/ha-trello-todo)
+list and every open card with a deadline is weighed against the clock:
+
+| The card | Its row |
+| --- | --- |
+| Due today, before its time | `attention` (ochre), "By 19:00 · Casey" |
+| Due today, past its time | `waiting` (orange), "Was due 19:00" |
+| Due on an earlier day, still not done | `waiting`, "Was due Mon 19:00", until somebody ticks it |
+| Ticked, due tomorrow or later, or with no deadline | nothing |
+
+The sensor wakes at each deadline, so a row turns orange on the minute
+rather than at the next scan. A row's **Done** ticks the card
+(`todo.update_item`), exactly as ticking it on the panel does, and the row's
+id carries the day, so dismissing today's does not hide tomorrow's.
+The Chores card's outline, the Lists rail button and Needs you all read it.
+
+The option still takes a binary sensor (the older "any chores overdue" kind),
+which raises a single row while it is on.
+
 ## Prep sessions: `sensor.meal_prep`
 
 A session is one sitting in which the prep for one or more meals is done,
-and it is exactly **one Home Tasks item** with a deadline, named "Prep:" and
+and it is exactly **one to-do item** with a deadline (on the list set by
+`home_signals.prep_settings`, which must take due times: the Chores board does), named "Prep:" and
 the meals, with each meal's steps in its description. The house plans to do
 prep in as few sittings as it can, so one item per session rather than one
 per meal.
