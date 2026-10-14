@@ -121,7 +121,7 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_TASKS_SENSOR,
                 default=defaults.get(CONF_TASKS_SENSOR, vol.UNDEFINED),
             ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="binary_sensor")
+                selector.EntitySelectorConfig(domain=["todo", "binary_sensor"])
             ),
             # Which to-do lists keep a "done today" record. Empty means
             # none: watching a list costs a service call per tick, and
