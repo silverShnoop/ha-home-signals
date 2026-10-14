@@ -754,7 +754,8 @@ class TasksStatusSensor(_Owner):
             self._wake = None
 
     def _set_alarm(self) -> None:
-        """Wake at the next deadline today, so the row turns the moment it passes.
+        """Wake at the next start or deadline today, so the row appears, and
+        turns, the moment it should.
 
         The five-minute timer would get there too, up to five minutes late,
         and a chore that says "By 19:00" at 19:04 is a chore that is wrong.
@@ -767,7 +768,7 @@ class TasksStatusSensor(_Owner):
         if state is None or split_entity_id(entity_id)[0] != "todo":
             return
         now = dt_util.now()
-        ahead = [d for d in _open_deadlines(state) if now < d and d.date() == now.date()]
+        ahead = [d for d in _open_moments(state) if now < d and d.date() == now.date()]
         if ahead:
             self._wake = async_track_point_in_time(
                 self.hass, self._at_deadline, min(ahead) + timedelta(seconds=1)
@@ -780,27 +781,38 @@ class TasksStatusSensor(_Owner):
         self.async_write_ha_state()
 
 
-def _open_deadlines(state: State) -> list[datetime]:
-    """The local deadline of every card on the board that is not done."""
+def _open_moments(state: State) -> list[datetime]:
+    """The local start and deadline of every card on the board that is not done."""
     board = state.attributes.get("board")
     if not isinstance(board, dict):
         return []
     out = []
     for card in board.get("cards") or []:
-        if card.get("done"):
+        if not isinstance(card, dict) or card.get("done"):
             continue
-        due = dt_util.parse_datetime(str(card.get("due") or ""))
-        if due is not None:
-            out.append(dt_util.as_local(due))
+        for key in ("start", "due"):
+            moment = dt_util.parse_datetime(str(card.get(key) or ""))
+            if moment is not None:
+                out.append(dt_util.as_local(moment))
     return out
 
 
-def chore_rows(state: State, now: datetime) -> list[dict[str, Any]]:
-    """A Needs you row for each chore due today or late, from a to-do list's board.
+def _opens(card: dict[str, Any], due: datetime) -> datetime:
+    """When a chore starts asking: its start date, or else the start of its day."""
+    start = dt_util.parse_datetime(str(card.get("start") or ""))
+    if start is not None:
+        return dt_util.as_local(start)
+    return dt_util.start_of_local_day(due)
 
-    Only the board says which cards are done and when each is due, so a
-    list without one raises nothing. A card with no deadline never asks:
-    there is no moment at which it becomes late.
+
+def chore_rows(state: State, now: datetime) -> list[dict[str, Any]]:
+    """A Needs you row for each chore that is asking, from a to-do list's board.
+
+    A chore asks from its start date -- or, without one, from the start of
+    the day it is due -- and is late after its deadline. Only the board says
+    which cards are done and when each is due, so a list without one raises
+    nothing. A card with no deadline never asks: there is no moment at which
+    it becomes late.
     """
     board = state.attributes.get("board")
     if not isinstance(board, dict):
@@ -819,8 +831,8 @@ def chore_rows(state: State, now: datetime) -> list[dict[str, Any]]:
         if due is None:
             continue
         due = dt_util.as_local(due)
-        if due.date() > now.date():
-            continue
+        if now < _opens(card, due):
+            continue  # not asking yet: the dishwasher before 20:00
         if now < due:
             level, when = LEVEL_ATTENTION, f"By {due:%H:%M}"
         elif due.date() == now.date():
