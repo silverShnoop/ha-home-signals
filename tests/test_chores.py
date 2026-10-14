@@ -166,3 +166,43 @@ async def test_ticking_it_clears_the_row(hass: HomeAssistant, freezer) -> None:
 
     hass.states.async_set(TODO, "0", {"board": board(card("dishwasher", at(14, 19), done=True))})
     assert tasks.native_value == "clear"
+
+
+def card_window(cid: str, start: datetime, due: datetime, **kw):
+    return {**card(cid, due, **kw), "start": start.isoformat()}
+
+
+async def test_quiet_before_the_start_then_asks(hass: HomeAssistant) -> None:
+    dishes = card_window("dishwasher", at(14, 20), at(14, 22, 30))
+    assert _rows(hass, at(14, 19, 59), dishes) == []
+    (row,) = _rows(hass, at(14, 20), dishes)
+    assert row["level"] == LEVEL_ATTENTION and row["detail"] == "By 22:30"
+    (row,) = _rows(hass, at(14, 22, 31), dishes)
+    assert row["level"] == LEVEL_WAITING
+
+
+async def test_without_a_start_it_asks_from_the_start_of_its_day(hass: HomeAssistant) -> None:
+    cat = card("cat", at(14, 19))
+    assert _rows(hass, at(13, 23, 59), cat) == []
+    (row,) = _rows(hass, at(14, 0, 1), cat)
+    assert row["level"] == LEVEL_ATTENTION
+
+
+async def test_carried_over_still_asks_whatever_its_start(hass: HomeAssistant) -> None:
+    (row,) = _rows(hass, at(15, 9), card_window("dishwasher", at(14, 20), at(14, 22, 30)))
+    assert row["level"] == LEVEL_WAITING and row["detail"] == "Was due Wed 22:30"
+
+
+async def test_appears_at_the_start_not_at_the_next_scan(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to(at(14, 19, 59))
+    hass.states.async_set(TODO, "1", {"board": board(card_window("dishwasher", at(14, 20), at(14, 22, 30)))})
+    needs = _needs(hass)
+    tasks = owner(needs, TasksStatusSensor)
+    await tasks.async_added_to_hass()
+    await hass.async_block_till_done()
+    assert tasks.state == "clear"
+
+    freezer.move_to(at(14, 20) + timedelta(seconds=2))
+    async_fire_time_changed(hass, at(14, 20) + timedelta(seconds=2))
+    await hass.async_block_till_done()
+    assert tasks.state == LEVEL_ATTENTION

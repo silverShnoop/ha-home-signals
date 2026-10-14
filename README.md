@@ -1480,13 +1480,15 @@ list and every open card with a deadline is weighed against the clock:
 
 | The card | Its row |
 | --- | --- |
-| Due today, before its time | `attention` (ochre), "By 19:00 · Casey" |
-| Due today, past its time | `waiting` (orange), "Was due 19:00" |
+| Before its start | nothing yet. The start is the card's Trello start date, or without one the start of the day it is due |
+| Started, before its time | `attention` (ochre), "By 19:00 · Casey" |
+| Past its time | `waiting` (orange), "Was due 19:00" |
 | Due on an earlier day, still not done | `waiting`, "Was due Mon 19:00", until somebody ticks it |
 | Ticked, due tomorrow or later, or with no deadline | nothing |
 
-The sensor wakes at each deadline, so a row turns orange on the minute
-rather than at the next scan. A row's **Done** ticks the card
+The sensor wakes at each start and each deadline, so a row appears, and
+turns orange, on the minute rather than at the next scan. The dishwasher,
+from 20:00 and due 22:30, says nothing all day and asks at 20:00. A row's **Done** ticks the card
 (`todo.update_item`), exactly as ticking it on the panel does, and the row's
 id carries the day, so dismissing today's does not hide tomorrow's.
 The Chores card's outline, the Lists rail button and Needs you all read it.
