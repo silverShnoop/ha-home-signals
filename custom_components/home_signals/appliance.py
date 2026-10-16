@@ -1164,7 +1164,9 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # The machine owns its jobs and so its level: the card's outline
         # reads `level` here, Needs you shows `jobs`, and the Cleaning tab
         # wears the loudest `level` on it. Nothing downstream decides one.
-        jobs = appliance_jobs(self.name or self._slug, self.entity_id or "", attrs)
+        jobs = appliance_jobs(
+            self.name or self._slug, self.entity_id or "", attrs, icon=self.icon
+        )
         attrs["tab"] = "cleaning"
         attrs["jobs"] = jobs
         attrs["level"] = loudest(row.get("level") for row in jobs)
