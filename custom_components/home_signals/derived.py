@@ -229,7 +229,9 @@ def _since(value: Any) -> dict[str, str]:
     return {"since": parsed.isoformat()} if parsed else {}
 
 
-def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dict[str, Any]]:
+def appliance_jobs(
+    name: str, entity_id: str, attrs: dict[str, Any], icon: str | None = None
+) -> list[dict[str, Any]]:
     """Water on the floor, a machine left dead, a full drum, washing to hang.
 
     The jobs one machine raises, built from its own published attributes.
@@ -246,6 +248,11 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
     Only the leak and the dead machine are offered a snooze. The other
     two are cleared by doing the thing -- the door for the drum, the
     button for the hanging.
+
+    `icon` is the machine's own -- the dryer's dryer, the dishwasher's
+    dishwasher -- and the full-drum row wears it, because that row is
+    read from across a room: at that distance a door says only "a
+    door", and three machines in one house all clear by their door.
     """
     rows: list[dict[str, Any]] = []
     slug = attrs.get("slug") or entity_id
@@ -342,7 +349,10 @@ def appliance_jobs(name: str, entity_id: str, attrs: dict[str, Any]) -> list[dic
             "detail": "Clears when the door is opened",
             **_since(attrs.get("last_finished_at")),
             "since_label": "Finished",
-            "icon": "mdi:door-open",
+            # The machine, not the door. Without one (a state from before
+            # the machines published an icon) the door is the next best
+            # thing, being what clears it.
+            "icon": icon or "mdi:door-open",
             "level": LEVEL_ATTENTION,
         })
 
@@ -1380,7 +1390,9 @@ class NeedsYouSensor(_Derived, RestoreEntity):
             attrs = state.attributes
             jobs = attrs.get("jobs")
             if not isinstance(jobs, list):
-                jobs = appliance_jobs(_name_of(state), entity_id, attrs)
+                jobs = appliance_jobs(
+                    _name_of(state), entity_id, attrs, icon=attrs.get("icon")
+                )
             level = attrs["level"] if "level" in attrs else loudest(
                 row.get("level") for row in jobs
             )

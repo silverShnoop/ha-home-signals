@@ -220,3 +220,15 @@ def test_the_row_offers_no_button() -> None:
     rows = appliance_jobs("Dishwasher", "sensor.dishwasher",
                           {"slug": "dishwasher", "drum_full": True})
     assert len(rows) == 1 and "action" not in rows[0]
+
+
+def test_the_row_wears_the_machine_not_the_door() -> None:
+    """Three machines clear by a door; the icon has to say which one.
+    A state from before the machine published an icon keeps the door."""
+    rows = appliance_jobs("Dishwasher", "sensor.dishwasher",
+                          {"slug": "dishwasher", "drum_full": True},
+                          icon="mdi:dishwasher")
+    assert rows[0]["icon"] == "mdi:dishwasher"
+    rows = appliance_jobs("Dishwasher", "sensor.dishwasher",
+                          {"slug": "dishwasher", "drum_full": True})
+    assert rows[0]["icon"] == "mdi:door-open"

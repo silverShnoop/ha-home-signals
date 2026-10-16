@@ -43,6 +43,7 @@ DRYER_SPEC = {
     "door": DRYER_DOOR,
     "leak": None,
     "energy_sensor": DRYER_ENERGY,
+    "icon": "mdi:tumble-dryer",
     "queues_loads": False,
     # As sensor.py builds it. A dryer has no classifier and one phase;
     # test_setup asserts that the real spec says so, this asserts what
@@ -153,6 +154,16 @@ async def test_the_door_empties_it(dryer: Dryer) -> None:
 
     await dryer.open_door()
     assert dryer.attrs["drum_full"] is False, "the door did not empty the drum"
+
+
+async def test_the_full_drum_row_wears_the_dryer(dryer: Dryer) -> None:
+    """Not a door. Read from across a room a door says only "a door", and
+    every machine in the house clears by its door; the row has to say
+    which machine, and the machine's own icon is the one thing that does."""
+    await dryer.run_a_load()
+    (row,) = dryer.attrs["jobs"]
+    assert row["title"] == "Tumble dryer needs emptying"
+    assert row["icon"] == dryer.sensor.icon == "mdi:tumble-dryer"
 
 
 async def test_a_tumble_too_short_to_be_a_load_is_not_one(dryer: Dryer) -> None:
