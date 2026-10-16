@@ -1279,6 +1279,40 @@ outline: {entity: sensor.camera_status, attribute: cameras, key: [front_gate, le
 The parcel's time is the occupancy sensor's `last_changed`, which a
 restart resets. A parcel there before a restart reads as arriving at it.
 
+## `switch.<camera>_remote_access`
+
+Whether a Reolink camera can be reached through Reolink's servers. Every
+Reolink has a UID, and while it is enabled the camera keeps an outbound
+connection open so the Reolink app can find it from anywhere, with nothing
+opened on the router. That is also the one thing about a bedroom camera a
+person might reasonably want off, and nothing else offers a control for
+it: the phone app has no switch, the desktop Client does, and Home
+Assistant's own Reolink integration reads the UID but never writes the
+setting.
+
+The camera's API has the command, so this is a plain switch that sends
+it -- **through the connection the core integration already holds**. A
+Reolink allows only a few sessions at once, and a second login has been
+known to knock the first one out, which would take the camera off the
+panel in order to flip a switch about the camera. So there is nothing to
+configure: one switch per Reolink host the core integration knows,
+`switch.<camera>_remote_access`, a config entity, and it is **unavailable
+whenever the core integration is not connected** -- there is nothing to
+flip then, and a switch that showed a remembered state over a camera that
+was not there would be a lie. A camera that is still connecting when this
+integration starts gets its switch at the first read that succeeds, not at
+the next restart.
+
+It is read back from the camera every five minutes, so a change made in
+the Client shows up here. A refusal from the camera is an error at the
+switch, not a switch that moved.
+
+Turning it off also stops the Reolink app's own push notifications, which
+ride the same channel. Home Assistant is not affected: it talks to the
+camera on the LAN, and the panel's view of the camera is reached through
+Home Assistant, not through Reolink. The camera's time sync and firmware
+check reach Reolink's servers on their own and keep working.
+
 ## `sensor.security_status`
 
 Is the house shut, as one of three colours: `green`, `amber` or `red`. It
