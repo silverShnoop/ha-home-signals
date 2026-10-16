@@ -119,6 +119,7 @@ from .cameras import CameraSightingsSensor, camera_detections, camera_kind
 from .devices import DevicesSensor
 from .energy import EnergyDaySensor
 from .frigate_status import CameraStatusSensor
+from .moon import MoonSensor
 from .prep import MealPrepSensor, async_register_prep_services
 from .todo_done import TodoDoneTodaySensor
 
@@ -303,6 +304,7 @@ async def async_setup_entry(
         CameraSightingsSensor(entry),
         needs_you,
         EnergyDaySensor(entry),
+        MoonSensor(entry),
         *owners,
     ]
 
