@@ -455,6 +455,53 @@ for a device that has nothing else — a ZHA button, whose presses are events
 rather than entities — so a bulb whose signal reading goes quiet is still a
 working bulb, and a button that stops checking in still shows as offline.
 
+## `sensor.moon`
+
+Tonight's moon, for the weather card to draw at its real shape. The one
+sensor here that reads no other entity: it is worked out from the clock.
+
+- **State** — the phase by name, one of the eight core's `moon` integration
+  uses (`new_moon`, `waxing_crescent`, `first_quarter`, `waxing_gibbous`,
+  `full_moon`, `waning_gibbous`, `last_quarter`, `waning_crescent`), so an
+  automation reads the same against either. `device_class: enum`.
+- **`illumination`** — how much of the disc is lit, in percent.
+- **`age`** — days since the last new moon.
+- **`cycle`** — where the shape is, 0 new, 0.5 full, back to 1. Taken from
+  `illumination` and `waxing`, so a terminator drawn from it is exactly the
+  fraction printed beside it.
+- **`waxing`** — true from new moon to full.
+- **`next_new_moon`, `next_full_moon`** — the true instants, local time.
+
+### Why not core's `moon`
+
+It names the phase and stops. A crescent drawn from "waxing crescent" is the
+same shape on day two and day six, and nothing in core says when the next
+full moon is.
+
+### Why not the date alone
+
+Counting days from a known new moon by the average month is the obvious
+shortcut, and it is out by up to half a day, because a real month runs up to
+seven hours either side of the average. Here the instants come from Meeus's
+series (*Astronomical Algorithms*, ch. 49), good to about a minute, and the
+lit fraction from his phase-angle formula (ch. 48). Plain arithmetic: nothing
+is installed and nothing is fetched.
+
+### Not where the moon is
+
+No rise, set or altitude, on purpose. The card puts the moon on the night as
+a clock, from sunset to sunrise; a moon drawn where it really is would be
+missing on most evenings and up in the daytime on the rest.
+
+### A name is half a day either side
+
+`new_moon` and `full_moon` are instants, but the name reads as a description
+of tonight, so it holds for twelve hours either side of the instant. The
+quarters hold while the lit fraction is within six points of half, which is
+the same half a day. Fourteen hours before a full moon the disc is over 99%
+lit and the state is still `waxing_gibbous`; the percentage is the number,
+the name is a word.
+
 ## `sensor.energy_day`
 
 What the house's electricity cost, reduced once. Octopus publishes the
