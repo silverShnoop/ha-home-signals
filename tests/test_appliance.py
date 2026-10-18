@@ -828,9 +828,9 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
     assert light.native_value == LEVEL_ATTENTION
-    # The drum is full and a load is waiting: both are on the tab, the
-    # first by name and the other counted.
-    assert "+1 more" in light.extra_state_attributes["detail"]
+    # The drum is full, and that is the only job: the load inside is not
+    # asked to be hung until the door has let it out.
+    assert light.extra_state_attributes["detail"] == "Washing machine needs emptying"
 
     machine.set(LEAK, "on")
     await hass.async_block_till_done()

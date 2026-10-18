@@ -241,7 +241,8 @@ def appliance_jobs(
 
     Four urgencies from one sensor, and the last two are sequential
     rather than alternatives: a finished load is in the drum until the
-    door is opened, and a WASHED load is then still to be hung. A dryer
+    door is opened, and a WASHED load is then still to be hung -- so the
+    load in the drum is never also asked to be hung. A dryer
     stops after the first of those, which is the whole difference
     between the two machines.
 
@@ -369,6 +370,13 @@ def appliance_jobs(
     if not isinstance(pending, list):
         return rows
     loads = [load for load in pending if isinstance(load, dict) and load.get("id")]
+    # The newest load is still in the drum while the drum is full: it is
+    # queued the moment the cycle ends, but nobody can hang washing that
+    # has not come out yet. Until the door opens the full-drum row is the
+    # one job, and asking for both says the same thing twice. Older loads
+    # were already taken out, so they stay.
+    if attrs.get("drum_full") and loads:
+        loads = loads[:-1]
     if not loads:
         return rows
     count = len(loads)
