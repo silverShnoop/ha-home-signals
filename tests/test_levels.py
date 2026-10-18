@@ -369,33 +369,3 @@ async def test_a_dead_machine_cannot_be_dismissed_only_snoozed(hass: HomeAssista
     sensor._recompute()  # noqa: SLF001
     rows = sensor.extra_state_attributes["items"]
     assert not any(r["id"] == "unpowered_washing_machine" for r in rows)
-
-
-def _load(stamp: str) -> dict[str, Any]:
-    return {"id": f"washing_machine_{stamp}", "finished_at": f"{stamp}+00:00"}
-
-
-async def test_a_load_in_the_drum_only_says_the_drum_is_full() -> None:
-    """Hanging is asked for only once the door has let the washing out."""
-    base = {"slug": "washing_machine", "powered": True, "leak": False}
-    load = _load("2026-10-18T10:42:08")
-
-    full = appliance_jobs("Washing machine", WASHER,
-                          {**base, "drum_full": True, "pending": [load]})
-    assert [j["icon"] for j in full] == ["mdi:door-open"], full
-
-    opened = appliance_jobs("Washing machine", WASHER,
-                            {**base, "drum_full": False, "pending": [load]})
-    assert [j["title"] for j in opened] == ["Laundry needs hanging"], opened
-
-
-async def test_an_earlier_load_still_needs_hanging_while_the_drum_is_full() -> None:
-    """Only the newest load is in the drum; one already out is still owed."""
-    older, newer = _load("2026-10-18T08:27:48"), _load("2026-10-18T10:42:08")
-    jobs = appliance_jobs("Washing machine", WASHER, {
-        "slug": "washing_machine", "powered": True, "leak": False,
-        "drum_full": True, "pending": [older, newer],
-    })
-    hang = [j for j in jobs if j["icon"] == "mdi:hanger"]
-    assert len(hang) == 1 and hang[0]["title"] == "Laundry needs hanging", jobs
-    assert hang[0]["action"]["data"]["load_id"] == older["id"]

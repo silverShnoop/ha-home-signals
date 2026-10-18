@@ -220,8 +220,11 @@ async def test_quiet_for_the_full_floor_finishes_the_cycle(machine: Machine) -> 
 
     await machine.draw(0, for_minutes=6)
     assert machine.state == APPLIANCE_IDLE
-    assert machine.waiting == 1, "a finished wash left nothing to hang"
     assert machine.attrs["drum_full"] is True
+    assert machine.waiting == 0, "washing still in the drum was asked to be hung"
+
+    await machine.empty_the_drum()
+    assert machine.waiting == 1, "a finished wash left nothing to hang"
 
 
 async def test_the_cycle_is_timed_to_when_it_went_quiet_not_when_we_noticed(
@@ -326,20 +329,31 @@ async def test_a_plug_that_stops_reporting_holds_rather_than_reads_zero(
 # --- the drum, and the washing ------------------------------------------
 
 
-async def test_opening_the_door_empties_the_drum_but_not_the_hanging_list(
+async def test_opening_the_door_turns_a_full_drum_into_washing_to_hang(
     machine: Machine,
 ) -> None:
-    """Emptying and hanging are different facts, cleared by different things."""
+    """Emptying and hanging are sequential: one job, then the other.
+
+    Washing in the drum cannot be hung, so it is not on the hanging list
+    until the door has let it out -- and unloading it does not hang it.
+    """
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
     assert machine.attrs["drum_full"] is True
-    assert machine.waiting == 1
+    assert machine.waiting == 0, "washing still in the drum was asked to be hung"
 
     machine.set(DOOR, "on")
     await machine.hass.async_block_till_done()
 
     assert machine.attrs["drum_full"] is False, "the door did not empty the drum"
-    assert machine.waiting == 1, "unloading the machine hung the washing up"
+    assert machine.waiting == 1, "unloading the machine left nothing to hang"
+    assert machine.attrs["pending"][0]["id"] == machine.attrs["finished"][0]["id"]
+
+    machine.set(DOOR, "off")
+    await machine.hass.async_block_till_done()
+    machine.set(DOOR, "on")
+    await machine.hass.async_block_till_done()
+    assert machine.waiting == 1, "opening the door again queued the load twice"
 
 
 async def test_a_full_drum_that_runs_again_is_not_full_any_more(machine) -> None:
@@ -372,15 +386,17 @@ async def test_a_load_washed_twice_is_still_one_load_to_hang(machine) -> None:
     m = machine
     await m.draw(2000, for_minutes=30)
     await m.draw(0, for_minutes=6)
-    assert m.waiting == 1
-    first = m.attrs["pending"][0]["id"]
+    assert m.waiting == 0
+    first = m.attrs["finished"][0]["id"]
 
     await m.draw(2000, for_minutes=30)
     await m.draw(0, for_minutes=6)
+    assert m.attrs["drum_full"] is True
+    assert m.waiting == 0, m.attrs["pending"]
 
+    await m.empty_the_drum()
     assert m.waiting == 1, m.attrs["pending"]
     assert m.attrs["pending"][0]["id"] != first, "it is the second wash that counts"
-    assert m.attrs["drum_full"] is True
 
 
 async def test_a_load_already_out_of_the_drum_keeps_its_row(machine) -> None:
@@ -393,20 +409,22 @@ async def test_a_load_already_out_of_the_drum_keeps_its_row(machine) -> None:
     m = machine
     await m.draw(2000, for_minutes=30)
     await m.draw(0, for_minutes=6)
+    await m.empty_the_drum()
     on_the_airer = m.attrs["pending"][0]["id"]
 
-    await m.empty_the_drum()
     await m.draw(2000, for_minutes=30)
     await m.draw(0, for_minutes=6)
-    assert m.waiting == 2
+    assert m.waiting == 1, "the second load is still in the drum"
 
     # And now that second load is re-washed without coming out.
     await m.draw(2000, for_minutes=30)
     await m.draw(0, for_minutes=6)
 
     ids = [p["id"] for p in m.attrs["pending"]]
-    assert len(ids) == 2, ids
-    assert on_the_airer in ids, "the load on the airer lost its row"
+    assert ids == [on_the_airer], "the load on the airer lost its row"
+
+    await m.empty_the_drum()
+    assert m.waiting == 2
 
 
 async def test_a_run_too_short_to_be_a_wash_puts_the_fullness_back(
@@ -426,13 +444,14 @@ async def test_a_run_too_short_to_be_a_wash_puts_the_fullness_back(
     m = machine
     await m.draw(2000, for_minutes=30)
     await m.draw(0, for_minutes=6)
-    assert m.attrs["drum_full"] is True and m.waiting == 1
+    assert m.attrs["drum_full"] is True and m.waiting == 0
 
     await m.draw(2000, for_minutes=3)
     assert m.attrs["drum_full"] is False, "it is running"
     await m.draw(0, for_minutes=6)
 
     assert m.attrs["drum_full"] is True, "a short run lost the washing in the drum"
+    await m.empty_the_drum()
     assert m.waiting == 1, "and it lost the job too"
 
 
@@ -448,7 +467,7 @@ async def test_power_cut_mid_rewash_puts_the_fullness_back(machine) -> None:
     await m.hass.async_block_till_done()
 
     assert m.attrs["drum_full"] is True, "cutting the power emptied the drum"
-    assert m.waiting == 1
+    assert m.waiting == 0, "washing still in the drum was asked to be hung"
 
 
 async def test_the_door_ends_a_rewash(machine) -> None:
@@ -597,11 +616,12 @@ async def test_two_loads_are_two_rows_and_the_button_clears_the_oldest(
 ) -> None:
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
+    await machine.empty_the_drum()
     first = machine.attrs["pending"][0]["id"]
 
-    await machine.empty_the_drum()
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
+    await machine.empty_the_drum()
     assert machine.waiting == 2
 
     assert machine.sensor.hung() is True
@@ -617,11 +637,12 @@ async def test_a_named_load_clears_exactly_that_one(machine: Machine) -> None:
     """The Needs you row clears its own load, not whichever is oldest."""
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
+    await machine.empty_the_drum()
     oldest = machine.attrs["pending"][0]["id"]
 
-    await machine.empty_the_drum()
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
+    await machine.empty_the_drum()
     newest = machine.attrs["pending"][1]["id"]
 
     assert machine.sensor.hung(newest) is True
@@ -646,7 +667,10 @@ async def test_a_finished_load_says_whether_it_still_needs_hanging(
 
     today = machine.attrs["finished_today"]
     assert len(today) == 1
-    assert today[0]["hanging"] is True
+    assert today[0]["hanging"] is False, "still in the drum, so not to hang yet"
+
+    await machine.empty_the_drum()
+    assert machine.attrs["finished_today"][0]["hanging"] is True
 
     assert machine.sensor.hung() is True
     assert machine.attrs["finished_today"][0]["hanging"] is False
@@ -662,6 +686,7 @@ async def test_a_load_still_to_hang_survives_midnight(machine: Machine) -> None:
     """
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
+    await machine.empty_the_drum()
     load = machine.attrs["finished_today"][0]["id"]
 
     await machine.advance(60 * 24)
@@ -677,6 +702,7 @@ async def test_and_leaves_the_list_the_moment_it_is_hung(machine: Machine) -> No
     """
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
+    await machine.empty_the_drum()
     await machine.advance(60 * 24)
     assert machine.attrs["finished_today"], "the load was gone before it was hung"
 
@@ -694,6 +720,7 @@ async def test_a_load_hung_on_the_day_it_ran_stays_on_the_list(
     """
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
+    await machine.empty_the_drum()
     assert machine.sensor.hung() is True
 
     today = machine.attrs["finished_today"]
@@ -813,7 +840,9 @@ async def test_a_cycle_runs_normally_with_the_sensor_still_wet(
     await machine.draw(2000, for_minutes=30)
     assert machine.state == APPLIANCE_RUNNING
     await machine.draw(0, for_minutes=6)
-    assert machine.waiting == 1, "a wet sensor stopped the cycle being counted"
+    assert machine.attrs["finished"], "a wet sensor stopped the cycle being counted"
+    await machine.empty_the_drum()
+    assert machine.waiting == 1, "a wet sensor stopped the load being queued"
 
 
 # --- the colour a tab can be -------------------------------------------
@@ -829,7 +858,7 @@ async def test_the_cleaning_light(hass: HomeAssistant, machine: Machine) -> None
     await machine.draw(0, for_minutes=6)
     assert light.native_value == LEVEL_ATTENTION
     # The drum is full, and that is the only job: the load inside is not
-    # asked to be hung until the door has let it out.
+    # washing to hang until the door has let it out.
     assert light.extra_state_attributes["detail"] == "Washing machine needs emptying"
 
     machine.set(LEAK, "on")
@@ -917,7 +946,7 @@ async def test_a_full_drum_is_attention_on_the_tab(
 
     await machine.draw(2000, for_minutes=30)
     await machine.draw(0, for_minutes=6)
-    assert machine.sensor.hung() is True, "no load was queued to clear"
+    assert machine.sensor.hung() is False, "a load in the drum was queued to hang"
 
     assert machine.attrs["drum_full"] is True
     assert light.native_value == LEVEL_ATTENTION
@@ -1344,6 +1373,8 @@ async def test_two_loads_an_hour_apart_are_two_loads(machine) -> None:
         "the door opened between them, so this is a new load, not a rewash"
     )
     await m.draw(0, for_minutes=6)
+    assert m.waiting == 1, "the second load is still in the drum"
+    await m.empty_the_drum()
 
     assert m.waiting == 2, "two armfuls of washing, two rows to hang"
     assert len(m.attrs["finished"]) == 2, m.attrs["finished"]
@@ -1669,3 +1700,19 @@ def test_money_is_said_the_way_people_say_it() -> None:
     assert money(0.996) == "£1.00"
     assert money(1.2) == "£1.20"
     assert money(12.5) == "£12.50"
+
+
+async def test_a_door_opened_on_a_short_rewash_queues_the_load(machine) -> None:
+    """The load being re-washed is the one that comes out with the door."""
+    m = machine
+    await m.draw(2000, for_minutes=30)
+    await m.draw(0, for_minutes=6)
+    load = m.attrs["finished"][0]["id"]
+
+    await m.draw(2000, for_minutes=3)
+    await m.draw(0)
+    m.set(DOOR, "on")
+    await m.hass.async_block_till_done()
+
+    assert m.attrs["drum_full"] is False
+    assert [p["id"] for p in m.attrs["pending"]] == [load]

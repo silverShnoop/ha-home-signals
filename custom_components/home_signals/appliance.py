@@ -352,7 +352,15 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
             # stopped wash is both "this is finished" and "and I have
             # taken it out", and there is no instant between them for
             # anything to read.
+            held = self._load_in_drum()
+            newest = self._history[0].get("id") if self._history else None
             self._lock_released()
+            # The load that was in the drum is out, so now it is washing
+            # to hang -- unless the run the door just ended was a real
+            # wash, which wrote and queued a record of its own for it.
+            latest = self._history[0].get("id") if self._history else None
+            if held and latest == newest:
+                self._queue_load(held)
             # Whatever was in there is out. Nothing to put back, and the
             # load is no longer the one this cycle is re-washing. This
             # line is what empties the drum when the door opens on an
@@ -1002,16 +1010,14 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # and waits to be told. A dryer's load is finished the moment it
         # comes out, so queueing one would invent a reminder nothing can
         # satisfy.
-        if self._spec.get("queues_loads", True):
+        if self._spec.get("queues_loads", True) and self._rewashing_load:
             # A load washed twice is still one load to hang. Its first
             # row cannot be satisfied -- the washing was back in the
             # machine, where nobody could hang it -- and leaving it would
             # put "2 to hang" in Needs you for one armful.
-            if self._rewashing_load:
-                self._pending = [
-                    p for p in self._pending if p.get("id") != self._rewashing_load
-                ]
-            self._pending.append(record)
+            self._pending = [
+                p for p in self._pending if p.get("id") != self._rewashing_load
+            ]
         self._history.insert(0, record)
         del self._history[MAX_HISTORY:]
         # Only where there is a door to empty it. With no contact sensor
@@ -1020,10 +1026,37 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # -- so a machine without a door is never reported full, and
         # gains the job the day it gains the sensor.
         self._drum_full = fills_drum and bool(self._spec.get("door"))
+        # Washing in the drum is not washing to hang. It joins the queue
+        # when the door lets it out (_sync_door); only a load that is
+        # already out -- the door ended the run, or there is no door to
+        # watch -- is queued now.
+        if not self._drum_full:
+            self._queue_load(record["id"])
         self._rewashing = False
         self._rewashing_load = None
         # This run WAS a wash, so its own timeline is the one to keep.
         self._parked_phases = None
+
+    def _load_in_drum(self) -> str | None:
+        """The id of the washed load sitting in the drum, if there is one.
+
+        A re-wash is still that load: it went back in unhung.
+        """
+        if self._rewashing:
+            return self._rewashing_load
+        if self._drum_full and self._history:
+            return self._history[0].get("id")
+        return None
+
+    def _queue_load(self, load_id: str) -> None:
+        """Put a finished load on the list of washing to hang, once."""
+        if not self._spec.get("queues_loads", True):
+            return
+        if any(p.get("id") == load_id for p in self._pending):
+            return
+        record = next((h for h in self._history if h.get("id") == load_id), None)
+        if record is not None:
+            self._pending.append(record)
 
     # --- what a person does to it --------------------------------------
 
@@ -1083,10 +1116,13 @@ class ApplianceCycleSensor(SensorEntity, RestoreEntity):
         # `hanging` travels with each entry because the card cannot work it
         # out: `pending` is a separate attribute and a row on the card has
         # no way to ask whether its own id is in it.
+        # The load still in the drum outlives midnight the same way: it
+        # is not washing to hang yet, but it is very much still there.
+        in_drum = self._load_in_drum()
         finished_today = [
             {**h, "hanging": h.get("id") in hanging_ids}
             for h in self._history
-            if _ran_today(h) or h.get("id") in hanging_ids
+            if _ran_today(h) or h.get("id") in hanging_ids or h.get("id") == in_drum
         ]
 
         attrs: dict[str, Any] = {
